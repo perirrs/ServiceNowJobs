@@ -1,0 +1,62 @@
+# Build outputs
+bin/
+obj/
+out/
+publish/
+
+# Visual Studio / Rider / VS Code
+.vs/
+.idea/
+*.user
+*.suo
+.vscode/settings.json
+
+# NuGet
+*.nupkg
+*.snupkg
+packages/
+
+# Test results
+TestResults/
+test-results/
+coverage/
+*.trx
+*.coverage
+
+# Secrets — NEVER commit
+*.env
+.env
+.env.local
+appsettings.Production.json
+appsettings.Staging.json
+secrets.json
+
+# Azure artifacts
+*.bicepparam
+*.tfstate
+*.tfstate.backup
+**/.terraform/
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Archives — NEVER commit zip/rar etc
+*.zip
+*.rar
+*.tar
+*.tar.gz
+*.7z
+
+# Node
+node_modules/
+.next/
+dist/
+
+# Misc
+*.tmp
+*.bak

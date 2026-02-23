@@ -1,0 +1,102 @@
+name: snhub-dev
+
+services:
+
+  auth-api:
+    build:
+      context: .
+      dockerfile: src/Services/Auth/SNHub.Auth.API/Dockerfile
+    container_name: snhub_auth_api
+    ports:
+      - "5001:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionStrings__AuthDb=Host=postgres;Port=5432;Database=snhub_auth_dev;Username=snhub;Password=snhub_dev_pass
+      - ConnectionStrings__Redis=redis:6379,abortConnect=false
+      - ConnectionStrings__AzureStorage=UseDevelopmentStorage=true;BlobEndpoint=http://azurite:10000/devstoreaccount1
+      - JwtSettings__SecretKey=DEV_ONLY_KEY_REPLACE_IN_PROD_MUST_BE_32_CHARS_MIN
+      - RunMigrationsOnStartup=true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - snhub_net
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: snhub_postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: snhub
+      POSTGRES_PASSWORD: snhub_dev_pass
+      POSTGRES_DB: snhub_auth_dev
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U snhub -d snhub_auth_dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - snhub_net
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: snhub_redis
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - snhub_net
+
+  # Azurite = local Azure Blob Storage emulator (replaces LocalStack S3)
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:latest
+    container_name: snhub_azurite
+    ports:
+      - "10000:10000"
+      - "10001:10001"
+      - "10002:10002"
+    volumes:
+      - azurite_data:/data
+    command: azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0
+    networks:
+      - snhub_net
+
+  # pgAdmin - optional DB GUI (start with: docker compose --profile tools up)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: snhub_pgadmin
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@snhub.io
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    depends_on:
+      - postgres
+    networks:
+      - snhub_net
+    profiles:
+      - tools
+
+volumes:
+  postgres_data:
+  redis_data:
+  azurite_data:
+
+networks:
+  snhub_net:
+    driver: bridge
