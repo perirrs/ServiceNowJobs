@@ -1,7 +1,19 @@
 name: snhub-dev
 
+# ─── Common JWT env snippet (reused across services) ─────────────────────────
+x-jwt: &jwt-env
+  JwtSettings__SecretKey: DEV_ONLY_KEY_REPLACE_IN_PROD_MUST_BE_32_CHARS_MIN
+  JwtSettings__Issuer: snhub-auth
+  JwtSettings__Audience: snhub-apps
+
+x-common: &common-env
+  ASPNETCORE_ENVIRONMENT: Development
+  ConnectionStrings__Redis: redis:6379,abortConnect=false
+  ConnectionStrings__AzureStorage: UseDevelopmentStorage=true;BlobEndpoint=http://azurite:10000/devstoreaccount1
+
 services:
 
+  # ── Auth Service ─────────────────────────────────────────────────────────────
   auth-api:
     build:
       context: .
@@ -10,25 +22,110 @@ services:
     ports:
       - "5001:8080"
     environment:
-      - ASPNETCORE_ENVIRONMENT=Development
-      - ConnectionStrings__AuthDb=Host=postgres;Port=5432;Database=snhub_auth_dev;Username=snhub;Password=snhub_dev_pass
-      - ConnectionStrings__Redis=redis:6379,abortConnect=false
-      - ConnectionStrings__AzureStorage=UseDevelopmentStorage=true;BlobEndpoint=http://azurite:10000/devstoreaccount1
-      - JwtSettings__SecretKey=DEV_ONLY_KEY_REPLACE_IN_PROD_MUST_BE_32_CHARS_MIN
-      - RunMigrationsOnStartup=true
-      - Seed__SuperAdmin__Email=admin@snhub.io
-      - Seed__SuperAdmin__Password=Admin@SNHub2025!
-      - Seed__SuperAdmin__FirstName=SNHub
-      - Seed__SuperAdmin__LastName=Admin
+      <<: [*common-env, *jwt-env]
+      ConnectionStrings__AuthDb: Host=postgres;Port=5432;Database=snhub_auth_dev;Username=snhub;Password=snhub_dev_pass
+      RunMigrationsOnStartup: "true"
+      Seed__SuperAdmin__Email: admin@snhub.io
+      Seed__SuperAdmin__Password: Admin@SNHub2025!
+      Seed__SuperAdmin__FirstName: SNHub
+      Seed__SuperAdmin__LastName: Admin
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    networks:
-      - snhub_net
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    networks: [snhub_net]
     restart: unless-stopped
 
+  # ── Users Service ─────────────────────────────────────────────────────────────
+  users-api:
+    build:
+      context: .
+      dockerfile: src/Services/Users/SNHub.Users.API/Dockerfile
+    container_name: snhub_users_api
+    ports:
+      - "5002:8080"
+    environment:
+      <<: [*common-env, *jwt-env]
+      ConnectionStrings__UsersDb: Host=postgres;Port=5432;Database=snhub_users_dev;Username=snhub;Password=snhub_dev_pass
+      RunMigrationsOnStartup: "true"
+    depends_on:
+      postgres: { condition: service_healthy }
+      auth-api: { condition: service_started }
+    networks: [snhub_net]
+    restart: unless-stopped
+
+  # ── Applications Service ──────────────────────────────────────────────────────
+  applications-api:
+    build:
+      context: .
+      dockerfile: src/Services/Applications/SNHub.Applications.API/Dockerfile
+    container_name: snhub_applications_api
+    ports:
+      - "5003:8080"
+    environment:
+      <<: [*common-env, *jwt-env]
+      ConnectionStrings__ApplicationsDb: Host=postgres;Port=5432;Database=snhub_applications_dev;Username=snhub;Password=snhub_dev_pass
+      RunMigrationsOnStartup: "true"
+    depends_on:
+      postgres: { condition: service_healthy }
+      auth-api: { condition: service_started }
+    networks: [snhub_net]
+    restart: unless-stopped
+
+  # ── Profiles Service ──────────────────────────────────────────────────────────
+  profiles-api:
+    build:
+      context: .
+      dockerfile: src/Services/Profiles/SNHub.Profiles.API/Dockerfile
+    container_name: snhub_profiles_api
+    ports:
+      - "5004:8080"
+    environment:
+      <<: [*common-env, *jwt-env]
+      ConnectionStrings__ProfilesDb: Host=postgres;Port=5432;Database=snhub_profiles_dev;Username=snhub;Password=snhub_dev_pass
+      RunMigrationsOnStartup: "true"
+    depends_on:
+      postgres: { condition: service_healthy }
+      auth-api: { condition: service_started }
+    networks: [snhub_net]
+    restart: unless-stopped
+
+  # ── Notifications Service ─────────────────────────────────────────────────────
+  notifications-api:
+    build:
+      context: .
+      dockerfile: src/Services/Notifications/SNHub.Notifications.API/Dockerfile
+    container_name: snhub_notifications_api
+    ports:
+      - "5005:8080"
+    environment:
+      <<: [*common-env, *jwt-env]
+      ConnectionStrings__NotificationsDb: Host=postgres;Port=5432;Database=snhub_notifications_dev;Username=snhub;Password=snhub_dev_pass
+      RunMigrationsOnStartup: "true"
+    depends_on:
+      postgres: { condition: service_healthy }
+      auth-api: { condition: service_started }
+    networks: [snhub_net]
+    restart: unless-stopped
+
+  # ── Jobs Service ──────────────────────────────────────────────────────────────
+  jobs-api:
+    build:
+      context: .
+      dockerfile: src/Services/Jobs/SNHub.Jobs.API/Dockerfile
+    container_name: snhub_jobs_api
+    ports:
+      - "5006:8080"
+    environment:
+      <<: [*common-env, *jwt-env]
+      ConnectionStrings__JobsDb: Host=postgres;Port=5432;Database=snhub_jobs_dev;Username=snhub;Password=snhub_dev_pass
+      RunMigrationsOnStartup: "true"
+    depends_on:
+      postgres: { condition: service_healthy }
+      auth-api: { condition: service_started }
+    networks: [snhub_net]
+    restart: unless-stopped
+
+  # ─── Infrastructure ────────────────────────────────────────────────────────────
   postgres:
     image: postgres:17-alpine
     container_name: snhub_postgres
@@ -46,8 +143,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    networks:
-      - snhub_net
+    networks: [snhub_net]
 
   redis:
     image: redis:7.4-alpine
@@ -62,10 +158,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    networks:
-      - snhub_net
+    networks: [snhub_net]
 
-  # Azurite = local Azure Blob Storage emulator (replaces LocalStack S3)
   azurite:
     image: mcr.microsoft.com/azure-storage/azurite:latest
     container_name: snhub_azurite
@@ -76,25 +170,7 @@ services:
     volumes:
       - azurite_data:/data
     command: azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0
-    networks:
-      - snhub_net
-
-  # pgAdmin - optional DB GUI (start with: docker compose --profile tools up)
-  pgadmin:
-    image: dpage/pgadmin4:latest
-    container_name: snhub_pgadmin
-    ports:
-      - "5050:80"
-    environment:
-      PGADMIN_DEFAULT_EMAIL: admin@snhub.io
-      PGADMIN_DEFAULT_PASSWORD: admin
-      PGADMIN_CONFIG_SERVER_MODE: "False"
-    depends_on:
-      - postgres
-    networks:
-      - snhub_net
-    profiles:
-      - tools
+    networks: [snhub_net]
 
 volumes:
   postgres_data:

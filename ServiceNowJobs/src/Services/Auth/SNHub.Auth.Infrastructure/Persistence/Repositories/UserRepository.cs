@@ -1,5 +1,6 @@
 using Dapper;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Npgsql;
 using SNHub.Auth.Application.Interfaces;
 using SNHub.Auth.Domain.Entities;

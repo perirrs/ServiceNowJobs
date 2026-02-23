@@ -2,8 +2,6 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
-using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
-using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using SNHub.Auth.Infrastructure.Persistence;
 
 #nullable disable
@@ -16,92 +14,82 @@ partial class AuthDbContextModelSnapshot : ModelSnapshot
     protected override void BuildModel(ModelBuilder modelBuilder)
     {
 #pragma warning disable 612, 618
-        modelBuilder
-            .HasAnnotation("ProductVersion", "10.0.0")
-            .HasAnnotation("Relational:MaxIdentifierLength", 63);
+        modelBuilder.HasAnnotation("ProductVersion", "10.0.0")
+                    .HasAnnotation("Relational:MaxIdentifierLength", 63);
+        Npgsql.EntityFrameworkCore.PostgreSQL.Metadata.NpgsqlModelBuilderExtensions
+            .UseIdentityByDefaultColumns(modelBuilder);
 
-        NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
-
-        // ── RefreshToken ──────────────────────────────────────────────────
-        modelBuilder.Entity("SNHub.Auth.Domain.Entities.RefreshToken", b =>
-        {
-            b.Property<Guid>("Id").HasColumnName("id").HasColumnType("uuid");
-            b.Property<Guid>("UserId").HasColumnName("user_id").HasColumnType("uuid");
-            b.Property<string>("Token").IsRequired().HasMaxLength(512).HasColumnName("token").HasColumnType("character varying(512)");
-            b.Property<DateTimeOffset>("ExpiresAt").HasColumnName("expires_at").HasColumnType("timestamptz");
-            b.Property<DateTimeOffset>("CreatedAt").HasColumnName("created_at").HasColumnType("timestamptz");
-            b.Property<string>("CreatedByIp").IsRequired().HasMaxLength(45).HasColumnName("created_by_ip").HasColumnType("character varying(45)");
-            b.Property<string>("UserAgent").IsRequired().HasMaxLength(512).HasColumnName("user_agent").HasColumnType("character varying(512)");
-            b.Property<DateTimeOffset?>("RevokedAt").HasColumnName("revoked_at").HasColumnType("timestamptz");
-            b.Property<string>("RevokedByIp").HasMaxLength(45).HasColumnName("revoked_by_ip").HasColumnType("character varying(45)");
-            b.Property<string>("RevokeReason").HasMaxLength(256).HasColumnName("revoke_reason").HasColumnType("character varying(256)");
-            b.Property<string>("ReplacedByToken").HasMaxLength(512).HasColumnName("replaced_by_token").HasColumnType("character varying(512)");
-
-            b.HasKey("Id");
-            b.HasIndex("Token").IsUnique().HasDatabaseName("ix_rt_token");
-            b.HasIndex("Token").HasFilter("revoked_at IS NULL").HasDatabaseName("ix_rt_active");
-            b.HasIndex("UserId", "ExpiresAt").HasDatabaseName("ix_rt_user_expiry");
-            b.ToTable("refresh_tokens", "auth");
-        });
-
-        // ── User ──────────────────────────────────────────────────────────
         modelBuilder.Entity("SNHub.Auth.Domain.Entities.User", b =>
         {
             b.Property<Guid>("Id").HasColumnName("id").HasColumnType("uuid");
+            b.Property<string>("AzureAdObjectId").HasMaxLength(100).HasColumnName("azure_ad_object_id").HasColumnType("character varying(100)");
+            b.Property<string>("Country").HasMaxLength(3).HasColumnName("country").HasColumnType("character varying(3)");
+            b.Property<DateTimeOffset>("CreatedAt").HasColumnName("created_at").HasColumnType("timestamptz");
+            b.Property<string>("CreatedBy").IsRequired().HasMaxLength(256).HasDefaultValue("system").HasColumnName("created_by").HasColumnType("character varying(256)");
             b.Property<string>("Email").IsRequired().HasMaxLength(256).HasColumnName("email").HasColumnType("character varying(256)");
-            b.Property<string>("NormalizedEmail").IsRequired().HasMaxLength(256).HasColumnName("normalized_email").HasColumnType("character varying(256)");
-            b.Property<string>("PasswordHash").IsRequired().HasMaxLength(512).HasColumnName("password_hash").HasColumnType("character varying(512)");
-            b.Property<string>("FirstName").IsRequired().HasMaxLength(100).HasColumnName("first_name").HasColumnType("character varying(100)");
-            b.Property<string>("LastName").IsRequired().HasMaxLength(100).HasColumnName("last_name").HasColumnType("character varying(100)");
-            b.Property<string>("PhoneNumber").HasMaxLength(20).HasColumnName("phone_number").HasColumnType("character varying(20)");
-            b.Property<string>("ProfilePictureUrl").HasMaxLength(2048).HasColumnName("profile_picture_url").HasColumnType("character varying(2048)");
-            b.Property<bool>("IsEmailVerified").HasDefaultValue(false).HasColumnName("is_email_verified").HasColumnType("boolean");
-            b.Property<bool>("IsActive").HasDefaultValue(true).HasColumnName("is_active").HasColumnType("boolean");
-            b.Property<bool>("IsSuspended").HasDefaultValue(false).HasColumnName("is_suspended").HasColumnType("boolean");
-            b.Property<string>("SuspensionReason").HasMaxLength(1000).HasColumnName("suspension_reason").HasColumnType("character varying(1000)");
-            b.Property<DateTimeOffset?>("SuspendedAt").HasColumnName("suspended_at").HasColumnType("timestamptz");
             b.Property<DateTimeOffset?>("EmailVerifiedAt").HasColumnName("email_verified_at").HasColumnType("timestamptz");
-            b.Property<DateTimeOffset?>("LastLoginAt").HasColumnName("last_login_at").HasColumnType("timestamptz");
-            b.Property<string>("LastLoginIp").HasMaxLength(45).HasColumnName("last_login_ip").HasColumnType("character varying(45)");
-            b.Property<int>("FailedLoginAttempts").HasDefaultValue(0).HasColumnName("failed_login_attempts").HasColumnType("integer");
-            b.Property<DateTimeOffset?>("LockedOutUntil").HasColumnName("locked_out_until").HasColumnType("timestamptz");
             b.Property<string>("EmailVerificationToken").HasMaxLength(256).HasColumnName("email_verification_token").HasColumnType("character varying(256)");
             b.Property<DateTimeOffset?>("EmailVerificationTokenExpiry").HasColumnName("email_verification_token_expiry").HasColumnType("timestamptz");
+            b.Property<int>("FailedLoginAttempts").HasDefaultValue(0).HasColumnName("failed_login_attempts").HasColumnType("integer");
+            b.Property<string>("FirstName").IsRequired().HasMaxLength(100).HasColumnName("first_name").HasColumnType("character varying(100)");
+            b.Property<string>("GoogleId").HasMaxLength(100).HasColumnName("google_id").HasColumnType("character varying(100)");
+            b.Property<bool>("IsActive").HasDefaultValue(true).HasColumnName("is_active").HasColumnType("boolean");
+            b.Property<bool>("IsEmailVerified").HasDefaultValue(false).HasColumnName("is_email_verified").HasColumnType("boolean");
+            b.Property<bool>("IsSuspended").HasDefaultValue(false).HasColumnName("is_suspended").HasColumnType("boolean");
+            b.Property<DateTimeOffset?>("LastLoginAt").HasColumnName("last_login_at").HasColumnType("timestamptz");
+            b.Property<string>("LastLoginIp").HasMaxLength(45).HasColumnName("last_login_ip").HasColumnType("character varying(45)");
+            b.Property<string>("LastName").IsRequired().HasMaxLength(100).HasColumnName("last_name").HasColumnType("character varying(100)");
+            b.Property<string>("LinkedInId").HasMaxLength(100).HasColumnName("linkedin_id").HasColumnType("character varying(100)");
+            b.Property<DateTimeOffset?>("LockedOutUntil").HasColumnName("locked_out_until").HasColumnType("timestamptz");
+            b.Property<string>("NormalizedEmail").IsRequired().HasMaxLength(256).HasColumnName("normalized_email").HasColumnType("character varying(256)");
+            b.Property<string>("PasswordHash").IsRequired().HasMaxLength(512).HasColumnName("password_hash").HasColumnType("character varying(512)");
             b.Property<string>("PasswordResetToken").HasMaxLength(256).HasColumnName("password_reset_token").HasColumnType("character varying(256)");
             b.Property<DateTimeOffset?>("PasswordResetTokenExpiry").HasColumnName("password_reset_token_expiry").HasColumnType("timestamptz");
-            b.Property<string>("LinkedInId").HasMaxLength(100).HasColumnName("linkedin_id").HasColumnType("character varying(100)");
-            b.Property<string>("GoogleId").HasMaxLength(100).HasColumnName("google_id").HasColumnType("character varying(100)");
-            b.Property<string>("AzureAdObjectId").HasMaxLength(100).HasColumnName("azure_ad_object_id").HasColumnType("character varying(100)");
+            b.Property<string>("PhoneNumber").HasMaxLength(20).HasColumnName("phone_number").HasColumnType("character varying(20)");
+            b.Property<string>("ProfilePictureUrl").HasMaxLength(2048).HasColumnName("profile_picture_url").HasColumnType("character varying(2048)");
+            b.Property<string>("RolesJson").IsRequired().HasColumnName("roles").HasColumnType("jsonb");
+            b.Property<DateTimeOffset?>("SuspendedAt").HasColumnName("suspended_at").HasColumnType("timestamptz");
+            b.Property<string>("SuspensionReason").HasMaxLength(1000).HasColumnName("suspension_reason").HasColumnType("character varying(1000)");
             b.Property<string>("TimeZone").HasMaxLength(100).HasDefaultValue("UTC").HasColumnName("time_zone").HasColumnType("character varying(100)");
-            b.Property<string>("Country").HasMaxLength(3).HasColumnName("country").HasColumnType("character varying(3)");
-            b.PrimitiveCollection<int[]>("Roles").IsRequired().HasColumnName("roles").HasColumnType("int[]");
-            b.Property<DateTimeOffset>("CreatedAt").HasColumnName("created_at").HasColumnType("timestamptz");
             b.Property<DateTimeOffset>("UpdatedAt").HasColumnName("updated_at").HasColumnType("timestamptz");
-            b.Property<string>("CreatedBy").IsRequired().HasMaxLength(256).HasDefaultValue("system").HasColumnName("created_by").HasColumnType("character varying(256)");
             b.Property<string>("UpdatedBy").IsRequired().HasMaxLength(256).HasDefaultValue("system").HasColumnName("updated_by").HasColumnType("character varying(256)");
-
             b.HasKey("Id");
             b.HasIndex("NormalizedEmail").IsUnique().HasDatabaseName("ix_users_email");
             b.HasIndex("LinkedInId").IsUnique().HasFilter("linkedin_id IS NOT NULL").HasDatabaseName("ix_users_linkedin");
             b.HasIndex("AzureAdObjectId").IsUnique().HasFilter("azure_ad_object_id IS NOT NULL").HasDatabaseName("ix_users_azure_ad");
-            b.HasIndex("IsActive", "CreatedAt").HasDatabaseName("ix_users_active_created");
+            b.HasIndex(new[] { "IsActive", "CreatedAt" }).HasDatabaseName("ix_users_active_created");
             b.ToTable("users", "auth");
         });
 
-        // ── Relationships ─────────────────────────────────────────────────
         modelBuilder.Entity("SNHub.Auth.Domain.Entities.RefreshToken", b =>
         {
+            b.Property<Guid>("Id").HasColumnName("id").HasColumnType("uuid");
+            b.Property<DateTimeOffset>("CreatedAt").HasColumnName("created_at").HasColumnType("timestamptz");
+            b.Property<string>("CreatedByIp").IsRequired().HasMaxLength(45).HasColumnName("created_by_ip").HasColumnType("character varying(45)");
+            b.Property<DateTimeOffset>("ExpiresAt").HasColumnName("expires_at").HasColumnType("timestamptz");
+            b.Property<string>("ReplacedByToken").HasMaxLength(512).HasColumnName("replaced_by_token").HasColumnType("character varying(512)");
+            b.Property<string>("RevokeReason").HasMaxLength(256).HasColumnName("revoke_reason").HasColumnType("character varying(256)");
+            b.Property<DateTimeOffset?>("RevokedAt").HasColumnName("revoked_at").HasColumnType("timestamptz");
+            b.Property<string>("RevokedByIp").HasMaxLength(45).HasColumnName("revoked_by_ip").HasColumnType("character varying(45)");
+            b.Property<string>("Token").IsRequired().HasMaxLength(512).HasColumnName("token").HasColumnType("character varying(512)");
+            b.Property<string>("UserAgent").IsRequired().HasMaxLength(512).HasColumnName("user_agent").HasColumnType("character varying(512)");
+            b.Property<Guid>("UserId").HasColumnName("user_id").HasColumnType("uuid");
+            b.HasKey("Id");
+            b.HasIndex("Token").IsUnique().HasDatabaseName("ix_rt_token");
+            b.HasIndex("Token").HasFilter("revoked_at IS NULL").HasDatabaseName("ix_rt_active");
+            b.HasIndex(new[] { "UserId", "ExpiresAt" }).HasDatabaseName("ix_rt_user_expiry");
+            b.ToTable("refresh_tokens", "auth");
+        });
+
+        modelBuilder.Entity("SNHub.Auth.Domain.Entities.RefreshToken", b =>
             b.HasOne("SNHub.Auth.Domain.Entities.User", null)
                 .WithMany("RefreshTokens")
                 .HasForeignKey("UserId")
                 .OnDelete(DeleteBehavior.Cascade)
-                .IsRequired();
-        });
+                .IsRequired());
 
         modelBuilder.Entity("SNHub.Auth.Domain.Entities.User", b =>
-        {
-            b.Navigation("RefreshTokens");
-        });
+            b.Navigation("RefreshTokens"));
 #pragma warning restore 612, 618
     }
 }

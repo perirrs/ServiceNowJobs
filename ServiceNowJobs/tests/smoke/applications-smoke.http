@@ -1,0 +1,50 @@
+### SNHub Applications Service — Smoke Tests
+### Port 5003
+
+@baseUrl = http://localhost:5003/api/v1
+@token = PASTE_TOKEN_FROM_AUTH_SMOKE_TEST_HERE
+@jobId = PASTE_JOB_ID_FROM_JOBS_SMOKE_TEST_HERE
+
+### 1. Health
+GET http://localhost:5003/health
+
+###
+### 2. Apply to job (candidate)
+# @name apply
+POST {{baseUrl}}/applications/jobs/{{jobId}}/apply
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "coverLetter": "I am excited to apply for this ServiceNow ITSM Developer position. I have 5 years of hands-on experience with ServiceNow ITSM, Flow Designer, and integrations.",
+  "cvUrl": null
+}
+
+@applicationId = {{apply.response.body.$.id}}
+
+###
+### 3. Get my applications (candidate)
+GET {{baseUrl}}/applications/mine
+Authorization: Bearer {{token}}
+
+###
+### 4. Get applications for job (employer)
+GET {{baseUrl}}/applications/jobs/{{jobId}}
+Authorization: Bearer {{token}}
+
+###
+### 5. Update application status (employer)
+PUT {{baseUrl}}/applications/{{applicationId}}/status
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "newStatus": 2,
+  "notes": "Candidate looks promising, moving to screening",
+  "rejectionReason": null
+}
+
+###
+### 6. Withdraw application (candidate)
+DELETE {{baseUrl}}/applications/{{applicationId}}
+Authorization: Bearer {{token}}

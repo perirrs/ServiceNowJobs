@@ -32,12 +32,11 @@
     <!-- Azure Application Insights -->
     <PackageReference Include="Microsoft.ApplicationInsights.AspNetCore" Version="2.22.0" />
 
-    <!-- Rate Limiting -->
-    <PackageReference Include="AspNetCoreRateLimit" Version="5.0.0" />
+    <!-- Rate Limiting: built into ASP.NET Core 7+ via Microsoft.AspNetCore.RateLimiting -->
+    <!-- Do NOT add AspNetCoreRateLimit — it conflicts with the built-in AddRateLimiter() -->
 
     <!-- Health checks -->
     <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="10.0.0" />
-    <PackageReference Include="AspNetCore.HealthChecks.AzureServiceBus" Version="8.0.2" />
     <PackageReference Include="AspNetCore.HealthChecks.Redis" Version="8.0.1" />
     <PackageReference Include="AspNetCore.HealthChecks.NpgSql" Version="8.0.2" />
   </ItemGroup>
@@ -45,7 +44,7 @@
   <ItemGroup>
     <ProjectReference Include="..\SNHub.Auth.Application\SNHub.Auth.Application.csproj" />
     <ProjectReference Include="..\SNHub.Auth.Infrastructure\SNHub.Auth.Infrastructure.csproj" />
-    <ProjectReference Include="..\..\..\..\Shared\SNHub.Shared\SNHub.Shared.csproj" />
+    <ProjectReference Include="..\..\..\..\src\Shared\SNHub.Shared\SNHub.Shared.csproj" />
   </ItemGroup>
 
 </Project>

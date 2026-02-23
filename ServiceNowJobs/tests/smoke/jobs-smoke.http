@@ -1,0 +1,71 @@
+### SNHub Jobs Service — Smoke Tests
+### Port 5006
+
+@baseUrl = http://localhost:5006/api/v1
+@token = PASTE_TOKEN_FROM_AUTH_SMOKE_TEST_HERE
+
+### 1. Health
+GET http://localhost:5006/health
+
+###
+### 2. Create job (employer)
+# @name createJob
+POST {{baseUrl}}/jobs
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "employerId": "00000000-0000-0000-0000-000000000001",
+  "title": "ServiceNow ITSM Developer",
+  "description": "We are looking for an experienced ServiceNow developer to join our team.",
+  "jobType": 1,
+  "workMode": 3,
+  "experienceLevel": 3,
+  "location": "London",
+  "country": "GB",
+  "companyName": "TechCorp",
+  "salaryMin": 60000,
+  "salaryMax": 80000,
+  "salaryCurrency": "GBP",
+  "isSalaryVisible": true,
+  "publishImmediately": true,
+  "expiresAt": null
+}
+
+@jobId = {{createJob.response.body.$.id}}
+
+###
+### 3. Search jobs (public)
+GET {{baseUrl}}/jobs?keyword=ServiceNow&country=GB&page=1&pageSize=10
+
+###
+### 4. Get job by ID
+GET {{baseUrl}}/jobs/{{jobId}}
+
+###
+### 5. Update job
+PUT {{baseUrl}}/jobs/{{jobId}}
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "title": "ServiceNow ITSM Developer — Updated",
+  "description": "Updated job description for a ServiceNow developer role.",
+  "requirements": "CSA certification required",
+  "benefits": "Remote-first, 25 days holiday",
+  "jobType": 1,
+  "workMode": 1,
+  "experienceLevel": 3,
+  "location": "Remote",
+  "country": "GB",
+  "salaryMin": 65000,
+  "salaryMax": 85000,
+  "salaryCurrency": "GBP",
+  "isSalaryVisible": true,
+  "expiresAt": null
+}
+
+###
+### 6. Close job
+POST {{baseUrl}}/jobs/{{jobId}}/close
+Authorization: Bearer {{token}}

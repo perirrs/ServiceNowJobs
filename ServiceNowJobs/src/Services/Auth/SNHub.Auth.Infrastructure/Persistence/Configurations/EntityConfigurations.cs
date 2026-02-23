@@ -14,7 +14,7 @@ public sealed class UserConfiguration : IEntityTypeConfiguration<User>
         builder.Property(u => u.Id).HasColumnName("id");
         builder.Property(u => u.Email).HasColumnName("email").HasMaxLength(256).IsRequired();
         builder.Property(u => u.NormalizedEmail).HasColumnName("normalized_email").HasMaxLength(256).IsRequired();
-        builder.Property(u => u.PasswordHash).HasColumnName("password_hash").HasMaxLength(512);
+        builder.Property(u => u.PasswordHash).HasColumnName("password_hash").HasMaxLength(512).IsRequired();
         builder.Property(u => u.FirstName).HasColumnName("first_name").HasMaxLength(100).IsRequired();
         builder.Property(u => u.LastName).HasColumnName("last_name").HasMaxLength(100).IsRequired();
         builder.Property(u => u.PhoneNumber).HasColumnName("phone_number").HasMaxLength(20);
@@ -43,23 +43,21 @@ public sealed class UserConfiguration : IEntityTypeConfiguration<User>
         builder.Property(u => u.CreatedBy).HasColumnName("created_by").HasMaxLength(256).HasDefaultValue("system");
         builder.Property(u => u.UpdatedBy).HasColumnName("updated_by").HasMaxLength(256).HasDefaultValue("system");
 
-        builder.PrimitiveCollection(u => u.Roles)
-            .HasColumnName("roles")
-            .HasColumnType("int[]")
-            .IsRequired();
+        // Roles as jsonb — stored as JSON int array e.g. [4,6]
+        builder.Property(u => u.RolesJson).HasColumnName("roles").HasColumnType("jsonb").IsRequired();
 
-        // Unique indexes
+        // Computed properties — not mapped
+        builder.Ignore(u => u.Roles);
+        builder.Ignore(u => u.FullName);
+        builder.Ignore(u => u.IsLockedOut);
+        builder.Ignore(u => u.DomainEvents);
+
         builder.HasIndex(u => u.NormalizedEmail).IsUnique().HasDatabaseName("ix_users_email");
         builder.HasIndex(u => u.LinkedInId).IsUnique().HasFilter("linkedin_id IS NOT NULL").HasDatabaseName("ix_users_linkedin");
         builder.HasIndex(u => u.AzureAdObjectId).IsUnique().HasFilter("azure_ad_object_id IS NOT NULL").HasDatabaseName("ix_users_azure_ad");
         builder.HasIndex(u => new { u.IsActive, u.CreatedAt }).HasDatabaseName("ix_users_active_created");
 
-        builder.HasMany(u => u.RefreshTokens)
-            .WithOne()
-            .HasForeignKey(rt => rt.UserId)
-            .OnDelete(DeleteBehavior.Cascade);
-
-        builder.Ignore(u => u.DomainEvents);
+        builder.HasMany(u => u.RefreshTokens).WithOne().HasForeignKey(rt => rt.UserId).OnDelete(DeleteBehavior.Cascade);
     }
 }
 
@@ -81,6 +79,10 @@ public sealed class RefreshTokenConfiguration : IEntityTypeConfiguration<Refresh
         builder.Property(rt => rt.RevokedByIp).HasColumnName("revoked_by_ip").HasMaxLength(45);
         builder.Property(rt => rt.RevokeReason).HasColumnName("revoke_reason").HasMaxLength(256);
         builder.Property(rt => rt.ReplacedByToken).HasColumnName("replaced_by_token").HasMaxLength(512);
+
+        builder.Ignore(rt => rt.IsExpired);
+        builder.Ignore(rt => rt.IsRevoked);
+        builder.Ignore(rt => rt.IsActive);
 
         builder.HasIndex(rt => rt.Token).IsUnique().HasDatabaseName("ix_rt_token");
         builder.HasIndex(rt => new { rt.UserId, rt.ExpiresAt }).HasDatabaseName("ix_rt_user_expiry");

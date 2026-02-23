@@ -1,0 +1,247 @@
+### SNHub Auth Service — Smoke Tests
+### Use with: VS Code REST Client extension or JetBrains HTTP Client
+### Start the stack: docker compose up -d
+### Docs: http://localhost:5001/scalar/v1
+
+@baseUrl = http://localhost:5001/api/v1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STEP 1 — Health Check
+# ─────────────────────────────────────────────────────────────────────────────
+### [1] Health — expect 200 Healthy
+GET http://localhost:5001/health
+
+### [2] Readiness probe — expect 200
+GET http://localhost:5001/health/ready
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STEP 2 — Register
+# ─────────────────────────────────────────────────────────────────────────────
+### [3] Register candidate — expect 201 with accessToken + refreshToken
+# @name register
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "email": "john.doe@example.com",
+  "password": "Test@1234!",
+  "confirmPassword": "Test@1234!",
+  "firstName": "John",
+  "lastName": "Doe",
+  "role": 5,
+  "country": "GB"
+}
+
+### [4] Register employer — expect 201
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "email": "employer.acme@example.com",
+  "password": "Employ@1234!",
+  "confirmPassword": "Employ@1234!",
+  "firstName": "Alice",
+  "lastName": "Smith",
+  "role": 3,
+  "country": "US"
+}
+
+### [5] Duplicate email — expect 409 USER_ALREADY_EXISTS
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "email": "john.doe@example.com",
+  "password": "Test@1234!",
+  "confirmPassword": "Test@1234!",
+  "firstName": "Duplicate",
+  "lastName": "User",
+  "role": 5
+}
+
+### [6] Weak password — expect 400 VALIDATION_FAILED
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "email": "newuser@example.com",
+  "password": "weak",
+  "confirmPassword": "weak",
+  "firstName": "New",
+  "lastName": "User",
+  "role": 5
+}
+
+### [7] Privileged role — expect 400 VALIDATION_FAILED
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "email": "sneaky@example.com",
+  "password": "Test@1234!",
+  "confirmPassword": "Test@1234!",
+  "firstName": "Sneaky",
+  "lastName": "User",
+  "role": 1
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STEP 3 — Login
+# ─────────────────────────────────────────────────────────────────────────────
+### [8] Login as SuperAdmin — expect 200
+# @name adminLogin
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@snhub.io",
+  "password": "Admin@SNHub2025!"
+}
+
+@adminToken = {{adminLogin.response.body.$.data.accessToken}}
+@adminRefresh = {{adminLogin.response.body.$.data.refreshToken}}
+
+### [9] Login as candidate — expect 200
+# @name candidateLogin
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "john.doe@example.com",
+  "password": "Test@1234!"
+}
+
+@candidateToken = {{candidateLogin.response.body.$.data.accessToken}}
+@candidateRefresh = {{candidateLogin.response.body.$.data.refreshToken}}
+
+### [10] Wrong password — expect 401 INVALID_CREDENTIALS
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "john.doe@example.com",
+  "password": "WrongP@ss1!"
+}
+
+### [11] Unknown email — expect 401 (same as wrong password — no enumeration)
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "nobody@nonexistent.io",
+  "password": "AnyP@ss1!"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STEP 4 — Lockout (run 5 times to trigger)
+# ─────────────────────────────────────────────────────────────────────────────
+### [12a-e] Wrong password x5 → triggers lockout
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "employer.acme@example.com",
+  "password": "WrongP@ss1!"
+}
+
+### [12f] Now correct password → expect 423 ACCOUNT_LOCKED
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "employer.acme@example.com",
+  "password": "Employ@1234!"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STEP 5 — Token Refresh
+# ─────────────────────────────────────────────────────────────────────────────
+### [13] Refresh token — expect 200 with new token pair
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{
+  "accessToken": "{{candidateToken}}",
+  "refreshToken": "{{candidateRefresh}}"
+}
+
+### [14] Invalid refresh token — expect 401
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{
+  "accessToken": "some.fake.jwt",
+  "refreshToken": "totally_invalid_refresh_token"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STEP 6 — Email Verification
+# ─────────────────────────────────────────────────────────────────────────────
+### [15] Verify email — replace TOKEN with value from database
+### SELECT email_verification_token FROM auth.users WHERE email = 'john.doe@example.com';
+GET {{baseUrl}}/auth/verify-email?email=john.doe@example.com&token=PASTE_TOKEN_HERE
+
+### [16] Wrong token — expect 400
+GET {{baseUrl}}/auth/verify-email?email=john.doe@example.com&token=wrong_token_here
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STEP 7 — Password Reset
+# ─────────────────────────────────────────────────────────────────────────────
+### [17] Forgot password — expect 202 (always, even for unknown email)
+POST {{baseUrl}}/auth/forgot-password
+Content-Type: application/json
+
+{
+  "email": "john.doe@example.com"
+}
+
+### [18] Unknown email — expect 202 (same — no enumeration)
+POST {{baseUrl}}/auth/forgot-password
+Content-Type: application/json
+
+{
+  "email": "ghost@nonexistent.io"
+}
+
+### [19] Reset password — replace TOKEN from DB
+### SELECT password_reset_token FROM auth.users WHERE email = 'john.doe@example.com';
+POST {{baseUrl}}/auth/reset-password
+Content-Type: application/json
+
+{
+  "email": "john.doe@example.com",
+  "token": "PASTE_TOKEN_HERE",
+  "newPassword": "NewSecure@1234!",
+  "confirmNewPassword": "NewSecure@1234!"
+}
+
+### [20] Wrong reset token — expect 400
+POST {{baseUrl}}/auth/reset-password
+Content-Type: application/json
+
+{
+  "email": "john.doe@example.com",
+  "token": "wrong_token_here",
+  "newPassword": "NewSecure@1234!",
+  "confirmNewPassword": "NewSecure@1234!"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STEP 8 — Revoke (Logout)
+# ─────────────────────────────────────────────────────────────────────────────
+### [21] Revoke token — expect 204
+POST {{baseUrl}}/auth/revoke
+Content-Type: application/json
+
+{
+  "refreshToken": "{{adminRefresh}}"
+}
+
+### [22] Refresh after revoke — expect 401
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{
+  "accessToken": "{{adminToken}}",
+  "refreshToken": "{{adminRefresh}}"
+}

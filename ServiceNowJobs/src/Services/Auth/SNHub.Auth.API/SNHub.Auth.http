@@ -1,0 +1,232 @@
+### SNHub Auth Service — HTTP Smoke Tests
+### Use with VS Code REST Client or JetBrains .http runner
+### Start the service first: docker compose up auth-api postgres redis -d
+###
+### WORKFLOW: Run requests top to bottom after registering a fresh user.
+### Copy returned tokens into the @variables below.
+
+@baseUrl        = http://localhost:5001/api/v1/auth
+@contentType    = application/json
+
+### ─── 0. Health Check ────────────────────────────────────────────────────────
+GET http://localhost:5001/health
+Accept: application/json
+
+###
+### ─── 1. Register ──────────────────────────────────────────────────────────
+# POST /register → 201 Created + { accessToken, refreshToken, user }
+# Saves returned tokens in @accessToken / @refreshToken below.
+POST {{baseUrl}}/register
+Content-Type: {{contentType}}
+
+{
+  "email":           "john.doe@snhub-test.io",
+  "password":        "Test@1234!",
+  "confirmPassword": "Test@1234!",
+  "firstName":       "John",
+  "lastName":        "Doe",
+  "role":            5,
+  "phoneNumber":     "+447911123456",
+  "country":         "GB"
+}
+
+###
+### ─── 1b. Register — duplicate email (expect 409) ──────────────────────────
+POST {{baseUrl}}/register
+Content-Type: {{contentType}}
+
+{
+  "email":           "john.doe@snhub-test.io",
+  "password":        "Test@1234!",
+  "confirmPassword": "Test@1234!",
+  "firstName":       "John",
+  "lastName":        "Doe",
+  "role":            5
+}
+
+###
+### ─── 1c. Register — weak password (expect 400) ────────────────────────────
+POST {{baseUrl}}/register
+Content-Type: {{contentType}}
+
+{
+  "email":           "weak@snhub-test.io",
+  "password":        "weak",
+  "confirmPassword": "weak",
+  "firstName":       "Test",
+  "lastName":        "User",
+  "role":            5
+}
+
+###
+### ─── 1d. Register — privileged role (expect 400) ──────────────────────────
+POST {{baseUrl}}/register
+Content-Type: {{contentType}}
+
+{
+  "email":           "admin-attempt@snhub-test.io",
+  "password":        "Test@1234!",
+  "confirmPassword": "Test@1234!",
+  "firstName":       "Hacker",
+  "lastName":        "Attempt",
+  "role":            1
+}
+
+###
+### ─── 2. Login ───────────────────────────────────────────────────────────────
+# POST /login → 200 OK + { accessToken, refreshToken, user }
+# Paste accessToken and refreshToken into the variables below
+
+@accessToken  = PASTE_ACCESS_TOKEN_HERE
+@refreshToken = PASTE_REFRESH_TOKEN_HERE
+
+POST {{baseUrl}}/login
+Content-Type: {{contentType}}
+
+{
+  "email":      "john.doe@snhub-test.io",
+  "password":   "Test@1234!",
+  "rememberMe": false
+}
+
+###
+### ─── 2b. Login — RememberMe = true (expect 90-day refresh expiry) ─────────
+POST {{baseUrl}}/login
+Content-Type: {{contentType}}
+
+{
+  "email":      "john.doe@snhub-test.io",
+  "password":   "Test@1234!",
+  "rememberMe": true
+}
+
+###
+### ─── 2c. Login — wrong password (expect 401) ──────────────────────────────
+POST {{baseUrl}}/login
+Content-Type: {{contentType}}
+
+{
+  "email":    "john.doe@snhub-test.io",
+  "password": "WrongPass@1!"
+}
+
+###
+### ─── 2d. Login — unknown email (expect 401, same body as 2c) ──────────────
+POST {{baseUrl}}/login
+Content-Type: {{contentType}}
+
+{
+  "email":    "nobody@nonexistent.io",
+  "password": "SomeP@ss1!"
+}
+
+###
+### ─── 3. Refresh Token ────────────────────────────────────────────────────────
+# POST /refresh → 200 OK + new { accessToken, refreshToken }
+POST {{baseUrl}}/refresh
+Content-Type: {{contentType}}
+
+{
+  "accessToken":  "{{accessToken}}",
+  "refreshToken": "{{refreshToken}}"
+}
+
+###
+### ─── 3b. Refresh — invalid token (expect 400 INVALID_TOKEN) ───────────────
+POST {{baseUrl}}/refresh
+Content-Type: {{contentType}}
+
+{
+  "accessToken":  "fake.jwt.token",
+  "refreshToken": "completely_fake_token_12345"
+}
+
+###
+### ─── 4. Forgot Password ──────────────────────────────────────────────────────
+# Always returns 202 — never reveals whether email is registered
+POST {{baseUrl}}/forgot-password
+Content-Type: {{contentType}}
+
+{
+  "email": "john.doe@snhub-test.io"
+}
+
+###
+### ─── 4b. Forgot Password — unknown email (expect 202, same as above) ──────
+POST {{baseUrl}}/forgot-password
+Content-Type: {{contentType}}
+
+{
+  "email": "nobody@nonexistent-snhub.io"
+}
+
+###
+### ─── 5. Reset Password ───────────────────────────────────────────────────────
+# 1. Run step 4 first to generate a reset token
+# 2. Read token from DB: SELECT password_reset_token FROM auth.users WHERE email = '...';
+# 3. Paste token below
+
+@resetToken = PASTE_PASSWORD_RESET_TOKEN_FROM_DB_HERE
+
+POST {{baseUrl}}/reset-password
+Content-Type: {{contentType}}
+
+{
+  "email":              "john.doe@snhub-test.io",
+  "token":              "{{resetToken}}",
+  "newPassword":        "NewTest@1234!",
+  "confirmNewPassword": "NewTest@1234!"
+}
+
+###
+### ─── 5b. Reset Password — wrong token (expect 400) ────────────────────────
+POST {{baseUrl}}/reset-password
+Content-Type: {{contentType}}
+
+{
+  "email":              "john.doe@snhub-test.io",
+  "token":              "wrong_token_here",
+  "newPassword":        "NewTest@1234!",
+  "confirmNewPassword": "NewTest@1234!"
+}
+
+###
+### ─── 6. Verify Email ─────────────────────────────────────────────────────────
+# 1. Register a new user (step 1)
+# 2. Read token from DB: SELECT email_verification_token FROM auth.users WHERE email = '...';
+# 3. Paste token below
+
+@verifyToken = PASTE_EMAIL_VERIFICATION_TOKEN_FROM_DB_HERE
+
+GET {{baseUrl}}/verify-email?email=john.doe@snhub-test.io&token={{verifyToken}}
+
+###
+### ─── 6b. Verify Email — wrong token (expect 400) ──────────────────────────
+GET {{baseUrl}}/verify-email?email=john.doe@snhub-test.io&token=wrong_token_here
+
+###
+### ─── 7. Revoke Token ─────────────────────────────────────────────────────────
+# POST /revoke → 204 No Content
+POST {{baseUrl}}/revoke
+Content-Type: {{contentType}}
+
+{
+  "refreshToken": "{{refreshToken}}"
+}
+
+###
+### ─── 7b. Revoke — invalid token (expect 400 INVALID_TOKEN) ────────────────
+POST {{baseUrl}}/revoke
+Content-Type: {{contentType}}
+
+{
+  "refreshToken": "fake_refresh_token_xyz"
+}
+
+###
+### ─── 8. DB Quick Reference (run in psql or DBeaver) ───────────────────────
+# Connect: psql "Host=localhost;Port=5432;Database=snhub_auth_dev;Username=snhub;Password=snhub_dev_pass"
+# List users:           SELECT id, email, is_email_verified, is_suspended, failed_login_attempts FROM auth.users;
+# Get verify token:     SELECT email_verification_token FROM auth.users WHERE email = 'john.doe@snhub-test.io';
+# Get reset token:      SELECT password_reset_token FROM auth.users WHERE email = 'john.doe@snhub-test.io';
+# List refresh tokens:  SELECT token, is_revoked, expires_at FROM auth.refresh_tokens WHERE user_id = (SELECT id FROM auth.users WHERE email = 'john.doe@snhub-test.io');

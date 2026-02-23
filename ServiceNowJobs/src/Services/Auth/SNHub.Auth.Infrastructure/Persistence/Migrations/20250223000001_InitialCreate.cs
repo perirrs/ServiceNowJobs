@@ -4,27 +4,20 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace SNHub.Auth.Infrastructure.Persistence.Migrations;
 
-/// <inheritdoc />
 public partial class InitialCreate : Migration
 {
-    /// <inheritdoc />
     protected override void Up(MigrationBuilder migrationBuilder)
     {
-        // ── Create auth schema ────────────────────────────────────────────
         migrationBuilder.EnsureSchema(name: "auth");
-
-        // ── Enable extensions ─────────────────────────────────────────────
         migrationBuilder.Sql("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";");
         migrationBuilder.Sql("CREATE EXTENSION IF NOT EXISTS \"pg_trgm\";");
 
-        // ── users table ───────────────────────────────────────────────────
         migrationBuilder.CreateTable(
             name: "users",
             schema: "auth",
             columns: table => new
             {
-                id = table.Column<Guid>(type: "uuid", nullable: false,
-                    defaultValueSql: "uuid_generate_v4()"),
+                id = table.Column<Guid>(type: "uuid", nullable: false, defaultValueSql: "uuid_generate_v4()"),
                 email = table.Column<string>(type: "character varying(256)", maxLength: 256, nullable: false),
                 normalized_email = table.Column<string>(type: "character varying(256)", maxLength: 256, nullable: false),
                 password_hash = table.Column<string>(type: "character varying(512)", maxLength: 512, nullable: false, defaultValue: ""),
@@ -42,16 +35,16 @@ public partial class InitialCreate : Migration
                 last_login_ip = table.Column<string>(type: "character varying(45)", maxLength: 45, nullable: true),
                 failed_login_attempts = table.Column<int>(type: "integer", nullable: false, defaultValue: 0),
                 locked_out_until = table.Column<DateTimeOffset>(type: "timestamptz", nullable: true),
-                email_verification_token = table.Column<string>(type: "character varying(256)", maxLength: 256, nullable: true),
+                email_verification_token = table.Column<string>(type: "character varying(512)", maxLength: 512, nullable: true),
                 email_verification_token_expiry = table.Column<DateTimeOffset>(type: "timestamptz", nullable: true),
-                password_reset_token = table.Column<string>(type: "character varying(256)", maxLength: 256, nullable: true),
+                password_reset_token = table.Column<string>(type: "character varying(512)", maxLength: 512, nullable: true),
                 password_reset_token_expiry = table.Column<DateTimeOffset>(type: "timestamptz", nullable: true),
                 linkedin_id = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: true),
                 google_id = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: true),
                 azure_ad_object_id = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: true),
                 time_zone = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: true, defaultValue: "UTC"),
                 country = table.Column<string>(type: "character varying(3)", maxLength: 3, nullable: true),
-                roles = table.Column<int[]>(type: "int[]", nullable: false),
+                roles = table.Column<string>(type: "jsonb", nullable: false, defaultValue: "[]"),
                 created_at = table.Column<DateTimeOffset>(type: "timestamptz", nullable: false),
                 updated_at = table.Column<DateTimeOffset>(type: "timestamptz", nullable: false),
                 created_by = table.Column<string>(type: "character varying(256)", maxLength: 256, nullable: false, defaultValue: "system"),
@@ -59,14 +52,12 @@ public partial class InitialCreate : Migration
             },
             constraints: table => table.PrimaryKey("PK_users", x => x.id));
 
-        // ── refresh_tokens table ───────────────────────────────────────────
         migrationBuilder.CreateTable(
             name: "refresh_tokens",
             schema: "auth",
             columns: table => new
             {
-                id = table.Column<Guid>(type: "uuid", nullable: false,
-                    defaultValueSql: "uuid_generate_v4()"),
+                id = table.Column<Guid>(type: "uuid", nullable: false, defaultValueSql: "uuid_generate_v4()"),
                 user_id = table.Column<Guid>(type: "uuid", nullable: false),
                 token = table.Column<string>(type: "character varying(512)", maxLength: 512, nullable: false),
                 expires_at = table.Column<DateTimeOffset>(type: "timestamptz", nullable: false),
@@ -81,74 +72,22 @@ public partial class InitialCreate : Migration
             constraints: table =>
             {
                 table.PrimaryKey("PK_refresh_tokens", x => x.id);
-                table.ForeignKey(
-                    name: "FK_refresh_tokens_users_user_id",
-                    column: x => x.user_id,
-                    principalSchema: "auth",
-                    principalTable: "users",
-                    principalColumn: "id",
-                    onDelete: ReferentialAction.Cascade);
+                table.ForeignKey(name: "FK_refresh_tokens_users_user_id",
+                    column: x => x.user_id, principalSchema: "auth", principalTable: "users",
+                    principalColumn: "id", onDelete: ReferentialAction.Cascade);
             });
 
-        // ── Indexes on users ──────────────────────────────────────────────
-        migrationBuilder.CreateIndex(
-            name: "ix_users_email",
-            schema: "auth",
-            table: "users",
-            column: "normalized_email",
-            unique: true);
-
-        migrationBuilder.CreateIndex(
-            name: "ix_users_linkedin",
-            schema: "auth",
-            table: "users",
-            column: "linkedin_id",
-            unique: true,
-            filter: "linkedin_id IS NOT NULL");
-
-        migrationBuilder.CreateIndex(
-            name: "ix_users_azure_ad",
-            schema: "auth",
-            table: "users",
-            column: "azure_ad_object_id",
-            unique: true,
-            filter: "azure_ad_object_id IS NOT NULL");
-
-        migrationBuilder.CreateIndex(
-            name: "ix_users_active_created",
-            schema: "auth",
-            table: "users",
-            columns: ["is_active", "created_at"]);
-
-        // Trigram index for fast ILIKE search on email/names
-        migrationBuilder.Sql(@"
-            CREATE INDEX ix_users_email_trgm ON auth.users USING gin (email gin_trgm_ops);
-            CREATE INDEX ix_users_name_trgm  ON auth.users USING gin ((first_name || ' ' || last_name) gin_trgm_ops);
-        ");
-
-        // ── Indexes on refresh_tokens ─────────────────────────────────────
-        migrationBuilder.CreateIndex(
-            name: "ix_rt_token",
-            schema: "auth",
-            table: "refresh_tokens",
-            column: "token",
-            unique: true);
-
-        migrationBuilder.CreateIndex(
-            name: "ix_rt_user_expiry",
-            schema: "auth",
-            table: "refresh_tokens",
-            columns: ["user_id", "expires_at"]);
-
-        migrationBuilder.CreateIndex(
-            name: "ix_rt_active",
-            schema: "auth",
-            table: "refresh_tokens",
-            column: "token",
-            filter: "revoked_at IS NULL");
+        migrationBuilder.CreateIndex(name: "ix_users_email", schema: "auth", table: "users", column: "normalized_email", unique: true);
+        migrationBuilder.CreateIndex(name: "ix_users_linkedin", schema: "auth", table: "users", column: "linkedin_id", unique: true, filter: "linkedin_id IS NOT NULL");
+        migrationBuilder.CreateIndex(name: "ix_users_azure_ad", schema: "auth", table: "users", column: "azure_ad_object_id", unique: true, filter: "azure_ad_object_id IS NOT NULL");
+        migrationBuilder.CreateIndex(name: "ix_users_active_created", schema: "auth", table: "users", columns: ["is_active", "created_at"]);
+        migrationBuilder.CreateIndex(name: "ix_rt_token", schema: "auth", table: "refresh_tokens", column: "token", unique: true);
+        migrationBuilder.CreateIndex(name: "ix_rt_user_expiry", schema: "auth", table: "refresh_tokens", columns: ["user_id", "expires_at"]);
+        migrationBuilder.CreateIndex(name: "ix_rt_active", schema: "auth", table: "refresh_tokens", column: "token", filter: "revoked_at IS NULL");
+        migrationBuilder.Sql("CREATE INDEX ix_users_email_trgm ON auth.users USING gin (email gin_trgm_ops);");
+        migrationBuilder.Sql("CREATE INDEX ix_users_name_trgm ON auth.users USING gin ((first_name || ' ' || last_name) gin_trgm_ops);");
     }
 
-    /// <inheritdoc />
     protected override void Down(MigrationBuilder migrationBuilder)
     {
         migrationBuilder.DropTable(name: "refresh_tokens", schema: "auth");

@@ -1,68 +1,57 @@
-# SNHub — EF Core Migration Helper
-# Run from the repo root: C:\Mergen\ServiceNowJobs>
-#
-# Requires: dotnet-ef tool
-# Install once: dotnet tool install --global dotnet-ef
+# SNHub — Run all EF Core migrations
+# Usage: .\scripts\migrate.ps1
+# Prerequisites: Docker running (postgres container), dotnet 10 SDK installed
 
-param (
-    [Parameter(Mandatory=$false)]
-    [string]$Name = "",
-
-    [Parameter(Mandatory=$false)]
-    [ValidateSet("add", "update", "list", "revert", "script")]
-    [string]$Action = "list"
+param(
+    [string]$Environment = "Development",
+    [string]$Service = "all"
 )
 
-$infraProject = "src\Services\Auth\SNHub.Auth.Infrastructure\SNHub.Auth.Infrastructure.csproj"
-$startupProject = "src\Services\Auth\SNHub.Auth.API\SNHub.Auth.API.csproj"
+$services = @{
+    "auth"          = "src/Services/Auth/SNHub.Auth.Infrastructure"
+    "users"         = "src/Services/Users/SNHub.Users.Infrastructure"
+    "jobs"          = "src/Services/Jobs/SNHub.Jobs.Infrastructure"
+    "applications"  = "src/Services/Applications/SNHub.Applications.Infrastructure"
+    "profiles"      = "src/Services/Profiles/SNHub.Profiles.Infrastructure"
+    "notifications" = "src/Services/Notifications/SNHub.Notifications.Infrastructure"
+}
 
-function Check-EfTool {
-    $ef = dotnet ef --version 2>$null
-    if (-not $ef) {
-        Write-Error "dotnet-ef not found. Run: dotnet tool install --global dotnet-ef"
+$dbContexts = @{
+    "auth"          = "AuthDbContext"
+    "users"         = "UsersDbContext"
+    "jobs"          = "JobsDbContext"
+    "applications"  = "ApplicationsDbContext"
+    "profiles"      = "ProfilesDbContext"
+    "notifications" = "NotificationsDbContext"
+}
+
+$apiProjects = @{
+    "auth"          = "src/Services/Auth/SNHub.Auth.API"
+    "users"         = "src/Services/Users/SNHub.Users.API"
+    "jobs"          = "src/Services/Jobs/SNHub.Jobs.API"
+    "applications"  = "src/Services/Applications/SNHub.Applications.API"
+    "profiles"      = "src/Services/Profiles/SNHub.Profiles.API"
+    "notifications" = "src/Services/Notifications/SNHub.Notifications.API"
+}
+
+$toRun = if ($Service -eq "all") { $services.Keys } else { @($Service) }
+
+foreach ($svc in $toRun) {
+    Write-Host "`n>>> Running migration: $svc" -ForegroundColor Cyan
+    $infraPath = $services[$svc]
+    $startupPath = $apiProjects[$svc]
+    $ctx = $dbContexts[$svc]
+    
+    dotnet ef database update `
+        --project $infraPath `
+        --startup-project $startupPath `
+        --context $ctx
+    
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "❌ Migration failed for $svc" -ForegroundColor Red
         exit 1
     }
+    Write-Host "✅ $svc migrated successfully" -ForegroundColor Green
 }
 
-Check-EfTool
-
-switch ($Action) {
-    "list" {
-        Write-Host "`n📋 Listing migrations..." -ForegroundColor Cyan
-        dotnet ef migrations list `
-            --project $infraProject `
-            --startup-project $startupProject
-    }
-    "add" {
-        if ([string]::IsNullOrWhiteSpace($Name)) {
-            Write-Error "Provide a migration name: .\scripts\migrate.ps1 -Action add -Name YourMigrationName"
-            exit 1
-        }
-        Write-Host "`n➕ Adding migration: $Name" -ForegroundColor Green
-        dotnet ef migrations add $Name `
-            --project $infraProject `
-            --startup-project $startupProject `
-            --output-dir Persistence/Migrations
-    }
-    "update" {
-        Write-Host "`n⬆️  Applying migrations to database..." -ForegroundColor Yellow
-        dotnet ef database update `
-            --project $infraProject `
-            --startup-project $startupProject
-    }
-    "revert" {
-        Write-Host "`n⏪ Reverting last migration..." -ForegroundColor Red
-        dotnet ef migrations remove `
-            --project $infraProject `
-            --startup-project $startupProject
-    }
-    "script" {
-        Write-Host "`n📜 Generating SQL migration script..." -ForegroundColor Magenta
-        dotnet ef migrations script `
-            --project $infraProject `
-            --startup-project $startupProject `
-            --output migrations-script.sql `
-            --idempotent
-        Write-Host "Script saved to: migrations-script.sql"
-    }
-}
+Write-Host "`n✅ All migrations complete!" -ForegroundColor Green

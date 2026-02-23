@@ -4,7 +4,9 @@ using FluentValidation;
 using MediatR;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using Scalar.AspNetCore;
 using Serilog;
 using Serilog.Events;
 using SNHub.Auth.API.Middleware;
@@ -12,11 +14,11 @@ using SNHub.Auth.API.Services;
 using SNHub.Auth.Application.Behaviors;
 using SNHub.Auth.Application.Interfaces;
 using SNHub.Auth.Infrastructure.Extensions;
+using SNHub.Auth.Infrastructure.Persistence;
 using SNHub.Auth.Infrastructure.Services;
 using System.Text;
-using System.Threading.RateLimiting;
 
-// ─── Bootstrap logger ────────────────────────────────────────────────────────
+// ─── Bootstrap logger ─────────────────────────────────────────────────────────
 Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
     .Enrich.FromLogContext()
@@ -29,39 +31,36 @@ try
 
     var builder = WebApplication.CreateBuilder(args);
 
-    // ─── Azure Key Vault (production secrets — no secrets in config files) ────
+    // ─── Azure Key Vault (production only — skip in local dev) ────────────────
     var keyVaultUrl = builder.Configuration["Azure:KeyVaultUrl"];
     if (!string.IsNullOrWhiteSpace(keyVaultUrl) && builder.Environment.IsProduction())
     {
         builder.Configuration.AddAzureKeyVault(
-            new Uri(keyVaultUrl),
-            new DefaultAzureCredential());
+            new Uri(keyVaultUrl), new DefaultAzureCredential());
         Log.Information("Azure Key Vault connected: {Url}", keyVaultUrl);
     }
 
-    // ─── Serilog with Azure Application Insights ─────────────────────────────
-    builder.Host.UseSerilog((ctx, services, cfg) => cfg
+    // ─── Serilog ──────────────────────────────────────────────────────────────
+    builder.Host.UseSerilog((ctx, cfg) => cfg
         .ReadFrom.Configuration(ctx.Configuration)
-        .ReadFrom.Services(services)
         .Enrich.FromLogContext()
         .Enrich.WithEnvironmentName()
         .Enrich.WithThreadId()
         .WriteTo.Console(outputTemplate:
-            "[{Timestamp:HH:mm:ss} {Level:u3}] [{SourceContext}] {Message:lj}{NewLine}{Exception}")
-        .WriteTo.ApplicationInsights(
-            services.GetRequiredService<Microsoft.ApplicationInsights.TelemetryClient>(),
-            TelemetryConverter.Traces));
+            "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}"));
 
-    // ─── Azure Application Insights ───────────────────────────────────────────
-    builder.Services.AddApplicationInsightsTelemetry(opts =>
+    // ─── Azure Application Insights (only when connection string is set) ──────
+    var appInsightsConn = builder.Configuration["ApplicationInsights:ConnectionString"];
+    if (!string.IsNullOrWhiteSpace(appInsightsConn))
     {
-        opts.ConnectionString = builder.Configuration["ApplicationInsights:ConnectionString"];
-    });
+        builder.Services.AddApplicationInsightsTelemetry(
+            opts => opts.ConnectionString = appInsightsConn);
+    }
 
-    // ─── Infrastructure (PostgreSQL, Redis, Blob, Services) ──────────────────
+    // ─── Infrastructure: PostgreSQL + Redis + Blob + Services ─────────────────
     builder.Services.AddInfrastructure(builder.Configuration);
 
-    // ─── MediatR + FluentValidation + Pipeline Behaviors ─────────────────────
+    // ─── MediatR + FluentValidation + Pipeline behaviors ─────────────────────
     builder.Services.AddMediatR(cfg =>
         cfg.RegisterServicesFromAssembly(
             typeof(SNHub.Auth.Application.Commands.RegisterUser.RegisterUserCommand).Assembly));
@@ -72,7 +71,7 @@ try
     builder.Services.AddTransient(typeof(IPipelineBehavior<,>), typeof(LoggingBehavior<,>));
     builder.Services.AddTransient(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
 
-    // ─── Controllers ─────────────────────────────────────────────────────────
+    // ─── Controllers ──────────────────────────────────────────────────────────
     builder.Services.AddControllers()
         .AddJsonOptions(opts =>
         {
@@ -101,32 +100,34 @@ try
     });
 
     // ─── JWT Authentication ───────────────────────────────────────────────────
-    var jwt = builder.Configuration.GetSection(JwtSettings.SectionName).Get<JwtSettings>()
+    var jwtSettings = builder.Configuration
+        .GetSection(JwtSettings.SectionName).Get<JwtSettings>()
         ?? throw new InvalidOperationException("JwtSettings not configured.");
 
-    builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    builder.Services
+        .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         .AddJwtBearer(opts =>
         {
             opts.TokenValidationParameters = new TokenValidationParameters
             {
-                ValidateIssuer = true,
-                ValidateAudience = true,
-                ValidateLifetime = true,
+                ValidateIssuer           = true,
+                ValidateAudience         = true,
+                ValidateLifetime         = true,
                 ValidateIssuerSigningKey = true,
-                ValidIssuer = jwt.Issuer,
-                ValidAudience = jwt.Audience,
-                IssuerSigningKey = new SymmetricSecurityKey(
-                    Encoding.UTF8.GetBytes(jwt.SecretKey)),
+                ValidIssuer              = jwtSettings.Issuer,
+                ValidAudience            = jwtSettings.Audience,
+                IssuerSigningKey         = new SymmetricSecurityKey(
+                    Encoding.UTF8.GetBytes(jwtSettings.SecretKey)),
                 ClockSkew = TimeSpan.FromSeconds(30)
             };
         });
 
     builder.Services.AddAuthorization(opts =>
     {
-        opts.AddPolicy("AdminOnly", p => p.RequireRole("SuperAdmin"));
+        opts.AddPolicy("AdminOnly",        p => p.RequireRole("SuperAdmin"));
         opts.AddPolicy("ModeratorOrAdmin", p => p.RequireRole("SuperAdmin", "Moderator"));
-        opts.AddPolicy("EmployerOrAdmin", p => p.RequireRole("SuperAdmin", "Employer", "HiringManager"));
-        opts.AddPolicy("EmailVerified", p =>
+        opts.AddPolicy("EmployerOrAdmin",  p => p.RequireRole("SuperAdmin", "Employer", "HiringManager"));
+        opts.AddPolicy("EmailVerified",    p =>
             p.RequireAuthenticatedUser().RequireClaim("email_verified", "true"));
     });
 
@@ -136,72 +137,64 @@ try
         opts.RejectionStatusCode = 429;
 
         opts.AddFixedWindowLimiter("registration", o =>
-        {
-            o.PermitLimit = 3; o.Window = TimeSpan.FromHours(1); o.QueueLimit = 0;
-        });
+            { o.PermitLimit = 3;  o.Window = TimeSpan.FromHours(1);   o.QueueLimit = 0; });
         opts.AddFixedWindowLimiter("login", o =>
-        {
-            o.PermitLimit = 10; o.Window = TimeSpan.FromMinutes(15); o.QueueLimit = 0;
-        });
+            { o.PermitLimit = 10; o.Window = TimeSpan.FromMinutes(15); o.QueueLimit = 0; });
         opts.AddFixedWindowLimiter("token", o =>
-        {
-            o.PermitLimit = 30; o.Window = TimeSpan.FromMinutes(1); o.QueueLimit = 0;
-        });
+            { o.PermitLimit = 30; o.Window = TimeSpan.FromMinutes(1);  o.QueueLimit = 0; });
         opts.AddFixedWindowLimiter("passwordReset", o =>
-        {
-            o.PermitLimit = 3; o.Window = TimeSpan.FromHours(1); o.QueueLimit = 0;
-        });
+            { o.PermitLimit = 3;  o.Window = TimeSpan.FromHours(1);   o.QueueLimit = 0; });
     });
 
     // ─── CORS ─────────────────────────────────────────────────────────────────
-    var origins = builder.Configuration.GetSection("Cors:AllowedOrigins")
-        .Get<string[]>() ?? ["http://localhost:3000"];
+    var allowedOrigins = builder.Configuration
+        .GetSection("Cors:AllowedOrigins").Get<string[]>()
+        ?? ["http://localhost:3000"];
 
     builder.Services.AddCors(opts => opts.AddPolicy("SNHubCors", p =>
-        p.WithOrigins(origins)
+        p.WithOrigins(allowedOrigins)
          .AllowAnyHeader()
          .AllowAnyMethod()
          .AllowCredentials()));
 
-    // ─── OpenAPI ──────────────────────────────────────────────────────────────
+    // ─── OpenAPI / Scalar docs ────────────────────────────────────────────────
     builder.Services.AddOpenApi("v1", opts =>
     {
-        opts.AddDocumentTransformer((doc, ctx, ct) =>
+        opts.AddDocumentTransformer((doc, _, _) =>
         {
             doc.Info = new()
             {
-                Title = "SNHub Auth API",
-                Version = "v1",
-                Description = "Authentication service for SNHub — ServiceNow Talent Platform. Hosted on Azure."
+                Title       = "SNHub Auth API",
+                Version     = "v1",
+                Description = "Authentication for SNHub — ServiceNow Talent Platform"
             };
             return Task.CompletedTask;
         });
     });
 
-    // ─── Health Checks ────────────────────────────────────────────────────────
+    // ─── Health checks (postgres + redis registered in InfrastructureExtensions)
     builder.Services.AddHealthChecks();
 
-    // ─── Build app ────────────────────────────────────────────────────────────
+    // ─── BUILD ────────────────────────────────────────────────────────────────
     var app = builder.Build();
 
-    // Auto-migrate and seed on startup when enabled (dev/staging only)
+    // ─── Migrate + Seed ───────────────────────────────────────────────────────
     if (app.Configuration.GetValue<bool>("RunMigrationsOnStartup"))
     {
         using var scope = app.Services.CreateScope();
-        var db = scope.ServiceProvider
-            .GetRequiredService<SNHub.Auth.Infrastructure.Persistence.AuthDbContext>();
 
+        var db = scope.ServiceProvider.GetRequiredService<AuthDbContext>();
         Log.Information("Applying database migrations...");
         await db.Database.MigrateAsync();
         Log.Information("Migrations applied.");
 
-        Log.Information("Running database seeder...");
-        var seeder = scope.ServiceProvider
-            .GetRequiredService<SNHub.Auth.Infrastructure.Persistence.AuthDbSeeder>();
+        var seeder = scope.ServiceProvider.GetRequiredService<AuthDbSeeder>();
+        Log.Information("Seeding database...");
         await seeder.SeedAsync();
         Log.Information("Seeding complete.");
     }
 
+    // ─── Middleware pipeline ───────────────────────────────────────────────────
     app.UseMiddleware<ExceptionHandlingMiddleware>();
     app.UseSerilogRequestLogging();
     app.UseRateLimiter();
@@ -213,6 +206,7 @@ try
         {
             opts.Title = "SNHub Auth API";
             opts.Theme = ScalarTheme.DeepSpace;
+            opts.DefaultHttpClient = new(ScalarTarget.CSharp, ScalarClient.HttpClient);
         });
     }
 
@@ -228,12 +222,15 @@ try
     app.MapHealthChecks("/health/live",
         new() { Predicate = _ => false });
 
-    Log.Information("SNHub Auth Service ready. Environment: {Env}", app.Environment.EnvironmentName);
+    Log.Information("SNHub Auth Service ready — {Env} — docs: http://localhost:5001/scalar/v1",
+        app.Environment.EnvironmentName);
+
     await app.RunAsync();
 }
 catch (Exception ex)
 {
-    Log.Fatal(ex, "Auth Service failed to start.");
+    Log.Fatal(ex, "SNHub Auth Service failed to start.");
+    throw;
 }
 finally
 {
