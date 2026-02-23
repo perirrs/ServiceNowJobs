@@ -13,8 +13,8 @@ partial class UsersDbContextModelSnapshot : ModelSnapshot
     protected override void BuildModel(ModelBuilder modelBuilder)
     {
 #pragma warning disable 612, 618
-        modelBuilder.HasAnnotation("ProductVersion", "10.0.0").HasAnnotation("Relational:MaxIdentifierLength", 63);
-        Npgsql.EntityFrameworkCore.PostgreSQL.Metadata.NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
+        modelBuilder.HasAnnotation("ProductVersion", "9.0.3").HasAnnotation("Relational:MaxIdentifierLength", 63);
+        modelBuilder.UseIdentityByDefaultColumns();
         modelBuilder.Entity("SNHub.Users.Domain.Entities.UserProfile", b =>
         {
             b.Property<Guid>("Id").HasColumnName("id").HasColumnType("uuid");

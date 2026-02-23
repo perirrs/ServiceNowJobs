@@ -1,3 +1,4 @@
+using Xunit;
 using System.Text.Json.Serialization;
 
 namespace SNHub.Auth.IntegrationTests.Models;

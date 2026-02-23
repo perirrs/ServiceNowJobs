@@ -1,3 +1,4 @@
+using Xunit;
 using FluentAssertions;
 using SNHub.Auth.IntegrationTests.Brokers;
 using SNHub.Auth.IntegrationTests.Models;

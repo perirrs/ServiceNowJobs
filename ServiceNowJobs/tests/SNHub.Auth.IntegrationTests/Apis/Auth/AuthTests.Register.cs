@@ -1,3 +1,4 @@
+using Xunit;
 using System.Net;
 using FluentAssertions;
 using SNHub.Auth.IntegrationTests.Models;

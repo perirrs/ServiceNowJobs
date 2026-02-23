@@ -2,6 +2,7 @@ using FluentAssertions;
 using SNHub.Auth.Domain.Entities;
 using SNHub.Auth.Domain.Enums;
 using SNHub.Auth.Domain.Exceptions;
+using SNHub.Auth.Domain.Events;
 using Xunit;
 
 namespace SNHub.Auth.UnitTests.Domain;
@@ -45,7 +46,7 @@ public sealed class UserEntityTests
     {
         var user = ValidUser();
         user.DomainEvents.Should().ContainSingle()
-            .Which.Should().BeOfType<Domain.Events.UserRegisteredEvent>();
+            .Which.Should().BeOfType<UserRegisteredEvent>();
     }
 
     [Fact]

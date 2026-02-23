@@ -2,7 +2,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
-using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using SNHub.Auth.Infrastructure.Persistence;
 
 #nullable disable
@@ -18,10 +17,10 @@ partial class InitialCreate
     {
 #pragma warning disable 612, 618
         modelBuilder
-            .HasAnnotation("ProductVersion", "10.0.0")
+            .HasAnnotation("ProductVersion", "9.0.3")
             .HasAnnotation("Relational:MaxIdentifierLength", 63);
+        modelBuilder.UseIdentityByDefaultColumns();
 
-        NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 #pragma warning restore 612, 618
     }
 }

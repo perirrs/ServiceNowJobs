@@ -19,6 +19,6 @@ public sealed class JobsDbContext : DbContext, IUnitOfWork
             p.SetColumnType("timestamptz");
     }
 
-    public async Task<int> SaveChangesAsync(CancellationToken ct = default)
+    public override async Task<int> SaveChangesAsync(CancellationToken ct = default)
         => await base.SaveChangesAsync(ct);
 }

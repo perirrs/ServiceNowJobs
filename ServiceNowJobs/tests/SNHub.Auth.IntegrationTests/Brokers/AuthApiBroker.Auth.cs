@@ -1,3 +1,4 @@
+using Xunit;
 using SNHub.Auth.IntegrationTests.Models;
 
 namespace SNHub.Auth.IntegrationTests.Brokers;

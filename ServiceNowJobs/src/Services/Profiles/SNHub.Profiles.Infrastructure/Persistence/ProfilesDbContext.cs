@@ -15,5 +15,5 @@ public sealed class ProfilesDbContext : DbContext, IUnitOfWork
             .Where(p => p.ClrType == typeof(DateTimeOffset) || p.ClrType == typeof(DateTimeOffset?)))
             p.SetColumnType("timestamptz");
     }
-    public async Task<int> SaveChangesAsync(CancellationToken ct = default) => await base.SaveChangesAsync(ct);
+    public override async Task<int> SaveChangesAsync(CancellationToken ct = default) => await base.SaveChangesAsync(ct);
 }

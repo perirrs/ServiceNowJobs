@@ -29,7 +29,7 @@ public sealed class AuthDbContext : DbContext, IUnitOfWork
         }
     }
 
-    public async Task<int> SaveChangesAsync(CancellationToken ct = default)
+    public override async Task<int> SaveChangesAsync(CancellationToken ct = default)
         => await base.SaveChangesAsync(ct);
 
     public async Task BeginTransactionAsync(CancellationToken ct = default)
