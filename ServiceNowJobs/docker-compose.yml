@@ -16,6 +16,10 @@ services:
       - ConnectionStrings__AzureStorage=UseDevelopmentStorage=true;BlobEndpoint=http://azurite:10000/devstoreaccount1
       - JwtSettings__SecretKey=DEV_ONLY_KEY_REPLACE_IN_PROD_MUST_BE_32_CHARS_MIN
       - RunMigrationsOnStartup=true
+      - Seed__SuperAdmin__Email=admin@snhub.io
+      - Seed__SuperAdmin__Password=Admin@SNHub2025!
+      - Seed__SuperAdmin__FirstName=SNHub
+      - Seed__SuperAdmin__LastName=Admin
     depends_on:
       postgres:
         condition: service_healthy

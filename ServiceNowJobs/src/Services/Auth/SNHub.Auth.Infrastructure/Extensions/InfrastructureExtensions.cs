@@ -49,6 +49,7 @@ public static class InfrastructureExtensions
         });
 
         services.AddScoped<IUnitOfWork>(sp => sp.GetRequiredService<AuthDbContext>());
+        services.AddScoped<AuthDbSeeder>();
 
         services.AddHealthChecks()
             .AddNpgSql(conn, name: "postgres", tags: ["ready"]);

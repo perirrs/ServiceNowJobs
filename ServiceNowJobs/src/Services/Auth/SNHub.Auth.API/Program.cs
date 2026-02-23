@@ -184,14 +184,22 @@ try
     // ─── Build app ────────────────────────────────────────────────────────────
     var app = builder.Build();
 
-    // Auto-migrate on startup when enabled (dev/staging only)
+    // Auto-migrate and seed on startup when enabled (dev/staging only)
     if (app.Configuration.GetValue<bool>("RunMigrationsOnStartup"))
     {
         using var scope = app.Services.CreateScope();
         var db = scope.ServiceProvider
             .GetRequiredService<SNHub.Auth.Infrastructure.Persistence.AuthDbContext>();
+
+        Log.Information("Applying database migrations...");
         await db.Database.MigrateAsync();
-        Log.Information("Database migrations applied.");
+        Log.Information("Migrations applied.");
+
+        Log.Information("Running database seeder...");
+        var seeder = scope.ServiceProvider
+            .GetRequiredService<SNHub.Auth.Infrastructure.Persistence.AuthDbSeeder>();
+        await seeder.SeedAsync();
+        Log.Information("Seeding complete.");
     }
 
     app.UseMiddleware<ExceptionHandlingMiddleware>();
