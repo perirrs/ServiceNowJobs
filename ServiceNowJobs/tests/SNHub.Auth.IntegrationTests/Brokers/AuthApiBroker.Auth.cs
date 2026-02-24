@@ -17,6 +17,14 @@ public sealed partial class AuthApiBroker
         return (response, body);
     }
 
+    /// <summary>Returns raw HttpResponseMessage without deserializing — for diagnostics.</summary>
+    public async Task<HttpResponseMessage> RegisterRawAsync(RegisterRequest request) =>
+        await PostAsync($"{AuthBase}/register", request);
+
+    /// <summary>Returns raw HttpResponseMessage without deserializing — for diagnostics.</summary>
+    public async Task<HttpResponseMessage> LoginRawAsync(LoginRequest request) =>
+        await PostAsync($"{AuthBase}/login", request);
+
     // ── Login ─────────────────────────────────────────────────────────────────
 
     public async Task<(HttpResponseMessage Raw, ApiResponse<AuthResponse>? Body)>

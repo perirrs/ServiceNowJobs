@@ -80,7 +80,8 @@ public sealed class LoginUserCommandHandler : IRequestHandler<LoginUserCommand, 
         var refreshExpiry = DateTimeOffset.UtcNow.AddDays(refreshDays);
 
         user.RecordSuccessfulLogin(ip);
-        user.AddRefreshToken(refreshValue, ip, ua, refreshExpiry);
+        var newToken = user.AddRefreshToken(refreshValue, ip, ua, refreshExpiry);
+        await _users.AddRefreshTokenAsync(newToken, ct);  // explicit DbSet.Add — EF can't detect List<T> mutations
 
         await _uow.SaveChangesAsync(ct);
 

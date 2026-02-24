@@ -45,12 +45,16 @@ public sealed partial class AuthApiBroker
     private async Task<ApiResponse<TData>?> ReadApiResponseAsync<TData>(HttpResponseMessage response)
     {
         var json = await response.Content.ReadAsStringAsync();
-        return JsonSerializer.Deserialize<ApiResponse<TData>>(json, JsonOptions);
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try { return JsonSerializer.Deserialize<ApiResponse<TData>>(json, JsonOptions); }
+        catch (JsonException) { return null; }
     }
 
     private async Task<ApiErrorResponse?> ReadApiErrorAsync(HttpResponseMessage response)
     {
         var json = await response.Content.ReadAsStringAsync();
-        return JsonSerializer.Deserialize<ApiErrorResponse>(json, JsonOptions);
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try { return JsonSerializer.Deserialize<ApiErrorResponse>(json, JsonOptions); }
+        catch (JsonException) { return null; }
     }
 }

@@ -14,6 +14,7 @@ public interface IUserRepository
     Task<User?> GetByAzureAdObjectIdAsync(string objectId, CancellationToken ct = default);
     Task<bool> ExistsByEmailAsync(string email, CancellationToken ct = default);
     Task AddAsync(User user, CancellationToken ct = default);
+    Task AddRefreshTokenAsync(RefreshToken token, CancellationToken ct = default);
     Task UpdateAsync(User user, CancellationToken ct = default);
     Task<(IEnumerable<User> Users, int TotalCount)> GetPagedAsync(
         int page, int pageSize,

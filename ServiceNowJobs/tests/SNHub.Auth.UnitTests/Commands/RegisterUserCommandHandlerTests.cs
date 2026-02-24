@@ -84,6 +84,43 @@ public sealed class RegisterUserCommandHandlerTests
         _users.Verify(r => r.AddAsync(It.IsAny<User>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    [Fact]
+    public async Task Handle_ValidCommand_AddsRefreshToken()
+    {
+        SetupHappyPath();
+
+        await Handler().Handle(ValidCommand(), CancellationToken.None);
+
+        _users.Verify(r => r.AddRefreshTokenAsync(
+            It.IsAny<SNHub.Auth.Domain.Entities.RefreshToken>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Handle_ValidCommand_SavesChangesOnce()
+    {
+        SetupHappyPath();
+
+        await Handler().Handle(ValidCommand(), CancellationToken.None);
+
+        _uow.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Handle_ValidCommand_SendsEmailVerification()
+    {
+        SetupHappyPath();
+
+        await Handler().Handle(ValidCommand(), CancellationToken.None);
+
+        // Fire-and-forget: allow a brief moment for the async call to dispatch
+        await Task.Delay(50);
+
+        _email.Verify(e => e.SendEmailVerificationAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
     [Theory]
     [InlineData(UserRole.SuperAdmin)]
     [InlineData(UserRole.Moderator)]

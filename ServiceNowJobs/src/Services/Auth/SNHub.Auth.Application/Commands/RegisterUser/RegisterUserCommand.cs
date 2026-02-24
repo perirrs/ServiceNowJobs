@@ -27,7 +27,7 @@ public sealed class RegisterUserCommandValidator : AbstractValidator<RegisterUse
         RuleFor(x => x.Email)
             .NotEmpty().WithMessage("Email is required.")
             .EmailAddress().WithMessage("A valid email address is required.")
-            .MaximumLength(256);
+            .MaximumLength(254).WithMessage("Email must not exceed 254 characters.");
 
         RuleFor(x => x.Password)
             .NotEmpty().WithMessage("Password is required.")
@@ -60,6 +60,7 @@ public sealed class RegisterUserCommandValidator : AbstractValidator<RegisterUse
 
         RuleFor(x => x.Country)
             .Length(2, 3).WithMessage("Use ISO country code e.g. GB, US, IN.")
+            .Matches("^[A-Za-z]+$").WithMessage("Country code must contain only letters.")
             .When(x => !string.IsNullOrEmpty(x.Country));
     }
 }
@@ -106,21 +107,22 @@ public sealed class RegisterUserCommandHandler : IRequestHandler<RegisterUserCom
             req.FirstName, req.LastName,
             req.Role, req.Country, req.TimeZone);
 
-        await _users.AddAsync(user, ct);
-        await _uow.SaveChangesAsync(ct);
-
+        // Generate tokens before persisting — User.Id is set in User.Create()
+        // and all token claims come from the in-memory entity, not the DB.
+        var ip = _currentUser.IpAddress ?? "unknown";
+        var ua = _currentUser.UserAgent ?? "unknown";
         var accessToken = _tokens.GenerateAccessToken(user);
         var refreshTokenValue = _tokens.GenerateRefreshToken();
         var accessExpiry = DateTimeOffset.UtcNow.AddMinutes(15);
         var refreshExpiry = DateTimeOffset.UtcNow.AddDays(30);
 
-        user.AddRefreshToken(
-            refreshTokenValue,
-            _currentUser.IpAddress ?? "unknown",
-            _currentUser.UserAgent ?? "unknown",
-            refreshExpiry);
-
-        await _uow.SaveChangesAsync(ct);
+        // Add user first (without tokens), then explicitly add the refresh token to
+        // the DbSet. This is more reliable than relying on EF's graph traversal of
+        // the User's private _refreshTokens list during AddAsync.
+        await _users.AddAsync(user, ct);
+        var newToken = user.AddRefreshToken(refreshTokenValue, ip, ua, refreshExpiry);
+        await _users.AddRefreshTokenAsync(newToken, ct);
+        await _uow.SaveChangesAsync(ct);   // Single atomic save: INSERT user + INSERT refresh_token
 
         // Fire-and-forget — email failure must not block registration
         _ = _email.SendEmailVerificationAsync(

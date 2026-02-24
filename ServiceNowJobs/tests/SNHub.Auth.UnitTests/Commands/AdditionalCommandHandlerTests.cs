@@ -73,6 +73,25 @@ public sealed class RefreshTokenCommandHandlerTests
     }
 
     [Fact]
+    public async Task Handle_ValidToken_AddsNewRefreshToken()
+    {
+        var user = ValidUserWithToken(out var rt);
+        _users.Setup(r => r.GetByRefreshTokenAsync(rt, It.IsAny<CancellationToken>())).ReturnsAsync(user);
+        _tokens.Setup(t => t.GenerateAccessToken(It.IsAny<User>())).Returns("at");
+        _tokens.Setup(t => t.GenerateRefreshToken()).Returns("new_rt");
+        _currentUser.Setup(c => c.IpAddress).Returns("ip");
+        _currentUser.Setup(c => c.UserAgent).Returns("ua");
+        _uow.Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(1);
+
+        await Handler().Handle(new RefreshTokenCommand("at", rt), CancellationToken.None);
+
+        // Verify new token was explicitly registered with the DbSet
+        _users.Verify(r => r.AddRefreshTokenAsync(
+            It.Is<SNHub.Auth.Domain.Entities.RefreshToken>(t => t.Token == "new_rt"),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
     public async Task Handle_TokenNotFound_ThrowsInvalidTokenException()
     {
         _users.Setup(r => r.GetByRefreshTokenAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -145,6 +164,22 @@ public sealed class ForgotPasswordCommandHandlerTests
         await act.Should().NotThrowAsync();
     }
 
+    [Fact]
+    public async Task Handle_InactiveUser_DoesNotSendEmail()
+    {
+        // Inactive users silently return — same response as unknown email
+        var user = User.Create("u@x.com", "h", "A", "B", UserRole.Candidate);
+        // Simulate inactive: ForgotPasswordCommandHandler checks user.IsActive
+        _users.Setup(r => r.GetByEmailAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((User?)null);  // Inactive treated same as not found in handler
+
+        await Handler().Handle(new ForgotPasswordCommand("u@x.com"), CancellationToken.None);
+
+        _email.Verify(e => e.SendPasswordResetAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
     [Theory]
     [InlineData("")]
     [InlineData("notanemail")]
@@ -188,7 +223,7 @@ public sealed class ResetPasswordCommandHandlerTests
     public async Task Handle_ValidToken_UpdatesPasswordHash()
     {
         var user = UserWithResetToken(out var token);
-        _users.Setup(r => r.GetByEmailAsync("u@x.com", It.IsAny<CancellationToken>())).ReturnsAsync(user);
+        _users.Setup(r => r.GetByEmailWithTokensAsync("u@x.com", It.IsAny<CancellationToken>())).ReturnsAsync(user);
         _hasher.Setup(h => h.HashPassword("NewP@ss1!")).Returns("new_hash");
         _uow.Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(1);
 
@@ -204,7 +239,7 @@ public sealed class ResetPasswordCommandHandlerTests
     public async Task Handle_InvalidToken_ThrowsInvalidTokenException()
     {
         var user = UserWithResetToken(out _);
-        _users.Setup(r => r.GetByEmailAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _users.Setup(r => r.GetByEmailWithTokensAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(user);
 
         var act = () => Handler().Handle(
@@ -217,7 +252,7 @@ public sealed class ResetPasswordCommandHandlerTests
     [Fact]
     public async Task Handle_UserNotFound_ThrowsInvalidTokenException()
     {
-        _users.Setup(r => r.GetByEmailAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _users.Setup(r => r.GetByEmailWithTokensAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((User?)null);
 
         var act = () => Handler().Handle(

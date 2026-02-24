@@ -149,4 +149,33 @@ public sealed partial class AuthApiTests
             new Models.LoginRequest("notanemail", "P@ss1!"));
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
+    // ── Login — suspended / inactive accounts ─────────────────────────────────
+
+    [Fact]
+    public async Task Login_SuspendedAccount_Returns423()
+    {
+        // given — register and then suspend the user directly in DB
+        var (req, _) = await RegisterFreshUserAsync();
+        await SuspendUserInDbAsync(req.Email, "Integration test suspension");
+
+        // when
+        var (response, _) = await _broker.LoginAsync(LoginFrom(req));
+
+        // then — AccountSuspendedException → 423 Locked
+        response.StatusCode.Should().Be(HttpStatusCode.Locked);
+    }
+
+    [Fact]
+    public async Task Login_InactiveAccount_Returns401()
+    {
+        // given — register and deactivate the user directly in DB
+        var (req, _) = await RegisterFreshUserAsync();
+        await DeactivateUserInDbAsync(req.Email);
+
+        // when
+        var (response, _) = await _broker.LoginAsync(LoginFrom(req));
+
+        // then — !user.IsActive treated same as not found → 401
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
 }

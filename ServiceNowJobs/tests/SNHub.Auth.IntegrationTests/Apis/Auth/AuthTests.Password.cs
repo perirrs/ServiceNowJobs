@@ -122,8 +122,8 @@ public sealed partial class AuthApiTests
         var (refreshResp, _) = await _broker.RefreshAsync(
             new RefreshRequest(loginBody.Data.AccessToken, oldRefresh));
 
-        // then — old refresh token must be revoked
-        refreshResp.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        // then — old refresh token must be revoked (InvalidTokenException → 400)
+        refreshResp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
     // ── Reset password — invalid token ────────────────────────────────────────

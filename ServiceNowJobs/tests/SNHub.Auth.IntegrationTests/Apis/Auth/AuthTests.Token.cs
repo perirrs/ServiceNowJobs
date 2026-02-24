@@ -157,4 +157,23 @@ public sealed partial class AuthApiTests
         var json = await response.Content.ReadAsStringAsync();
         json.Should().Contain("INVALID_TOKEN");
     }
+    // ── Refresh — suspended account ───────────────────────────────────────────
+
+    [Fact]
+    public async Task Refresh_SuspendedUser_Returns423()
+    {
+        // given — register, login to get tokens, then suspend the account
+        var (req, _) = await RegisterFreshUserAsync();
+        var (_, loginBody) = await _broker.LoginAsync(LoginFrom(req));
+        var auth = loginBody!.Data!;
+
+        await SuspendUserInDbAsync(req.Email, "Suspended mid-session");
+
+        // when — try to refresh with a valid token from before suspension
+        var (response, _) = await _broker.RefreshAsync(
+            new RefreshRequest(auth.AccessToken, auth.RefreshToken));
+
+        // then — AccountSuspendedException → 423 Locked
+        response.StatusCode.Should().Be(HttpStatusCode.Locked);
+    }
 }

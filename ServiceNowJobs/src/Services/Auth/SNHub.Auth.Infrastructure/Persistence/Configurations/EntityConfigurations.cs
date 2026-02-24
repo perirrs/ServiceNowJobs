@@ -19,15 +19,15 @@ public sealed class UserConfiguration : IEntityTypeConfiguration<User>
         builder.Property(u => u.LastName).HasColumnName("last_name").HasMaxLength(100).IsRequired();
         builder.Property(u => u.PhoneNumber).HasColumnName("phone_number").HasMaxLength(20);
         builder.Property(u => u.ProfilePictureUrl).HasColumnName("profile_picture_url").HasMaxLength(2048);
-        builder.Property(u => u.IsEmailVerified).HasColumnName("is_email_verified").HasDefaultValue(false);
-        builder.Property(u => u.IsActive).HasColumnName("is_active").HasDefaultValue(true);
-        builder.Property(u => u.IsSuspended).HasColumnName("is_suspended").HasDefaultValue(false);
+        builder.Property(u => u.IsEmailVerified).HasColumnName("is_email_verified").HasDefaultValue(false).ValueGeneratedNever();
+        builder.Property(u => u.IsActive).HasColumnName("is_active").HasDefaultValue(true).ValueGeneratedNever();
+        builder.Property(u => u.IsSuspended).HasColumnName("is_suspended").HasDefaultValue(false).ValueGeneratedNever();
         builder.Property(u => u.SuspensionReason).HasColumnName("suspension_reason").HasMaxLength(1000);
         builder.Property(u => u.SuspendedAt).HasColumnName("suspended_at");
         builder.Property(u => u.EmailVerifiedAt).HasColumnName("email_verified_at");
         builder.Property(u => u.LastLoginAt).HasColumnName("last_login_at");
         builder.Property(u => u.LastLoginIp).HasColumnName("last_login_ip").HasMaxLength(45);
-        builder.Property(u => u.FailedLoginAttempts).HasColumnName("failed_login_attempts").HasDefaultValue(0);
+        builder.Property(u => u.FailedLoginAttempts).HasColumnName("failed_login_attempts").HasDefaultValue(0).ValueGeneratedNever();
         builder.Property(u => u.LockedOutUntil).HasColumnName("locked_out_until");
         builder.Property(u => u.EmailVerificationToken).HasColumnName("email_verification_token").HasMaxLength(256);
         builder.Property(u => u.EmailVerificationTokenExpiry).HasColumnName("email_verification_token_expiry");
@@ -36,12 +36,12 @@ public sealed class UserConfiguration : IEntityTypeConfiguration<User>
         builder.Property(u => u.LinkedInId).HasColumnName("linkedin_id").HasMaxLength(100);
         builder.Property(u => u.GoogleId).HasColumnName("google_id").HasMaxLength(100);
         builder.Property(u => u.AzureAdObjectId).HasColumnName("azure_ad_object_id").HasMaxLength(100);
-        builder.Property(u => u.TimeZone).HasColumnName("time_zone").HasMaxLength(100).HasDefaultValue("UTC");
+        builder.Property(u => u.TimeZone).HasColumnName("time_zone").HasMaxLength(100).HasDefaultValue("UTC").ValueGeneratedNever();
         builder.Property(u => u.Country).HasColumnName("country").HasMaxLength(3);
         builder.Property(u => u.CreatedAt).HasColumnName("created_at").IsRequired();
         builder.Property(u => u.UpdatedAt).HasColumnName("updated_at").IsRequired();
-        builder.Property(u => u.CreatedBy).HasColumnName("created_by").HasMaxLength(256).HasDefaultValue("system");
-        builder.Property(u => u.UpdatedBy).HasColumnName("updated_by").HasMaxLength(256).HasDefaultValue("system");
+        builder.Property(u => u.CreatedBy).HasColumnName("created_by").HasMaxLength(256).HasDefaultValue("system").ValueGeneratedNever();
+        builder.Property(u => u.UpdatedBy).HasColumnName("updated_by").HasMaxLength(256).HasDefaultValue("system").ValueGeneratedNever();
 
         // Roles as jsonb — stored as JSON int array e.g. [4,6]
         builder.Property(u => u.RolesJson).HasColumnName("roles").HasColumnType("jsonb").IsRequired();
@@ -57,7 +57,10 @@ public sealed class UserConfiguration : IEntityTypeConfiguration<User>
         builder.HasIndex(u => u.AzureAdObjectId).IsUnique().HasFilter("azure_ad_object_id IS NOT NULL").HasDatabaseName("ix_users_azure_ad");
         builder.HasIndex(u => new { u.IsActive, u.CreatedAt }).HasDatabaseName("ix_users_active_created");
 
-        builder.HasMany(u => u.RefreshTokens).WithOne().HasForeignKey(rt => rt.UserId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasMany(u => u.RefreshTokens)
+            .WithOne()
+            .HasForeignKey(rt => rt.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
     }
 }
 

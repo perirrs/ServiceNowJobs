@@ -60,7 +60,8 @@ public sealed class RefreshTokenCommandHandler : IRequestHandler<RefreshTokenCom
         var accessExpiry = DateTimeOffset.UtcNow.AddMinutes(15);
         var refreshExpiry = DateTimeOffset.UtcNow.AddDays(30);
 
-        user.AddRefreshToken(newRefresh, ip, ua, refreshExpiry);
+        var newToken = user.AddRefreshToken(newRefresh, ip, ua, refreshExpiry);
+        await _users.AddRefreshTokenAsync(newToken, ct);  // explicit DbSet.Add — EF can't detect List<T> mutations
         await _uow.SaveChangesAsync(ct);
 
         _logger.LogInformation("Token refreshed: {UserId}", user.Id);

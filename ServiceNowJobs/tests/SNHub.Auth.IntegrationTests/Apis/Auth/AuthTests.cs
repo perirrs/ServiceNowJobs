@@ -1,5 +1,8 @@
 using Xunit;
 using FluentAssertions;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using SNHub.Auth.Infrastructure.Persistence;
 using SNHub.Auth.IntegrationTests.Brokers;
 using SNHub.Auth.IntegrationTests.Models;
 
@@ -51,5 +54,37 @@ public sealed partial class AuthApiTests
         var (_, loginBody) = await _broker.LoginAsync(LoginFrom(req));
         loginBody.Should().NotBeNull();
         return loginBody!.Data!;
+    }
+
+    // ── DB state helpers (test-only — manipulate user state directly) ─────────
+
+    /// <summary>
+    /// Suspends a user directly in the DB, bypassing the API.
+    /// Used for testing scenarios that require an admin action not yet exposed
+    /// as an API endpoint (will be wired to /admin in a later step).
+    /// </summary>
+    private async Task SuspendUserInDbAsync(string email, string reason)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AuthDbContext>();
+
+        var user = await db.Users.FirstAsync(u => u.NormalizedEmail == email.ToUpperInvariant());
+        user.Suspend(reason, "test-admin");
+        await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Deactivates a user directly in the DB (soft-delete simulation).
+    /// The login handler treats !IsActive identically to user-not-found.
+    /// </summary>
+    private async Task DeactivateUserInDbAsync(string email)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AuthDbContext>();
+
+        // Use raw SQL to set is_active = false — User.Deactivate() may not exist yet
+        await db.Database.ExecuteSqlRawAsync(
+            "UPDATE auth.users SET is_active = false, updated_at = now() WHERE normalized_email = {0}",
+            email.ToUpperInvariant());
     }
 }

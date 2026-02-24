@@ -45,7 +45,11 @@ public sealed class ResetPasswordCommandHandler : IRequestHandler<ResetPasswordC
 
     public async Task<Unit> Handle(ResetPasswordCommand req, CancellationToken ct)
     {
-        var user = await _users.GetByEmailAsync(req.Email, ct)
+        // Must use GetByEmailWithTokensAsync (not GetByEmailAsync) so the User's
+        // RefreshTokens navigation is populated. User.ResetPassword calls
+        // RevokeAllRefreshTokens which iterates _refreshTokens — if empty, existing
+        // refresh tokens are never revoked in the database.
+        var user = await _users.GetByEmailWithTokensAsync(req.Email, ct)
             ?? throw new InvalidTokenException("Invalid or expired token.");
 
         user.ResetPassword(req.Token, _hasher.HashPassword(req.NewPassword));

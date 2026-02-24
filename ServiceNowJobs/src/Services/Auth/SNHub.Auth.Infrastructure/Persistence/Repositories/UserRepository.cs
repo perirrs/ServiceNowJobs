@@ -25,8 +25,11 @@ public sealed class UserRepository : IUserRepository
         => await _context.Users.AsNoTracking()
             .FirstOrDefaultAsync(u => u.Id == id, ct);
 
+    // NOTE: No AsNoTracking — callers (ForgotPassword, ResetPassword, VerifyEmail)
+    // mutate this entity and call SaveChangesAsync. AsNoTracking would cause
+    // DbUpdateConcurrencyException because EF Core can't UPDATE an untracked entity.
     public async Task<User?> GetByEmailAsync(string email, CancellationToken ct = default)
-        => await _context.Users.AsNoTracking()
+        => await _context.Users
             .FirstOrDefaultAsync(u => u.NormalizedEmail == email.ToUpperInvariant(), ct);
 
     public async Task<User?> GetByEmailWithTokensAsync(string email, CancellationToken ct = default)
@@ -58,6 +61,17 @@ public sealed class UserRepository : IUserRepository
 
     public async Task AddAsync(User user, CancellationToken ct = default)
         => await _context.Users.AddAsync(user, ct);
+
+    /// <summary>
+    /// Explicitly adds a RefreshToken to the DbSet change tracker.
+    /// This is required when adding a token to an already-tracked User because EF Core
+    /// cannot detect additions to a plain List&lt;T&gt; backing field — only its own
+    /// ObservableHashSet/ObservableCollection types raise collection-change events.
+    /// Calling AddAsync here marks the entity as EntityState.Added so SaveChangesAsync
+    /// emits an INSERT rather than silently skipping it.
+    /// </summary>
+    public async Task AddRefreshTokenAsync(RefreshToken token, CancellationToken ct = default)
+        => await _context.RefreshTokens.AddAsync(token, ct);
 
     public Task UpdateAsync(User user, CancellationToken ct = default)
     {

@@ -186,7 +186,8 @@ public sealed partial class AuthApiTests
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
 
         var json = await response.Content.ReadAsStringAsync();
-        json.Should().Contain("ErrorCode");
-        json.Should().Contain("Errors");
+        // Middleware serializes with camelCase (JsonNamingPolicy.CamelCase)
+        json.Should().Contain("errorCode");
+        json.Should().Contain("errors");
     }
 }

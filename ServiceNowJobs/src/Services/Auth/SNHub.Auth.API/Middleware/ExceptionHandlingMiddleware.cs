@@ -59,7 +59,7 @@ public sealed class ExceptionHandlingMiddleware
             ErrorCode: code,
             Message: message,
             Errors: errors,
-            Detail: _env.IsDevelopment() ? ex.ToString() : null);
+            Detail: (_env.IsDevelopment() || _env.IsEnvironment("Testing")) ? ex.ToString() : null);
 
         ctx.Response.StatusCode = status;
         ctx.Response.ContentType = "application/json";
@@ -77,7 +77,7 @@ public sealed class ExceptionHandlingMiddleware
             UserNotFoundException      => (404, "USER_NOT_FOUND",      ex.Message, null),
             InvalidCredentialsException => (401, "INVALID_CREDENTIALS", ex.Message, null),
             AccountLockedException     => (423, "ACCOUNT_LOCKED",      ex.Message, null),
-            AccountSuspendedException  => (403, "ACCOUNT_SUSPENDED",   ex.Message, null),
+            AccountSuspendedException  => (423, "ACCOUNT_SUSPENDED",   ex.Message, null),
             EmailNotVerifiedException  => (403, "EMAIL_NOT_VERIFIED",  ex.Message, null),
             InvalidTokenException      => (400, "INVALID_TOKEN",       ex.Message, null),
             DomainException            => (400, "DOMAIN_ERROR",        ex.Message, null),

@@ -197,7 +197,11 @@ try
     // ─── Middleware pipeline ───────────────────────────────────────────────────
     app.UseMiddleware<ExceptionHandlingMiddleware>();
     app.UseSerilogRequestLogging();
-    app.UseRateLimiter();
+
+    // Rate limiting is disabled in the Testing environment (integration tests)
+    // to avoid spurious 429s when tests call the same endpoint many times.
+    if (!app.Environment.IsEnvironment("Testing"))
+        app.UseRateLimiter();
 
     if (app.Environment.IsDevelopment())
     {
