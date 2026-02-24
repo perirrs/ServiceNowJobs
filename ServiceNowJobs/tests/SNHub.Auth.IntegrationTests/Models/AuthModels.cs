@@ -143,3 +143,5 @@ public sealed record PagedResult<T>(
 public sealed record SuspendUserRequest(string Reason);
 
 public sealed record UpdateUserRolesRequest(IReadOnlyList<int> Roles);
+
+public sealed record ResendVerificationRequest(string Email);

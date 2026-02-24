@@ -68,6 +68,11 @@ public sealed partial class AuthApiBroker
             $"?email={Uri.EscapeDataString(request.Email)}" +
             $"&token={Uri.EscapeDataString(request.Token)}");
 
+    // ── Resend verification ───────────────────────────────────────────────────
+
+    public async Task<HttpResponseMessage> ResendVerificationAsync(ResendVerificationRequest request) =>
+        await PostAsync($"{AuthBase}/resend-verification", request);
+
     // ── Health ────────────────────────────────────────────────────────────────
 
     public async Task<HttpResponseMessage> GetHealthAsync() =>

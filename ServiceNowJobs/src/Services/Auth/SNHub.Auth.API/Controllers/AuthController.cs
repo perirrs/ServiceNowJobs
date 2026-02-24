@@ -7,6 +7,7 @@ using SNHub.Auth.Application.Commands.ForgotPassword;
 using SNHub.Auth.Application.Commands.LoginUser;
 using SNHub.Auth.Application.Commands.RefreshToken;
 using SNHub.Auth.Application.Commands.RegisterUser;
+using SNHub.Auth.Application.Commands.ResendVerification;
 using SNHub.Auth.Application.Commands.ResetPassword;
 using SNHub.Auth.Application.Commands.RevokeToken;
 using SNHub.Auth.Application.Commands.VerifyEmail;
@@ -114,5 +115,18 @@ public sealed class AuthController : ControllerBase
     {
         await _mediator.Send(new VerifyEmailCommand(email, token), ct);
         return NoContent();
+    }
+
+    /// <summary>Resend the email verification link. Always returns 202 — never reveals account state.</summary>
+    [HttpPost("resend-verification")]
+    [AllowAnonymous]
+    [EnableRateLimiting("passwordReset")]
+    [ProducesResponseType(202)]
+    [ProducesResponseType(typeof(ApiErrorResponse), 400)]
+    public async Task<IActionResult> ResendVerification(
+        [FromBody] ResendVerificationCommand command, CancellationToken ct)
+    {
+        await _mediator.Send(command, ct);
+        return Accepted(ApiResponse.Ok("If that email is registered and unverified, a new link has been sent."));
     }
 }
