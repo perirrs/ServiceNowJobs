@@ -198,6 +198,10 @@ public sealed class AuthWebApplicationFactory
             services.RemoveAll<IEmailService>();
             services.AddScoped<IEmailService, NoOpEmailService>();
 
+            // ── Stub blob storage — no real Azure calls in tests ──────────────
+            services.RemoveAll<SNHub.Auth.Application.Interfaces.IBlobStorageService>();
+            services.AddScoped<SNHub.Auth.Application.Interfaces.IBlobStorageService, NoOpBlobStorageService>();
+
             // ── Remove health checks that bake-in wrong connection strings ─────
             var healthChecks = services
                 .Where(d => d.ServiceType.FullName?.Contains("HealthCheck") == true
@@ -216,4 +220,16 @@ internal sealed class NoOpEmailService : IEmailService
     public Task SendPasswordResetAsync(string to, string name, string token, CancellationToken ct = default)     => Task.CompletedTask;
     public Task SendWelcomeEmailAsync(string to, string name, CancellationToken ct = default)                    => Task.CompletedTask;
     public Task SendAccountSuspendedAsync(string to, string name, string reason, CancellationToken ct = default) => Task.CompletedTask;
+}
+
+/// <summary>No-op blob storage — returns a fake URL, no real Azure calls in tests.</summary>
+internal sealed class NoOpBlobStorageService : SNHub.Auth.Application.Interfaces.IBlobStorageService
+{
+    public Task<string> UploadAsync(Stream content, string fileName, string contentType, CancellationToken ct = default)
+        => Task.FromResult($"https://storage.test/profile-pictures/{Guid.NewGuid()}.jpg");
+
+    public Task DeleteAsync(string blobUrl, CancellationToken ct = default) => Task.CompletedTask;
+
+    public Task<Stream> DownloadAsync(string blobUrl, CancellationToken ct = default)
+        => Task.FromResult<Stream>(new MemoryStream());
 }

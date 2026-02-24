@@ -17,6 +17,7 @@ using SNHub.Auth.Infrastructure.Extensions;
 using SNHub.Auth.Infrastructure.Persistence;
 using SNHub.Auth.Infrastructure.Services;
 using System.Text;
+using Microsoft.Extensions.Options;
 
 // ─── Bootstrap logger ─────────────────────────────────────────────────────────
 Log.Logger = new LoggerConfiguration()
@@ -100,24 +101,37 @@ try
     });
 
     // ─── JWT Authentication ───────────────────────────────────────────────────
-    var jwtSettings = builder.Configuration
-        .GetSection(JwtSettings.SectionName).Get<JwtSettings>()
-        ?? throw new InvalidOperationException("JwtSettings not configured.");
+    // IMPORTANT: Do NOT read jwtSettings from builder.Configuration here.
+    // builder.Configuration is populated from file sources at this point. The
+    // AddInMemoryCollection overrides injected by WebApplicationFactory during
+    // integration tests are applied later (during Build), so any value read now
+    // would miss those overrides. Using IOptions<JwtSettings> via PostConfigure
+    // guarantees the bearer validator always uses the same key as TokenService.
+    builder.Services.Configure<JwtSettings>(
+        builder.Configuration.GetSection(JwtSettings.SectionName));
 
     builder.Services
         .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-        .AddJwtBearer(opts =>
+        .AddJwtBearer();  // options set below via PostConfigure
+
+    builder.Services
+        .AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme)
+        .Configure<IOptions<JwtSettings>>((bearerOpts, jwt) =>
         {
-            opts.TokenValidationParameters = new TokenValidationParameters
+            var s = jwt.Value;
+            if (string.IsNullOrWhiteSpace(s.SecretKey))
+                throw new InvalidOperationException("JwtSettings:SecretKey is not configured.");
+
+            bearerOpts.TokenValidationParameters = new TokenValidationParameters
             {
                 ValidateIssuer           = true,
                 ValidateAudience         = true,
                 ValidateLifetime         = true,
                 ValidateIssuerSigningKey = true,
-                ValidIssuer              = jwtSettings.Issuer,
-                ValidAudience            = jwtSettings.Audience,
+                ValidIssuer              = s.Issuer,
+                ValidAudience            = s.Audience,
                 IssuerSigningKey         = new SymmetricSecurityKey(
-                    Encoding.UTF8.GetBytes(jwtSettings.SecretKey)),
+                    Encoding.UTF8.GetBytes(s.SecretKey)),
                 ClockSkew = TimeSpan.FromSeconds(30)
             };
         });
@@ -214,7 +228,10 @@ try
         });
     }
 
-    app.UseHttpsRedirection();
+    // Skip HTTPS redirect in Testing — HttpClient strips the Authorization header
+    // when following HTTP→HTTPS redirects, causing all authenticated tests to 401.
+    if (!app.Environment.IsEnvironment("Testing"))
+        app.UseHttpsRedirection();
     app.UseCors("SNHubCors");
     app.UseAuthentication();
     app.UseAuthorization();

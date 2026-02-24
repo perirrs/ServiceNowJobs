@@ -1,3 +1,4 @@
+using SNHub.Auth.Application.DTOs;
 using SNHub.Auth.Domain.Entities;
 using SNHub.Auth.Domain.Enums;
 
@@ -16,7 +17,7 @@ public interface IUserRepository
     Task AddAsync(User user, CancellationToken ct = default);
     Task AddRefreshTokenAsync(RefreshToken token, CancellationToken ct = default);
     Task UpdateAsync(User user, CancellationToken ct = default);
-    Task<(IEnumerable<User> Users, int TotalCount)> GetPagedAsync(
+    Task<(IReadOnlyList<UserSummaryDto> Items, int TotalCount)> GetPagedAsync(
         int page, int pageSize,
         UserRole? roleFilter = null,
         bool? isActiveFilter = null,

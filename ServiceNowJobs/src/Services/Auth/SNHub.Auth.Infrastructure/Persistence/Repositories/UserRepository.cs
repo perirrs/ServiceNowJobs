@@ -1,7 +1,5 @@
-using Dapper;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Configuration;
-using Npgsql;
+using SNHub.Auth.Application.DTOs;
 using SNHub.Auth.Application.Interfaces;
 using SNHub.Auth.Domain.Entities;
 using SNHub.Auth.Domain.Enums;
@@ -12,13 +10,9 @@ namespace SNHub.Auth.Infrastructure.Persistence.Repositories;
 public sealed class UserRepository : IUserRepository
 {
     private readonly AuthDbContext _context;
-    private readonly string _connectionString;
-
-    public UserRepository(AuthDbContext context, IConfiguration configuration)
+    public UserRepository(AuthDbContext context)
     {
         _context = context;
-        _connectionString = configuration.GetConnectionString("AuthDb")
-            ?? throw new InvalidOperationException("AuthDb connection string not configured.");
     }
 
     public async Task<User?> GetByIdAsync(Guid id, CancellationToken ct = default)
@@ -79,49 +73,68 @@ public sealed class UserRepository : IUserRepository
         return Task.CompletedTask;
     }
 
-    /// <summary>Dapper-powered paged query — efficient for admin user listing.</summary>
-    public async Task<(IEnumerable<User> Users, int TotalCount)> GetPagedAsync(
+    /// <summary>
+    /// EF Core projection — avoids Dapper mapping to User (private setters issue).
+    /// Projects directly to UserSummaryDto for clean, efficient paged listing.
+    /// </summary>
+    public async Task<(IReadOnlyList<UserSummaryDto> Items, int TotalCount)> GetPagedAsync(
         int page, int pageSize,
         UserRole? roleFilter = null,
         bool? isActiveFilter = null,
         string? searchTerm = null,
         CancellationToken ct = default)
     {
-        await using var conn = new NpgsqlConnection(_connectionString);
-
-        var conditions = new List<string>();
-        var p = new DynamicParameters();
-        p.Add("Offset", (page - 1) * pageSize);
-        p.Add("PageSize", pageSize);
+        var query = _context.Users.AsNoTracking();
 
         if (roleFilter.HasValue)
         {
-            conditions.Add("@Role = ANY(roles)");
-            p.Add("Role", (int)roleFilter.Value);
+            // RolesJson stores compact JSON arrays e.g. "[1,5,7]" (no spaces).
+            // Role values are 1-9 so no false-positive digit collisions.
+            // Handles: single "[5]", first "[5,", last ",5]", middle ",5,"
+            var r = (int)roleFilter.Value;
+            query = query.Where(u =>
+                u.RolesJson == $"[{r}]" ||
+                u.RolesJson.StartsWith($"[{r},") ||
+                u.RolesJson.EndsWith($",{r}]") ||
+                u.RolesJson.Contains($",{r},"));
         }
 
         if (isActiveFilter.HasValue)
-        {
-            conditions.Add("is_active = @IsActive");
-            p.Add("IsActive", isActiveFilter.Value);
-        }
+            query = query.Where(u => u.IsActive == isActiveFilter.Value);
 
         if (!string.IsNullOrWhiteSpace(searchTerm))
         {
-            conditions.Add("(email ILIKE @Search OR first_name ILIKE @Search OR last_name ILIKE @Search)");
-            p.Add("Search", $"%{searchTerm}%");
+            var upper = searchTerm.ToUpperInvariant();
+            var lower = searchTerm.ToLower();
+            query = query.Where(u =>
+                u.NormalizedEmail.Contains(upper) ||
+                (u.FirstName + " " + u.LastName).ToLower().Contains(lower));
         }
 
-        var where = conditions.Count != 0 ? $"WHERE {string.Join(" AND ", conditions)}" : string.Empty;
+        var total = await query.CountAsync(ct);
 
-        var count = await conn.ExecuteScalarAsync<int>($"SELECT COUNT(*) FROM auth.users {where}", p);
-        var users = await conn.QueryAsync<User>(
-            $@"SELECT id, email, normalized_email, first_name, last_name,
-                      is_active, is_email_verified, roles, created_at, updated_at
-               FROM auth.users {where}
-               ORDER BY created_at DESC
-               OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY", p);
+        // u.Roles is Ignored by EF — cannot project in SQL.
+        // Project to anonymous type (SQL-safe), then parse RolesJson in memory.
+        var rawItems = await query
+            .OrderByDescending(u => u.CreatedAt)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(u => new
+            {
+                u.Id, u.Email, u.FirstName, u.LastName,
+                u.IsActive, u.IsEmailVerified, u.IsSuspended,
+                u.RolesJson, u.CreatedAt
+            })
+            .ToListAsync(ct);
 
-        return (users, count);
+        var items = rawItems.Select(u => new UserSummaryDto(
+            u.Id, u.Email, u.FirstName, u.LastName,
+            $"{u.FirstName} {u.LastName}".Trim(),
+            u.IsActive, u.IsEmailVerified, u.IsSuspended,
+            System.Text.Json.JsonSerializer.Deserialize<List<int>>(u.RolesJson)!
+                .Select(i => ((UserRole)i).ToString()),
+            u.CreatedAt)).ToList();
+
+        return (items, total);
     }
 }

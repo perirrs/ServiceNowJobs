@@ -87,3 +87,59 @@ public sealed record ResetPasswordRequest(
 public sealed record VerifyEmailRequest(
     string Email,
     string Token);
+
+// ── Step 4: User profile & admin models ──────────────────────────────────────
+
+public sealed record UpdateProfileRequest(
+    string FirstName,
+    string LastName,
+    string? PhoneNumber = null,
+    string? Country = null,
+    string? TimeZone = null);
+
+public sealed record UserSummary(
+    Guid Id,
+    string Email,
+    string FirstName,
+    string LastName,
+    string FullName,
+    bool IsActive,
+    bool IsEmailVerified,
+    bool IsSuspended,
+    IEnumerable<string> Roles,
+    DateTimeOffset CreatedAt);
+
+public sealed record UserAdmin(
+    Guid Id,
+    string Email,
+    string FirstName,
+    string LastName,
+    string FullName,
+    string? PhoneNumber,
+    string? ProfilePictureUrl,
+    bool IsEmailVerified,
+    bool IsActive,
+    bool IsSuspended,
+    string? SuspensionReason,
+    DateTimeOffset? SuspendedAt,
+    IEnumerable<string> Roles,
+    DateTimeOffset? LastLoginAt,
+    string? LastLoginIp,
+    int FailedLoginAttempts,
+    DateTimeOffset? LockedOutUntil,
+    string? Country,
+    string? TimeZone,
+    DateTimeOffset CreatedAt);
+
+public sealed record PagedResult<T>(
+    IEnumerable<T> Items,
+    int TotalCount,
+    int Page,
+    int PageSize,
+    int TotalPages,
+    bool HasNextPage,
+    bool HasPreviousPage);
+
+public sealed record SuspendUserRequest(string Reason);
+
+public sealed record UpdateUserRolesRequest(IReadOnlyList<int> Roles);
