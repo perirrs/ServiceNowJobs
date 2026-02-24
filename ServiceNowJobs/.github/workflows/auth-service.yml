@@ -16,7 +16,7 @@ on:
       - "tests/SNHub.Auth.**"
 
 env:
-  DOTNET_VERSION: "10.0.x"
+  DOTNET_VERSION: "9.0.x"
   REGISTRY: snhubacr.azurecr.io
   IMAGE_NAME: auth-service
 

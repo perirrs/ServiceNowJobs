@@ -245,6 +245,17 @@ public sealed class User
     public void LinkAzureAdAccount(string id) { AzureAdObjectId = id; UpdatedAt = DateTimeOffset.UtcNow; }
     public void ClearDomainEvents() => _domainEvents.Clear();
 
-    private static string GenerateSecureToken() =>
-        Convert.ToBase64String(Guid.NewGuid().ToByteArray()) + Convert.ToBase64String(Guid.NewGuid().ToByteArray());
+    /// <summary>
+    /// Generates a cryptographically secure random token for email verification
+    /// and password reset flows. Uses RandomNumberGenerator (CSPRNG) — NOT Guid.NewGuid()
+    /// which is not cryptographically random and must never be used for security tokens.
+    /// 256 bits of entropy (32 bytes) → URL-safe Base64 → 44 chars.
+    /// </summary>
+    private static string GenerateSecureToken()
+    {
+        var bytes = new byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(bytes);
+        return Convert.ToBase64String(bytes)
+            .Replace("+", "-").Replace("/", "_").TrimEnd('='); // URL-safe Base64
+    }
 }

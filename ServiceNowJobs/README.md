@@ -1,7 +1,7 @@
 # ServiceNowJobs (SNHub) — Auth Service
 
 > ServiceNow-exclusive job portal, AI matching engine, and community platform.
-> Built on **.NET 10** · Hosted on **Microsoft Azure**.
+> Built on **.NET 9** · Hosted on **Microsoft Azure**.
 
 ---
 
@@ -12,7 +12,7 @@ ServiceNowJobs/
 ├── src/
 │   ├── Services/
 │   │   └── Auth/
-│   │       ├── SNHub.Auth.API           # ASP.NET Core 10 Controllers
+│   │       ├── SNHub.Auth.API           # ASP.NET Core 9 Controllers
 │   │       ├── SNHub.Auth.Application   # CQRS · MediatR · Validators
 │   │       ├── SNHub.Auth.Domain        # Entities · Events · Exceptions
 │   │       └── SNHub.Auth.Infrastructure # EF Core · Redis · Azure Services
@@ -48,7 +48,7 @@ ServiceNowJobs/
 ## Quick Start
 
 ### Prerequisites
-- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
+- [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0)
 - [Docker Desktop](https://www.docker.com/products/docker-desktop)
 
 ### Run locally
