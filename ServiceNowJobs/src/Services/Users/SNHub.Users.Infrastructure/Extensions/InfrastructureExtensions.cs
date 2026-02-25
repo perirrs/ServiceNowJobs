@@ -12,25 +12,46 @@ namespace SNHub.Users.Infrastructure.Extensions;
 
 public static class InfrastructureExtensions
 {
-    public static IServiceCollection AddInfrastructure(this IServiceCollection services, IConfiguration config)
+    public static IServiceCollection AddInfrastructure(
+        this IServiceCollection services, IConfiguration config)
     {
         var conn = config.GetConnectionString("UsersDb")
             ?? throw new InvalidOperationException("UsersDb connection string required.");
 
         services.AddDbContext<UsersDbContext>(opts =>
-            opts.UseNpgsql(conn, npg => { npg.EnableRetryOnFailure(3); npg.MigrationsHistoryTable("__ef_migrations", "users"); })
-                .EnableDetailedErrors(config.GetValue<bool>("DetailedErrors")));
+            opts.UseNpgsql(conn, npg =>
+            {
+                npg.EnableRetryOnFailure(3, TimeSpan.FromSeconds(5), null);
+                npg.MigrationsHistoryTable("__ef_migrations", "users");
+                npg.CommandTimeout(60);
+            })
+            .EnableDetailedErrors(config.GetValue<bool>("DetailedErrors")));
 
         services.AddScoped<IUnitOfWork>(sp => sp.GetRequiredService<UsersDbContext>());
         services.AddScoped<IUserProfileRepository, UserProfileRepository>();
+        services.AddScoped<ICurrentUserService, CurrentUserService>();
+        services.AddHttpContextAccessor();
 
-        var storageCon = config.GetConnectionString("AzureStorage");
-        if (!string.IsNullOrWhiteSpace(storageCon))
-            services.AddSingleton(_ => new BlobServiceClient(storageCon));
+        // Blob storage: Azure in production, local stub otherwise
+        var storageConn = config.GetConnectionString("AzureStorage");
+        var accountUrl  = config["AzureStorage:AccountUrl"];
+
+        if (!string.IsNullOrWhiteSpace(storageConn))
+        {
+            services.AddSingleton(_ => new BlobServiceClient(storageConn));
+            services.AddScoped<IBlobStorageService, AzureBlobStorageService>();
+        }
+        else if (!string.IsNullOrWhiteSpace(accountUrl))
+        {
+            services.AddSingleton(_ =>
+                new BlobServiceClient(new Uri(accountUrl), new DefaultAzureCredential()));
+            services.AddScoped<IBlobStorageService, AzureBlobStorageService>();
+        }
         else
-            services.AddSingleton(_ => new BlobServiceClient(new Uri(config["AzureStorage:AccountUrl"]!), new DefaultAzureCredential()));
-
-        services.AddScoped<IBlobStorageService, AzureBlobStorageService>();
+        {
+            // Local / test environment
+            services.AddSingleton<IBlobStorageService, LocalBlobStorageService>();
+        }
 
         services.AddHealthChecks()
             .AddNpgSql(conn, name: "users-postgres", tags: ["ready"]);

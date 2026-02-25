@@ -1,4 +1,5 @@
-using System.Net;
+using FluentValidation;
+using SNHub.Users.Domain.Exceptions;
 using System.Text.Json;
 
 namespace SNHub.Users.API.Middleware;
@@ -14,12 +15,41 @@ public sealed class ExceptionMiddleware
     public async Task InvokeAsync(HttpContext ctx)
     {
         try { await _next(ctx); }
+        catch (ValidationException ex)
+        {
+            var errors = ex.Errors
+                .GroupBy(e => e.PropertyName)
+                .ToDictionary(g => g.Key, g => g.Select(e => e.ErrorMessage).ToArray());
+            await WriteJsonAsync(ctx, 400, new
+            {
+                type   = "ValidationError",
+                title  = "One or more validation errors occurred.",
+                status = 400,
+                errors
+            });
+        }
+        catch (UserProfileNotFoundException ex)    { await WriteError(ctx, 404, ex.Message); }
+        catch (UserAccessDeniedException)          { await WriteError(ctx, 403, "Access denied."); }
+        catch (UserAlreadyDeletedException ex)     { await WriteError(ctx, 409, ex.Message); }
+        catch (InvalidFileTypeException ex)        { await WriteError(ctx, 415, ex.Message); }
+        catch (FileTooLargeException ex)           { await WriteError(ctx, 413, ex.Message); }
+        catch (InvalidOperationException ex)       { await WriteError(ctx, 409, ex.Message); }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Unhandled exception");
-            ctx.Response.ContentType = "application/json";
-            ctx.Response.StatusCode = (int)HttpStatusCode.InternalServerError;
-            await ctx.Response.WriteAsync(JsonSerializer.Serialize(new { error = "An unexpected error occurred." }));
+            _logger.LogError(ex, "Unhandled: {Method} {Path}", ctx.Request.Method, ctx.Request.Path);
+            await WriteError(ctx, 500, "An unexpected error occurred.");
         }
+    }
+
+    private static Task WriteError(HttpContext ctx, int status, string message) =>
+        WriteJsonAsync(ctx, status, new { type = "Error", title = message, status });
+
+    private static Task WriteJsonAsync(HttpContext ctx, int status, object body)
+    {
+        ctx.Response.StatusCode  = status;
+        ctx.Response.ContentType = "application/json";
+        return ctx.Response.WriteAsync(
+            JsonSerializer.Serialize(body,
+                new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
     }
 }
