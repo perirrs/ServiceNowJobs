@@ -17,5 +17,10 @@ public sealed class Notification
     public static Notification Create(Guid userId, NotificationType type, string title, string message, string? actionUrl = null, string? metadataJson = null) =>
         new() { Id = Guid.NewGuid(), UserId = userId, Type = type, Title = title, Message = message, ActionUrl = actionUrl, MetadataJson = metadataJson, IsRead = false, CreatedAt = DateTimeOffset.UtcNow };
 
-    public void MarkAsRead() { IsRead = true; ReadAt = DateTimeOffset.UtcNow; }
+    public void MarkAsRead()
+    {
+        if (IsRead) return;          // idempotent — ReadAt stays frozen after first call
+        IsRead = true;
+        ReadAt = DateTimeOffset.UtcNow;
+    }
 }
