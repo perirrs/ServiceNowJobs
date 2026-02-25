@@ -264,7 +264,7 @@ public sealed class GetMyParseResultsTests
             new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
         body!.Should().HaveCount(2);
-        body[0].OriginalFileName.Should().Be("cv2.pdf"); // newest first
+        body![0].OriginalFileName.Should().Be("cv2.pdf"); // newest first
     }
 
     [Fact]
@@ -284,7 +284,7 @@ public sealed class GetMyParseResultsTests
             new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
         body!.Should().HaveCount(1);
-        body[0].UserId.Should().Be(_userId);
+        body![0].UserId.Should().Be(_userId);
     }
 }
 
