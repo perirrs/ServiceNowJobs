@@ -19,10 +19,19 @@ public sealed class ApplicationRepository : IApplicationRepository
     public async Task AddAsync(JobApplication app, CancellationToken ct = default)
         => await _db.Applications.AddAsync(app, ct);
 
+    public Task<int> GetCountThisMonthAsync(Guid candidateId, CancellationToken ct = default)
+    {
+        var start = new DateTimeOffset(DateTimeOffset.UtcNow.Year, DateTimeOffset.UtcNow.Month, 1,
+                                       0, 0, 0, TimeSpan.Zero);
+        return _db.Applications
+            .AsNoTracking()
+            .CountAsync(a => a.CandidateId == candidateId && a.AppliedAt >= start, ct);
+    }
+
     public async Task<(IEnumerable<JobApplication> Items, int Total)> GetByCandidateAsync(
         Guid candidateId, int page, int pageSize, CancellationToken ct = default)
     {
-        var q = _db.Applications.Where(a => a.CandidateId == candidateId);
+        var q = _db.Applications.AsNoTracking().Where(a => a.CandidateId == candidateId);
         var total = await q.CountAsync(ct);
         var items = await q.OrderByDescending(a => a.AppliedAt)
             .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct);
@@ -32,7 +41,7 @@ public sealed class ApplicationRepository : IApplicationRepository
     public async Task<(IEnumerable<JobApplication> Items, int Total)> GetByJobAsync(
         Guid jobId, ApplicationStatus? status, int page, int pageSize, CancellationToken ct = default)
     {
-        var q = _db.Applications.Where(a => a.JobId == jobId);
+        var q = _db.Applications.AsNoTracking().Where(a => a.JobId == jobId);
         if (status.HasValue) q = q.Where(a => a.Status == status);
         var total = await q.CountAsync(ct);
         var items = await q.OrderByDescending(a => a.AppliedAt)

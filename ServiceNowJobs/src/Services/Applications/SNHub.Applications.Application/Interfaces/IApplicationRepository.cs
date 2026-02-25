@@ -8,8 +8,13 @@ public interface IApplicationRepository
     Task<JobApplication?> GetByIdAsync(Guid id, CancellationToken ct = default);
     Task<bool> ExistsAsync(Guid jobId, Guid candidateId, CancellationToken ct = default);
     Task AddAsync(JobApplication application, CancellationToken ct = default);
+
+    /// <summary>Count of applications submitted by candidate in the current calendar month.</summary>
+    Task<int> GetCountThisMonthAsync(Guid candidateId, CancellationToken ct = default);
+
     Task<(IEnumerable<JobApplication> Items, int Total)> GetByCandidateAsync(
         Guid candidateId, int page, int pageSize, CancellationToken ct = default);
+
     Task<(IEnumerable<JobApplication> Items, int Total)> GetByJobAsync(
         Guid jobId, ApplicationStatus? status, int page, int pageSize, CancellationToken ct = default);
 }
