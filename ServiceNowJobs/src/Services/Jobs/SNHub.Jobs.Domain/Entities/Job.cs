@@ -88,6 +88,8 @@ public sealed class Job
     }
 
     public void SetSkills(string skillsJson) { SkillsRequired = skillsJson; UpdatedAt = DateTimeOffset.UtcNow; }
+    public void SetCertifications(string certsJson) { CertificationsRequired = certsJson; UpdatedAt = DateTimeOffset.UtcNow; }
+    public void SetServiceNowVersions(string versionsJson) { ServiceNowVersions = versionsJson; UpdatedAt = DateTimeOffset.UtcNow; }
     public void IncrementViews() { ViewCount++; }
     public void IncrementApplications() { ApplicationCount++; }
     public void DecrementApplications() { if (ApplicationCount > 0) ApplicationCount--; }

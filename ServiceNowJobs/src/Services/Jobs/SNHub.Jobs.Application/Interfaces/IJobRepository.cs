@@ -9,9 +9,11 @@ public interface IJobRepository
     Task AddAsync(Job job, CancellationToken ct = default);
     Task UpdateAsync(Job job, CancellationToken ct = default);
     Task<(IEnumerable<Job> Items, int Total)> SearchAsync(
-        string? keyword, string? country, JobType? jobType,
-        WorkMode? workMode, ExperienceLevel? level, JobStatus? status,
-        Guid? employerId, int page, int pageSize, CancellationToken ct = default);
+        string? keyword, string? country, string? location,
+        JobType? jobType, WorkMode? workMode, ExperienceLevel? level,
+        decimal? salaryMin, decimal? salaryMax,
+        JobStatus? status, Guid? employerId,
+        int page, int pageSize, CancellationToken ct = default);
 }
 
 public interface IUnitOfWork
