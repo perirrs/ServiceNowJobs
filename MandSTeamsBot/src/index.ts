@@ -52,6 +52,13 @@ if (config.sendAsUser) {
       await g.send(chatId, text, mentions, quote);
     },
     sync: () => pollNow(),
+    createTracker: async (chatId, html) => {
+      const id = await g.sendHtml(chatId, html);
+      // Pinning is a convenience: the table is still there if it cannot be pinned.
+      await g.pin(chatId, id).catch((err) => console.warn(`Could not pin the tracker: ${String(err).slice(0, 200)}`));
+      return id;
+    },
+    updateTracker: (chatId, messageId, html) => g.updateHtml(chatId, messageId, html),
     findGroups: (query) => g.findGroups(query),
     groupMembers: (chatId) => g.groupMembers(chatId),
     history: async (chatId, max, since) =>
@@ -139,6 +146,8 @@ async function pollGroups(g: GraphChat): Promise<void> {
       // What the sender wrote himself comes first: the assistant steps back for whoever it was aimed at.
       for (const line of lines) {
         if (line.fromUserId !== senderId) continue;
+        // The tracker table is the assistant's, not something the sender typed.
+        if (line.id === store.get(`tracker:${group.id}`) || line.text.startsWith("Team tracker")) continue;
         if (sentByAssistant.has(normalise(line.text)) || engine.isAssistantGroupText(group.id, line.text)) continue;
         engine.senderSpokeInGroup(group.id, line.addressedUserIds);
       }

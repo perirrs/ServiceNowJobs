@@ -24,3 +24,9 @@ test("a name that is part of the person's own greeting is kept", () => {
   assert.equal(tidyReply("Hi Ravi, any update?", "Ravi Kumar", "Hi Ravi"), "Hi Ravi, any update?");
   assert.equal(tidyReply("Hi Anna, any update?", "Mahanth M", "Hi Anna"), "Hi Anna, any update?");
 });
+
+test("internal item numbers never reach the reader", () => {
+  assert.equal(tidyReply("Hi. Item 7, the QA fixes, was due yesterday. Is it done?", null), "Hi. The QA fixes, was due yesterday. Is it done?");
+  assert.equal(tidyReply("Ok. What about item 7, the QA fixes?", null), "Ok. What about the QA fixes?");
+  assert.equal(tidyReply("Is item #12 done?", null), "Is done?");
+});

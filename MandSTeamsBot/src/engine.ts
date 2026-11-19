@@ -1,5 +1,5 @@
 import { displayName, renderItems, renderNote } from "./ai.js";
-import type { AdminAction, Brain, CheckinContext, DigestPerson } from "./ai.js";
+import type { AdminAction, Brain, CheckinContext, DigestPerson, Round } from "./ai.js";
 import { todayIn } from "./config.js";
 import type { Config } from "./config.js";
 import type { ChatMessage, Checkin, Group, Person, Store } from "./db.js";
@@ -30,6 +30,10 @@ export interface DirectChannel {
     /** The message being answered, shown quoted above the reply. */
     quote?: { messageId: string; preview: string; userId: string; name: string },
   ): Promise<void>;
+  /** Post the tracker table in a group chat and pin it. Returns the new message's id. */
+  createTracker?(chatId: string, html: string): Promise<string>;
+  /** Replace the tracker table in place. */
+  updateTracker?(chatId: string, messageId: string, html: string): Promise<void>;
   /** Read every watched chat now, so a decision to chase is made on what has really been said. */
   sync?(): Promise<void>;
   /** The sender's named group chats whose name contains the query. */
@@ -62,6 +66,7 @@ const ADMIN_HELP = `**Daily Check-in: what you can type**
 - **board** (or **menu**): the team board, with who has replied, who is blocked, and buttons for everything below
 - **add** name@company.com: start asking someone for updates
 - **remove** name: stop asking them (their notes are kept)
+- **tracker** Group Name: post (or refresh) the tracker table in that group: who is doing what, due dates and status, pinned at the top and kept up to date by me. **tracker Group Name off** stops it.
 - **add group** Group Name: follow a Teams group chat. Updates are asked for in the group, and follow-up questions stay there with the person tagged; only something that should not be said in front of the group goes to them one to one. **ask group** Name asks now, **remove group** Name stops.
 - **ask** name: ask them for an update right now. **ask all** asks everyone.
 - **profile** name: their role, responsibilities and targets, so the questions fit their job
@@ -70,9 +75,9 @@ const ADMIN_HELP = `**Daily Check-in: what you can type**
 - **list**: everyone you have added and where they stand today
 - **report** name: their recent notes and open items
 - **digest**: today's summary of everyone, right now
-- **schedule 17:00**: ask everyone automatically at that time, Monday to Friday. **schedule off** stops it. **schedule** alone shows the current setting.
+- **schedule morning 09:30** and **schedule evening 17:30**: the two daily messages, Monday to Friday. The morning one asks each person what they will work on today; the evening one checks what happened with that plan and what is blocking them. **schedule off** stops both, **schedule morning off** one of them, and **schedule** alone shows the settings.
 - **schedule digest 19:30**: send the daily digest automatically at that time. **schedule digest off** stops it.
-- **schedule priya 10:30**: give one person, or one group, a time of their own instead of the general one. **schedule priya off** removes it.
+- **schedule priya morning 10:00**: give one person, or one group, a time of their own for that message instead of the general one. **schedule priya off** removes theirs.
 
 Anything else you type is treated as a question about the team's notes, for example: _who has been blocked for more than two days?_
 
@@ -127,9 +132,9 @@ export function cardToCommand(value: unknown): string {
     case "scheduleOff":
       return "schedule off";
     case "scheduleFor":
-      return `schedule ${str("who")} ${str(str("field"))}`;
+      return ["schedule", str("who"), str("slot"), str(str("field"))].filter(Boolean).join(" ");
     case "scheduleOffFor":
-      return `schedule ${str("who")} off`;
+      return ["schedule", str("who"), "off"].filter(Boolean).join(" ");
     default:
       return "board";
   }
@@ -164,6 +169,14 @@ function daysBefore(date: string, days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+/** The two daily messages. Morning asks for the plan; evening reviews the day. */
+const SLOTS = ["morning", "evening"] as const;
+type Slot = (typeof SLOTS)[number];
+const roundOf = (slot: Slot): Round => (slot === "morning" ? "plan" : "review");
+/** A time before noon belongs to the morning message, anything later to the evening one. */
+const slotOf = (time: string): Slot => (time < "12:00" ? "morning" : "evening");
+const SLOT_LABEL: Record<Slot, string> = { morning: "morning plan", evening: "end-of-day update" };
+
 const clamp = (n: number, low: number, high: number) => Math.min(high, Math.max(low, n));
 /** Plus or minus a quarter, so replies do not arrive like clockwork. */
 const jitter = (ms: number) => Math.round(ms * (0.75 + Math.random() * 0.5));
@@ -186,6 +199,9 @@ interface Draft {
   userCount: number;
 }
 
+/** A date the model gave, kept only if it really is YYYY-MM-DD. */
+const validDate = (value: string | undefined) => (value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : "");
+
 export class Engine {
   /** One queue per person, so two quick messages are handled in order. */
   private queues = new Map<number, Promise<unknown>>();
@@ -199,7 +215,43 @@ export class Engine {
     private log: (msg: string, err?: unknown) => void = (msg, err) =>
       err ? console.error(msg, err) : console.log(msg),
     private direct?: DirectChannel,
-  ) {}
+  ) {
+    this.migrateSchedules();
+  }
+
+  /** Times saved before there were two daily messages: file each under morning or evening. */
+  private migrateSchedules(): void {
+    for (const key of this.store.keys("schedule:")) {
+      const parts = key.split(":");
+      const legacy =
+        key === "schedule:checkin" || ((parts[1] === "person" || parts[1] === "group") && parts.length === 3);
+      if (!legacy) continue;
+      const time = this.store.get(key) ?? "";
+      if (time) {
+        const target = key === "schedule:checkin" ? `schedule:${slotOf(time)}` : `${key}:${slotOf(time)}`;
+        if (!this.store.get(target)) this.store.set(target, time);
+      }
+      this.store.set(key, "");
+    }
+  }
+
+  /** What a conversation started now is for, when nobody said: plan in the morning, review late in the day. */
+  private roundNow(): Round {
+    const { minutes } = this.localNow();
+    return minutes < 12 * 60 ? "plan" : minutes >= 15 * 60 ? "review" : "update";
+  }
+
+  /**
+   * Whether this person should be asked now. Never while they are in the
+   * middle of replying. On a schedule, once per kind of conversation per
+   * day; by hand, whenever asked.
+   */
+  private dueFor(person: Person, date: string, round: Round, force: boolean): boolean {
+    const c = this.store.checkin(person.id, date);
+    if (!c) return true;
+    if (c.status === "open" && this.sinceAsk(c.id).some((m) => m.role === "user")) return false;
+    return force || !this.store.get(`round:${c.id}:${round}`);
+  }
 
   private today(): string {
     return todayIn(this.config.timezone, this.now());
@@ -363,7 +415,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
 
   // ---------- the check-in conversation ----------
 
-  private context(person: Person, checkin: Checkin, finalTurn = false, fromGroup = false): CheckinContext {
+  private context(person: Person, checkin: Checkin, finalTurn = false, fromGroup = false, opening = false): CheckinContext {
     return {
       date: checkin.date,
       person,
@@ -374,6 +426,8 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       fromGroup,
       rapport: this.personal ? this.memoryFor(person) : undefined,
       topic: this.store.get(`topic:${checkin.id}`) || undefined,
+      round: (this.store.get(`kind:${checkin.id}`) as Round | undefined) || undefined,
+      opening,
       greeting: this.personal ? this.store.get(`greeting:${person.id}`) || undefined : undefined,
     };
   }
@@ -434,7 +488,9 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     if (this.store.get(`gmemday:${group.id}`) === this.today()) return;
     try {
       const since = this.store.get(`gmemcursor:${group.id}`) || "";
-      const fresh = await this.direct.history(group.chatId, this.config.historyMessages, since);
+      const fresh = (await this.direct.history(group.chatId, this.config.historyMessages, since)).filter(
+        (m) => !(m.fromSender && m.text.startsWith("Team tracker")),
+      );
       if (fresh.length) {
         const revised = await this.brain.reviseMemory({
           about: `the group chat "${group.name}" and the work of each person in it`,
@@ -493,24 +549,25 @@ So you know how it's used: your answers are summarised each day for the CTO and 
   }
 
   /** Send today's opening question. Returns false if the person cannot be reached or already has one. */
-  async startCheckin(person: Person, force = false, topic = ""): Promise<boolean> {
+  async startCheckin(person: Person, force = false, topic = "", round: Round = this.roundNow()): Promise<boolean> {
     if (this.paused) return false;
     if (!this.address(person)) return false;
     const date = this.today();
     const existing = this.store.checkin(person.id, date);
-    if (existing && !force) return false;
-    if (existing?.status === "open") return false;
+    if (!this.dueFor(person, date, round, force)) return false;
 
     await this.refreshMemory(person);
     const checkin = this.store.openCheckin(person.id, date);
     this.beginAsk(checkin);
     this.store.set(`via:${checkin.id}`, "");
     this.store.set(`topic:${checkin.id}`, topic);
+    this.store.set(`kind:${checkin.id}`, round);
     try {
-      const turn = await this.brain.nextTurn(this.context(person, checkin));
+      const turn = await this.brain.nextTurn(this.context(person, checkin, false, false, true));
       // Deliver first, record second: the record must only show what was really sent.
       await this.say(person, turn.reply);
       this.store.addMessage(checkin.id, "bot", turn.reply);
+      this.store.set(`round:${checkin.id}:${round}`, "1");
     } catch (err) {
       // Nothing reached the person, so leave today free for another attempt.
       if (existing) this.store.setCheckinStatus(checkin.id, existing.status);
@@ -808,15 +865,15 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     for (const change of items) {
       const updated =
         change.itemId != null &&
-        this.store.updateItem(person.id, change.itemId, change.status, change.update, checkin.date);
+        this.store.updateItem(person.id, change.itemId, change.status, change.update, checkin.date, validDate(change.due));
       if (!updated) {
-        this.store.addItem(person.id, change.title, change.status, change.update, checkin.date);
+        this.store.addItem(person.id, change.title, change.status, change.update, checkin.date, validDate(change.due));
       }
     }
     this.store.setCheckinStatus(checkin.id, "completed");
     if (announce) {
       await this.notifyAdmins(
-        `**Update from ${displayName(person)}** (${checkin.date})\n\n${renderNote(note)}\n\n**Open items**\n${renderItems(this.store.activeItems(person.id))}`,
+        `**${this.store.get(`kind:${checkin.id}`) === "plan" ? "Plan for today from" : "Update from"} ${displayName(person)}** (${checkin.date})\n\n${renderNote(note)}\n\n**Open items**\n${renderItems(this.store.activeItems(person.id), this.today())}`,
       );
     }
   }
@@ -996,21 +1053,24 @@ So you know how it's used: your answers are summarised each day for the CTO and 
    * Post one request for updates in the group. Members not yet asked today
    * are covered; with `force`, so are those who finished earlier.
    */
-  private async askGroup(group: Group, force = false, topic = ""): Promise<{ asked: number; message: string }> {
+  private async askGroup(
+    group: Group,
+    force = false,
+    topic = "",
+    round: Round = this.roundNow(),
+  ): Promise<{ asked: number; message: string }> {
     if (this.paused) return { asked: 0, message: `Paused: nothing was posted in ${group.name}. Send **resume** first.` };
     const date = this.today();
     const due = (await this.syncGroup(group)).filter((p) => {
       // Admins in the group see the question like everyone else, but are not
       // chased or followed up: the summaries are for them.
       if (this.isAdmin(p)) return false;
-      // On the group's schedule, someone with a time of their own waits for it.
-      if (!force && this.store.get(`schedule:person:${p.id}`)) return false;
-      const c = this.store.checkin(p.id, date);
-      if (!c) return true;
-      if (!force) return false;
-      // Asked by hand: also anyone who finished earlier, and anyone asked today
-      // who has said nothing. Only people in the middle of replying are left alone.
-      return c.status !== "open" || !this.sinceAsk(c.id).some((m) => m.role === "user");
+      // On the group's schedule, someone with a time of their own for this message waits for it.
+      const slot = round === "plan" ? "morning" : round === "review" ? "evening" : "";
+      if (!force && slot && this.store.get(`schedule:person:${p.id}:${slot}`)) return false;
+      // Asked by hand: everyone except people in the middle of replying.
+      // On a schedule: once a day for each kind of message.
+      return this.dueFor(p, date, round, force);
     });
     if (!due.length) {
       return {
@@ -1021,7 +1081,10 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       };
     }
     // People being asked a second time today: they get tagged, so it reads as a chase.
-    const again = due.filter((p) => this.store.checkin(p.id, date)?.status === "open");
+    const again = due.filter((p) => {
+      const c = this.store.checkin(p.id, date);
+      return c?.status === "open" && this.store.get(`kind:${c.id}`) === round;
+    });
 
     // Read before asking: the group's chat, and (for a small group) each member's own chat with the sender.
     await this.refreshGroupMemory(group);
@@ -1041,7 +1104,10 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       }
     }
 
-    let opening = "Hi team, please share today's update.";
+    let opening =
+      round === "plan"
+        ? "Hi team, please share what you will work on today."
+        : "Hi team, please share today's update.";
     let tagged: { person: Person; userId: string; question: string }[] = [];
     if (this.personal || topic) {
       try {
@@ -1050,6 +1116,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           topic,
           memory: this.store.get(`gmemory:${group.id}`) || "",
           today: date,
+          round,
           members: due.map((p) => ({
             name: displayName(p),
             role: p.profile ?? "",
@@ -1096,6 +1163,8 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       this.beginAsk(checkin);
       this.store.addMessage(checkin.id, "bot", text);
       this.store.set(`via:${checkin.id}`, String(group.id));
+      this.store.set(`kind:${checkin.id}`, round);
+      this.store.set(`round:${checkin.id}:${round}`, "1");
       const own = tagged.find((t) => t.person.id === person.id)?.question;
       this.store.set(
         `topic:${checkin.id}`,
@@ -1190,6 +1259,94 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     }
   }
 
+  // ---------- the tracker: one pinned table in each followed group, kept up to date ----------
+
+  /** The table itself. `rows` is how many real items it holds. */
+  private trackerTable(group: Group): { html: string; rows: number } {
+    const date = this.today();
+    const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const day = (d: string) =>
+      new Date(`${d}T12:00:00Z`).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
+    let rows = 0;
+    const body = this.store
+      .groupMembers(group.id)
+      .filter((p) => !this.isAdmin(p))
+      .map((p) => {
+        const name = esc((p.name ?? p.email).split(" ")[0]!);
+        const items = this.store.trackerItems(p.id, date).slice(0, 8);
+        rows += items.length;
+        if (!items.length) return `<tr><td>${name}</td><td>No items yet</td><td>-</td><td>-</td></tr>`;
+        return items
+          .map((i, n) => {
+            const status =
+              i.status === "done"
+                ? "✅ Done"
+                : i.status === "blocked"
+                  ? "🟠 Blocked"
+                  : i.due && i.due < date
+                    ? "🔴 Overdue"
+                    : i.due === date
+                      ? "🟡 Due today"
+                      : "🔵 In progress";
+            return `<tr><td>${n === 0 ? name : ""}</td><td>${esc(i.title)}</td><td>${i.due ? day(i.due) : "-"}</td><td>${status}</td></tr>`;
+          })
+          .join("");
+      })
+      .join("");
+    return {
+      rows,
+      html: `<table><tr><th>Who</th><th>Item</th><th>Due</th><th>Status</th></tr>${body}</table>`,
+    };
+  }
+
+  /**
+   * Bring each group's tracker up to date. It is one message in the group,
+   * pinned, and edited in place, so the team always has the current picture
+   * in one spot. It carries titles, dates and status only: no notes and no
+   * blocker details.
+   */
+  async refreshTrackers(only?: Group): Promise<void> {
+    if (this.paused || !this.direct?.createTracker) return;
+    for (const group of only ? [only] : this.store.groups()) {
+      if (this.store.get(`trackeroff:${group.id}`)) continue;
+      const { html, rows } = this.trackerTable(group);
+      const existing = this.store.get(`tracker:${group.id}`);
+      // Nothing to show yet: do not put an empty table in front of the team.
+      if (!existing && !rows && !only) continue;
+      if (this.store.get(`trackerhash:${group.id}`) === html) continue;
+
+      const when = new Intl.DateTimeFormat("en-GB", {
+        timeZone: this.config.timezone,
+        weekday: "short",
+        day: "numeric",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }).format(this.now());
+      const message = `<p><b>Team tracker</b> · updated ${when}</p>${html}`;
+      try {
+        if (existing && this.direct.updateTracker) {
+          try {
+            await this.direct.updateTracker(group.chatId, existing, message);
+            this.store.set(`trackerhash:${group.id}`, html);
+            continue;
+          } catch (err) {
+            this.log(`Could not edit the tracker in ${group.name}`, err);
+            // Posting a fresh one each time would flood the group: at most one new table a day.
+            if (this.store.get(`trackerday:${group.id}`) === this.today()) continue;
+          }
+        }
+        const id = await this.direct.createTracker(group.chatId, message);
+        this.store.set(`tracker:${group.id}`, id);
+        this.store.set(`trackerday:${group.id}`, this.today());
+        this.store.set(`trackerhash:${group.id}`, html);
+      } catch (err) {
+        this.log(`Could not post the tracker in ${group.name}`, err);
+      }
+    }
+  }
+
   // ---------- the schedule, kept in the database and set from the chat ----------
 
   private localNow(): { date: string; minutes: number; weekend: boolean } {
@@ -1209,14 +1366,19 @@ So you know how it's used: your answers are summarised each day for the CTO and 
   }
 
   private scheduleStatus(): string {
-    const ask = this.store.get("schedule:checkin");
+    const morning = this.store.get("schedule:morning");
+    const evening = this.store.get("schedule:evening");
     const digest = this.store.get("schedule:digest");
     return [
-      ask
-        ? `Asking everyone automatically at **${ask}**, Monday to Friday (${this.config.timezone} time).`
+      morning ? `Morning plan: everyone is asked automatically at **${morning}**.` : "",
+      evening ? `End-of-day update: everyone is asked automatically at **${evening}**.` : "",
+      morning || evening
+        ? `Monday to Friday, ${this.config.timezone} time.${morning && evening ? "" : ` No ${morning ? "end-of-day" : "morning"} message is set.`}`
         : "No automatic asking: updates are only requested when you say **ask**.",
       digest ? `Daily digest at **${digest}**.` : "No automatic digest: send **digest** when you want one.",
-    ].join("\n");
+    ]
+      .filter(Boolean)
+      .join("\n");
   }
 
   /**
@@ -1257,22 +1419,27 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     await this.runGroupTimers();
     await this.chaseFollowUps(this.config.chaseAfterMinutes);
     await this.closeIdle(this.config.idleCloseMinutes);
+    await this.refreshTrackers();
     await this.refreshBoards();
 
     const { date, minutes, weekend } = this.localNow();
     if (weekend) return;
-    const jobs: [string, () => Promise<unknown>][] = [
-      ["checkin", () => this.runCheckins()],
+    type Job = [string, () => Promise<unknown>];
+    const jobs: Job[] = [
+      ["morning", () => this.runCheckins("morning")],
+      ["evening", () => this.runCheckins("evening")],
       ["digest", () => this.runDigest()],
       ...this.store
         .groups()
-        .map((g): [string, () => Promise<unknown>] => [`group:${g.id}`, () => this.askGroup(g)]),
+        .flatMap((g) => SLOTS.map((slot): Job => [`group:${g.id}:${slot}`, () => this.askGroup(g, false, "", roundOf(slot))])),
       ...this.store
         .nominees()
-        .map((p): [string, () => Promise<unknown>] => [
-          `person:${p.id}`,
-          () => this.enqueue(p.id, () => this.startCheckin(p)),
-        ]),
+        .flatMap((p) =>
+          SLOTS.map((slot): Job => [
+            `person:${p.id}:${slot}`,
+            () => this.enqueue(p.id, () => this.startCheckin(p, false, "", roundOf(slot))),
+          ]),
+        ),
     ];
     for (const [kind, job] of jobs) {
       const at = this.store.get(`schedule:${kind}`);
@@ -1325,20 +1492,45 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     const submit = (title: string, data: Record<string, unknown>) => ({ type: "Action.Submit", title, data });
 
     // A time of their own, in green, for a person or group that has one.
-    const scheduleLine = (at: string | undefined) =>
-      at
-        ? [{ type: "TextBlock", text: `ON · Asked at ${at}, Monday to Friday`, color: "Good", weight: "Bolder", size: "Small", spacing: "None", wrap: true }]
-        : [];
-    // A button that opens a time picker for one person or group. Its label shows the time when one is set.
-    const timePicker = (field: string, who: string, at: string | undefined) => ({
-      type: "Action.ShowCard",
-      title: at ? `Time: ${at}` : "Set time",
-      card: {
-        type: "AdaptiveCard",
-        body: [{ type: "Input.Time", id: field, label: "Ask at this time, Monday to Friday", ...(at ? { value: at } : {}) }],
-        actions: [submit("Save", { cmd: "scheduleFor", who, field }), submit("Turn off", { cmd: "scheduleOffFor", who })],
-      },
+    const times = (prefix: string) => ({
+      morning: this.store.get(`schedule:${prefix}morning`) || "",
+      evening: this.store.get(`schedule:${prefix}evening`) || "",
     });
+    const timesText = (t: { morning: string; evening: string }) =>
+      [t.morning && `Morning ${t.morning}`, t.evening && `Evening ${t.evening}`].filter(Boolean).join(" · ");
+    const scheduleLine = (prefix: string) => {
+      const t = times(prefix);
+      return t.morning || t.evening
+        ? [{ type: "TextBlock", text: `ON · ${timesText(t)}, Monday to Friday`, color: "Good", weight: "Bolder", size: "Small", spacing: "None", wrap: true }]
+        : [];
+    };
+    // A button that opens the two time pickers, morning and evening. `who` is empty for everyone.
+    const timePicker = (field: string, who: string, prefix: string, title = "") => {
+      const t = times(prefix);
+      return {
+        type: "Action.ShowCard",
+        title: title || (t.morning || t.evening ? `Times: ${timesText(t)}` : "Set times"),
+        card: {
+          type: "AdaptiveCard",
+          body: [
+            { type: "Input.Time", id: `${field}m`, label: "Morning: ask for the plan for the day", ...(t.morning ? { value: t.morning } : {}) },
+            { type: "Input.Time", id: `${field}e`, label: "Evening: ask for the end-of-day update", ...(t.evening ? { value: t.evening } : {}) },
+          ],
+          actions: [
+            submit("Save morning", { cmd: "scheduleFor", who, field: `${field}m`, slot: "morning" }),
+            submit("Save evening", { cmd: "scheduleFor", who, field: `${field}e`, slot: "evening" }),
+            submit("Turn off", { cmd: "scheduleOffFor", who }),
+          ],
+        },
+      };
+    };
+    // Things of theirs that are past their date, in red under the person.
+    const overdueLine = (person: Person) => {
+      const late = this.store.activeItems(person.id).filter((i) => i.due && i.due < date);
+      return late.length
+        ? [{ type: "TextBlock", text: `OVERDUE · ${late.slice(0, 3).map((i) => `${clip(i.title, 60)} (due ${i.due})`).join("; ")}`, color: "Attention", size: "Small", spacing: "None", wrap: true }]
+        : [];
+    };
 
     const groups = [
       { title: "Needs you personally", color: "Attention" },
@@ -1414,7 +1606,8 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           items: [
             { type: "TextBlock", text: displayName(person), weight: "Bolder", wrap: true },
             { type: "TextBlock", text: line, wrap: true, maxLines: 2, spacing: "None", isSubtle: true },
-            ...scheduleLine(this.store.get(`schedule:person:${person.id}`)),
+            ...overdueLine(person),
+            ...scheduleLine(`person:${person.id}:`),
             {
               type: "ActionSet",
               spacing: "Small",
@@ -1426,7 +1619,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
                 },
                 submit("Ask now", { cmd: "ask", who: person.email }),
                 submit("Details", { cmd: "details", who: person.email }),
-                timePicker(`p${person.id}`, person.email, this.store.get(`schedule:person:${person.id}`)),
+                timePicker(`p${person.id}`, person.email, `person:${person.id}:`),
                 submit("Remove", { cmd: "remove", who: person.email }),
               ],
             },
@@ -1451,13 +1644,13 @@ So you know how it's used: your answers are summarised each day for the CTO and 
               spacing: "None",
               isSubtle: true,
             },
-            ...scheduleLine(this.store.get(`schedule:group:${g.id}`)),
+            ...scheduleLine(`group:${g.id}:`),
             {
               type: "ActionSet",
               spacing: "Small",
               actions: [
                 submit("Ask group now", { cmd: "askGroup", who: g.name }),
-                timePicker(`g${g.id}`, g.name, this.store.get(`schedule:group:${g.id}`)),
+                timePicker(`g${g.id}`, g.name, `group:${g.id}:`),
                 submit("Remove group", { cmd: "removeGroup", who: g.name }),
               ],
             },
@@ -1467,17 +1660,26 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     }
 
     // The general settings: green when switched on, grey when off.
-    const general = this.store.get("schedule:checkin");
+    const morningAt = this.store.get("schedule:morning");
+    const eveningAt = this.store.get("schedule:evening");
     const digestAt = this.store.get("schedule:digest");
     body.push(
       {
         type: "TextBlock",
-        text: general ? `ON · Everyone is asked at ${general}, Monday to Friday` : "OFF · No automatic asking",
+        text: morningAt ? `ON · Morning plan: everyone is asked at ${morningAt}, Monday to Friday` : "OFF · No morning plan message",
         wrap: true,
         size: "Small",
         spacing: "Large",
         separator: true,
-        ...(general ? { color: "Good", weight: "Bolder" } : { isSubtle: true }),
+        ...(morningAt ? { color: "Good", weight: "Bolder" } : { isSubtle: true }),
+      },
+      {
+        type: "TextBlock",
+        text: eveningAt ? `ON · End of day: everyone is asked at ${eveningAt}, Monday to Friday` : "OFF · No end-of-day message",
+        wrap: true,
+        size: "Small",
+        spacing: "None",
+        ...(eveningAt ? { color: "Good", weight: "Bolder" } : { isSubtle: true }),
       },
       {
         type: "TextBlock",
@@ -1515,15 +1717,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           },
         },
         submit("Digest now", { cmd: "digest" }),
-        {
-          type: "Action.ShowCard",
-          title: "Schedule",
-          card: {
-            type: "AdaptiveCard",
-            body: [{ type: "Input.Time", id: "time", label: "Ask everyone at this time, Monday to Friday" }],
-            actions: [submit("Save time", { cmd: "schedule" }), submit("Turn off", { cmd: "scheduleOff" })],
-          },
-        },
+        timePicker("all", "", "", "Schedule"),
         submit("Refresh", { cmd: "refresh" }),
         this.paused ? submit("Resume", { cmd: "resume" }) : submit("Pause all", { cmd: "pause" }),
       ],
@@ -1565,14 +1759,15 @@ So you know how it's used: your answers are summarised each day for the CTO and 
 
   // ---------- scheduled jobs ----------
 
-  async runCheckins(): Promise<{ sent: number; unreachable: Person[] }> {
+  async runCheckins(slot?: Slot): Promise<{ sent: number; unreachable: Person[] }> {
+    const round = slot ? roundOf(slot) : this.roundNow();
     let sent = 0;
     const unreachable: Person[] = [];
     const failed: string[] = [];
     for (const group of this.store.groups()) {
-      if (this.store.get(`schedule:group:${group.id}`)) continue; // has a time of its own
+      if (slot && this.store.get(`schedule:group:${group.id}:${slot}`)) continue; // has a time of its own
       try {
-        sent += (await this.askGroup(group)).asked;
+        sent += (await this.askGroup(group, false, "", round)).asked;
       } catch (err) {
         this.log(`Could not ask group ${group.name}`, err);
         failed.push(group.name);
@@ -1580,13 +1775,13 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     }
     for (const person of this.store.nominees()) {
       if (this.store.groupsOf(person.id).length) continue; // asked with their group
-      if (this.store.get(`schedule:person:${person.id}`)) continue; // has a time of their own
+      if (slot && this.store.get(`schedule:person:${person.id}:${slot}`)) continue; // has a time of their own
       if (!this.address(person)) {
         unreachable.push(person);
         continue;
       }
       try {
-        if (await this.enqueue(person.id, () => this.startCheckin(person))) sent++;
+        if (await this.enqueue(person.id, () => this.startCheckin(person, false, "", round))) sent++;
       } catch (err) {
         this.log(`Could not start check-in for ${person.email}`, err);
         failed.push(displayName(person));
@@ -1709,7 +1904,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     // Short one-liners are commands. Anything longer or on several lines is
     // free-form and may hold several instructions, so it is interpreted.
     const short = !text.includes("\n") && text.split(/\s+/).length <= 6;
-    if (!short && !["profile", "greeting", "style", "schedule"].includes(verb)) verb = "";
+    if (!short && !["profile", "greeting", "style", "schedule", "tracker"].includes(verb)) verb = "";
 
     try {
       switch (verb) {
@@ -1721,6 +1916,29 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         case "menu":
         case "board":
           return await this.showBoard(admin);
+
+        case "tracker": {
+          const off = /\boff$/i.test(arg);
+          const on = /\bon$/i.test(arg);
+          const group = this.resolveGroup(arg.replace(/\b(off|on)$/i, "").replace(/^group\s+/i, "").trim());
+          if (typeof group === "string") {
+            return await reply(arg ? group : "Tell me which group, for example: **tracker Recruitment Team** (add **off** to stop updating it).");
+          }
+          if (off) {
+            this.store.set(`trackeroff:${group.id}`, "1");
+            return await reply(`I will stop updating the tracker in ${group.name}. The message already there is left as it is.`);
+          }
+          if (on) this.store.set(`trackeroff:${group.id}`, "");
+          if (!this.direct?.createTracker) return await reply("The tracker needs messages to be sent from your own Teams account.");
+          if (this.store.get(`trackeroff:${group.id}`)) return await reply(`The tracker for ${group.name} is off. Send **tracker ${group.name} on** to start it.`);
+          this.store.set(`trackerhash:${group.id}`, ""); // force a fresh copy
+          await this.refreshTrackers(group);
+          return await reply(
+            this.store.get(`tracker:${group.id}`)
+              ? `The tracker in **${group.name}** is up to date and pinned at the top of that chat. I update it as people report.`
+              : `I could not post the tracker in ${group.name}. The server log has the details.`,
+          );
+        }
 
         case "pause":
           this.store.set("paused", "1");
@@ -1737,51 +1955,69 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           return;
 
         case "schedule": {
-          const digest = /^digest\b/i.test(arg);
-          let key = digest ? "schedule:digest" : "schedule:checkin";
-          let value = arg.replace(/^digest\s*/i, "").trim();
-          if (!value) return await reply(this.scheduleStatus());
+          let words = arg.split(/\s+/).filter(Boolean);
+          if (!words.length) return await reply(this.scheduleStatus());
+          const digest = /^digest$/i.test(words[0]!);
+          if (digest) words = words.slice(1);
 
-          // "schedule priya 10:30" or "schedule Recruitment Team off": a time of their own.
-          // The time (or "off") is the last word, or the last two ("5 pm").
-          const words = value.split(/\s+/);
-          const isWhen = (w: string) => /^(off|none|stop|no|remove)$/i.test(w) || parseTime(w) !== null;
-          const tail = words.length > 2 && isWhen(words.slice(-2).join(" ")) && !isWhen(words.at(-1)!) ? 2 : 1;
+          // "morning" or "evening" anywhere says which of the two daily messages is meant.
+          let slot: Slot | "" = "";
+          words = words.filter((w) => {
+            const plain = w.toLowerCase().replace(/[:,]$/, "");
+            const named: Slot | "" = /^(morning|plan)$/.test(plain) ? "morning" : /^(evening|eod|review)$/.test(plain) ? "evening" : "";
+            if (!named || slot) return true;
+            slot = named;
+            return false;
+          });
+          if (!words.length) return await reply(this.scheduleStatus());
+
+          // The time (or "off") is the last word, or the last two ("5 pm"). Anything before it names a person or group.
+          const isOff = (w: string) => /^(off|none|stop|no|remove)$/i.test(w);
+          const isWhen = (w: string) => isOff(w) || parseTime(w) !== null;
+          const tail = words.length > 1 && isWhen(words.slice(-2).join(" ")) && !isWhen(words.at(-1)!) ? 2 : 1;
+          const when = words.slice(-tail).join(" ");
           const who = digest ? "" : words.slice(0, -tail).join(" ").replace(/^group\s+/i, "").replace(/[:,]$/, "").trim();
+
+          let prefix = "";
           let label = "";
           if (who) {
             const people = this.store.findNominees(who);
             const group = this.resolveGroup(who);
             if (people.length === 1) {
-              key = `schedule:person:${people[0]!.id}`;
+              prefix = `person:${people[0]!.id}:`;
               label = displayName(people[0]!);
             } else if (typeof group !== "string") {
-              key = `schedule:group:${group.id}`;
+              prefix = `group:${group.id}:`;
               label = group.name;
             } else {
               return await reply(`I could not match "${who}" to one person or group. Send **list** to see who is added.`);
             }
-            value = words.slice(-tail).join(" ");
           }
 
-          const off = /^(off|none|stop|no|remove)$/i.test(value);
-          const time = off ? "" : parseTime(value);
+          if (isOff(when)) {
+            if (digest) this.store.set("schedule:digest", "");
+            else for (const s of slot ? [slot] : SLOTS) this.store.set(`schedule:${prefix}${s}`, "");
+            if (!label) return await reply(this.scheduleStatus());
+            return await reply(`${label} no longer has a ${slot ? `${slot} ` : ""}time of their own.`);
+          }
+          const time = parseTime(when);
           if (time === null) {
-            return await reply("I did not understand that time. Try **schedule 17:00**, **schedule priya 10:30** or **schedule off**.");
-          }
-          this.store.set(key, time);
-          // A time that has already passed today starts tomorrow, rather than firing at once.
-          if (time && this.localNow().minutes > Number(time.slice(0, 2)) * 60 + Number(time.slice(3))) {
-            this.store.set(`ran:${key.slice("schedule:".length)}`, this.today());
-          }
-          if (label) {
             return await reply(
-              time
-                ? `${label} will be asked automatically at **${time}**, Monday to Friday, instead of at the general time.`
-                : `${label} no longer has a time of their own.`,
+              "I did not understand that time. Try **schedule morning 09:30**, **schedule evening 17:30**, **schedule priya morning 10:00** or **schedule off**.",
             );
           }
-          return await reply(this.scheduleStatus());
+          // With no "morning" or "evening" given, a time before noon is the morning message.
+          const chosen: Slot = slot || slotOf(time);
+          const name = digest ? "digest" : `${prefix}${chosen}`;
+          this.store.set(`schedule:${name}`, time);
+          // A time that has already passed today starts tomorrow, rather than firing at once.
+          if (this.localNow().minutes > Number(time.slice(0, 2)) * 60 + Number(time.slice(3))) {
+            this.store.set(`ran:${name}`, this.today());
+          }
+          if (!label) return await reply(this.scheduleStatus());
+          return await reply(
+            `${label} will be asked automatically at **${time}** (${SLOT_LABEL[chosen]}), Monday to Friday, instead of at the general time.`,
+          );
         }
 
         case "nominate": {
@@ -1928,7 +2164,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
             ? notes.map((n) => `**${n.date}**\n${renderNote(n)}`).join("\n\n")
             : "No check-in notes yet.";
           return await reply(
-            `**${displayName(target)}**\n\n**Open items**\n${renderItems(this.store.activeItems(target.id))}\n\n${body}`,
+            `**${displayName(target)}**\n\n**Open items**\n${renderItems(this.store.activeItems(target.id), this.today())}\n\n${body}`,
           );
         }
 

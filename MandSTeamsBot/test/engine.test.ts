@@ -1062,13 +1062,13 @@ test("a person with a time of their own is asked then, and left out of the gener
   await t.engine.handleMessage(t.id(CTO), "add ravi@acme.test");
   await t.engine.handleInstall(t.id("ravi@acme.test"));
   await t.engine.handleMessage(t.id(CTO), "schedule 17:00");
-  await t.engine.handleMessage(t.id(CTO), "schedule priya 10:30");
-  assert.match(t.to(CTO).at(-1)!, /priya will be asked automatically at \*\*10:30\*\*/);
+  await t.engine.handleMessage(t.id(CTO), "schedule priya evening 18:00");
+  assert.match(t.to(CTO).at(-1)!, /priya will be asked automatically at \*\*18:00\*\* \(end-of-day update\)/);
 
-  await t.engine.tick(); // 17:00: the general time
+  await t.engine.tick(); // 17:00: the general evening time
   assert.deepEqual(t.brain.turns.map((x) => x.person.email), ["ravi@acme.test"]);
 
-  t.setDate("2026-11-17T10:30:00Z");
+  t.setDate("2026-11-16T18:00:00Z");
   await t.engine.tick();
   await t.engine.tick();
   assert.deepEqual(t.brain.turns.map((x) => x.person.email), ["ravi@acme.test", PRIYA]);
@@ -1091,18 +1091,21 @@ test("the board shows what is switched on in green, and each person has a time p
   await b.engine.handleMessage(b.id(CTO), `add ${PRIYA}`);
   await b.engine.handleMessage(b.id(CTO), "board");
   let json = JSON.stringify(b.sentCards.at(-1));
-  assert.match(json, /OFF · No automatic asking/);
+  assert.match(json, /OFF · No morning plan message/);
+  assert.match(json, /OFF · No end-of-day message/);
   assert.doesNotMatch(json, /"color":"Good"/);
-  assert.match(json, /"cmd":"scheduleFor","who":"priya@acme\.test","field":"p\d+"/);
+  assert.match(json, /"cmd":"scheduleFor","who":"priya@acme\.test","field":"p\d+m","slot":"morning"/);
+  assert.equal(cardToCommand({ cmd: "scheduleFor", who: PRIYA, field: "p2e", slot: "evening", p2e: "17:30" }), `schedule ${PRIYA} evening 17:30`);
+  assert.equal(cardToCommand({ cmd: "scheduleFor", who: "", field: "allm", slot: "morning", allm: "09:30" }), "schedule morning 09:30");
   assert.equal(cardToCommand({ cmd: "scheduleFor", who: PRIYA, field: "p2", p2: "10:30" }), `schedule ${PRIYA} 10:30`);
   assert.equal(cardToCommand({ cmd: "scheduleOffFor", who: PRIYA }), `schedule ${PRIYA} off`);
 
   await b.engine.handleMessage(b.id(CTO), "schedule 17:00");
   await b.engine.handleMessage(b.id(CTO), `schedule ${PRIYA} 10:30`);
   json = b.edits.at(-1)!.json;
-  assert.match(json, /"text":"ON · Everyone is asked at 17:00, Monday to Friday"[^}]*"color":"Good"/);
-  assert.match(json, /"text":"ON · Asked at 10:30, Monday to Friday","color":"Good"/);
-  assert.match(json, /"title":"Time: 10:30"/);
+  assert.match(json, /"text":"ON · End of day: everyone is asked at 17:00, Monday to Friday"[^}]*"color":"Good"/);
+  assert.match(json, /"text":"ON · Morning 10:30, Monday to Friday","color":"Good"/);
+  assert.match(json, /"title":"Times: Morning 10:30"/);
 });
 
 // ---------- tagging people in the group with their own question ----------
@@ -1416,7 +1419,7 @@ test("asking someone again the same day starts clean: no stale takeover, and the
 test("a group member with a time of their own is left out of the group's scheduled ask", async () => {
   const g = groupSetup();
   await g.engine.handleMessage(g.cto, "add group Recruitment Team");
-  await g.engine.handleMessage(g.cto, "schedule ravi 10:30");
+  await g.engine.handleMessage(g.cto, "schedule ravi evening 18:00");
   await g.engine.handleMessage(g.cto, "schedule 17:00");
   await g.engine.tick(); // 17:00, the general time
   assert.match(g.sent.at(-1)!.to, /g-rec/);
@@ -1557,4 +1560,179 @@ test("if they write again, or you step in, while a reply is being typed, that re
   p.engine.manualTakeover(priya.id); // you start typing yourself
   await pause(200);
   assert.equal(p.sent.length, 2); // the drafted reply never goes out
+});
+
+// ---------- the daily rhythm: a morning plan, then an end-of-day review ----------
+
+test("morning asks for the plan, evening reviews it, both on the same day, and the evening sees the morning", async () => {
+  const t = setup();
+  await onboard(t);
+  await t.engine.handleMessage(t.id(CTO), "schedule morning 09:30");
+  await t.engine.handleMessage(t.id(CTO), "schedule evening 17:30");
+  assert.match(t.to(CTO).at(-1)!, /Morning plan: everyone is asked automatically at \*\*09:30\*\*/);
+  assert.match(t.to(CTO).at(-1)!, /End-of-day update: everyone is asked automatically at \*\*17:30\*\*/);
+
+  t.setDate("2026-11-17T09:30:00Z");
+  await t.engine.tick();
+  assert.equal(t.brain.turns.at(-1)!.round, "plan");
+  assert.equal(t.brain.turns.at(-1)!.opening, true);
+  await t.engine.handleMessage(t.id(PRIYA), "today: 5 submissions and the Globex interview");
+  assert.match(t.to(CTO).at(-1)!, /Plan for today from priya/);
+
+  await t.engine.tick(); // the morning message is not sent twice
+  const afterMorning = t.brain.turns.length;
+  assert.equal(t.brain.turns.length, afterMorning);
+
+  t.setDate("2026-11-17T17:30:00Z");
+  await t.engine.tick();
+  const evening = t.brain.turns.at(-1)!;
+  assert.equal(evening.round, "review");
+  assert.equal(evening.opening, true);
+  assert.ok(evening.history.some((m) => m.text === "today: 5 submissions and the Globex interview")); // it can see the plan
+  await t.engine.handleMessage(t.id(PRIYA), "4 submissions done, interview moved to Friday");
+  assert.match(t.to(CTO).at(-1)!, /Update from priya/);
+
+  await t.engine.tick(); // nor the evening one
+  assert.equal(t.brain.turns.filter((x) => x.opening).length, 2);
+});
+
+test("the evening message still goes to someone who never answered the morning one", async () => {
+  const t = setup();
+  await onboard(t);
+  await t.engine.handleMessage(t.id(CTO), "schedule morning 09:30");
+  await t.engine.handleMessage(t.id(CTO), "schedule evening 17:30");
+  t.setDate("2026-11-17T09:30:00Z");
+  await t.engine.tick();
+  t.setDate("2026-11-17T17:30:00Z");
+  await t.engine.tick();
+  assert.deepEqual(t.brain.turns.filter((x) => x.opening).map((x) => x.round), ["plan", "review"]);
+});
+
+test("times saved before there were two daily messages are filed under morning or evening", () => {
+  const store = new Store(":memory:");
+  store.set("schedule:checkin", "17:00");
+  store.set("schedule:group:1", "09:00");
+  new Engine(store, new FakeBrain(), { send: async () => undefined }, config);
+  assert.equal(store.get("schedule:evening"), "17:00");
+  assert.equal(store.get("schedule:group:1:morning"), "09:00");
+  assert.equal(store.get("schedule:checkin"), "");
+});
+
+test("'schedule morning off' stops one message and leaves the other", async () => {
+  const t = setup();
+  await onboard(t);
+  await t.engine.handleMessage(t.id(CTO), "schedule morning 09:30");
+  await t.engine.handleMessage(t.id(CTO), "schedule evening 17:30");
+  await t.engine.handleMessage(t.id(CTO), "schedule morning off");
+  assert.equal(t.store.get("schedule:morning"), "");
+  assert.equal(t.store.get("schedule:evening"), "17:30");
+  await t.engine.handleMessage(t.id(CTO), "schedule off");
+  assert.equal(t.store.get("schedule:evening"), "");
+});
+
+test("due dates are kept on items, and overdue ones show on the board", async () => {
+  const b = boardSetup();
+  await b.engine.handleMessage(b.id(CTO), `add ${PRIYA}`);
+  await b.engine.handleInstall(b.id(PRIYA));
+  await b.engine.handleMessage(b.id(CTO), "board");
+  await b.engine.handleMessage(b.id(CTO), "ask priya");
+  b.brain.nextNote = {
+    note: { summary: "Working on the deck.", progressVsTargets: "", blockers: [], painPoints: [], helpNeeded: [], followUpTomorrow: [], planToday: ["Client deck"] },
+    items: [
+      { itemId: null, title: "Client deck", status: "open", update: "half done", due: "2026-11-14" },
+      { itemId: null, title: "Landing page", status: "open", update: "started", due: "next week" }, // not a date: ignored
+    ],
+  };
+  await b.engine.handleMessage(b.id(PRIYA), "deck is half done");
+  const items = b.store.activeItems(b.store.personByEmail(PRIYA)!.id);
+  assert.deepEqual(items.map((i) => [i.title, i.due]), [["Client deck", "2026-11-14"], ["Landing page", null]]);
+  assert.match(b.edits.at(-1)!.json, /OVERDUE · Client deck \(due 2026-11-14\)/);
+});
+
+// ---------- the tracker in the group ----------
+
+function trackerSetup() {
+  const g = groupSetup();
+  const created: { chat: string; html: string }[] = [];
+  const updated: { id: string; html: string }[] = [];
+  let failUpdate = false;
+  const direct = (g.engine as unknown as { direct: Record<string, unknown> }).direct;
+  direct.createTracker = async (chat: string, html: string) => {
+    created.push({ chat, html });
+    return `trk-${created.length}`;
+  };
+  direct.updateTracker = async (_chat: string, id: string, html: string) => {
+    if (failUpdate) throw new Error("not allowed");
+    updated.push({ id, html });
+  };
+  return { ...g, created, updated, setFailUpdate: (v: boolean) => (failUpdate = v) };
+}
+
+async function reportItem(t: ReturnType<typeof trackerSetup>, title: string, status: "open" | "done" | "blocked", due: string) {
+  t.brain.nextNote = {
+    note: { summary: "x", progressVsTargets: "", blockers: [], painPoints: [], helpNeeded: [], followUpTomorrow: [] },
+    items: [{ itemId: null, title, status, update: "u", due }],
+  };
+  await t.engine.handleGroupReply("u-priya", `about ${title}`);
+  await t.engine.chaseFollowUps(0);
+  await t.engine.closeIdle(0);
+}
+
+test("no tracker is posted until there is something to show; then one table, edited in place", async () => {
+  const t = trackerSetup();
+  await t.engine.handleMessage(t.cto, "add group Recruitment Team");
+  await t.engine.handleMessage(t.cto, "ask group Recruitment Team");
+  await t.engine.refreshTrackers();
+  assert.equal(t.created.length, 0);
+
+  await reportItem(t, "Client deck <v2>", "open", "2026-11-14");
+  await t.engine.refreshTrackers();
+  assert.equal(t.created.length, 1);
+  assert.equal(t.created[0]!.chat, "g-rec");
+  const html = t.created[0]!.html;
+  assert.match(html, /<b>Team tracker<\/b>/);
+  assert.match(html, /<td>Priya<\/td><td>Client deck &lt;v2&gt;<\/td><td>14 Nov<\/td><td>🔴 Overdue<\/td>/);
+  assert.match(html, /<td>Ravi<\/td><td>No items yet<\/td>/);
+
+  await t.engine.refreshTrackers(); // nothing changed: nothing sent
+  assert.equal(t.created.length + t.updated.length, 1);
+
+  await t.engine.handleMessage(t.cto, "ask group Recruitment Team");
+  await reportItem(t, "Landing page", "blocked", "");
+  await t.engine.refreshTrackers();
+  assert.equal(t.created.length, 1); // still one message
+  assert.equal(t.updated.at(-1)!.id, "trk-1");
+  assert.match(t.updated.at(-1)!.html, /Landing page<\/td><td>-<\/td><td>🟠 Blocked/);
+});
+
+test("if the table cannot be edited, a fresh one is posted at most once a day", async () => {
+  const t = trackerSetup();
+  await t.engine.handleMessage(t.cto, "add group Recruitment Team");
+  await t.engine.handleMessage(t.cto, "ask group Recruitment Team");
+  await reportItem(t, "Client deck", "open", "");
+  await t.engine.refreshTrackers();
+  t.setFailUpdate(true);
+  await t.engine.handleMessage(t.cto, "ask group Recruitment Team");
+  await reportItem(t, "Landing page", "open", "");
+  await t.engine.refreshTrackers();
+  await t.engine.refreshTrackers();
+  assert.equal(t.created.length, 1); // same day: no flood of new tables
+});
+
+test("the tracker can be switched off for a group, and nothing is posted while paused", async () => {
+  const t = trackerSetup();
+  await t.engine.handleMessage(t.cto, "add group Recruitment Team");
+  await t.engine.handleMessage(t.cto, "ask group Recruitment Team");
+  await reportItem(t, "Client deck", "open", "");
+  await t.engine.handleMessage(t.cto, "tracker Recruitment Team off");
+  await t.engine.refreshTrackers();
+  assert.equal(t.created.length, 0);
+
+  await t.engine.handleMessage(t.cto, "pause");
+  await t.engine.handleMessage(t.cto, "tracker Recruitment Team on");
+  assert.equal(t.created.length, 0);
+  await t.engine.handleMessage(t.cto, "resume");
+  await t.engine.handleMessage(t.cto, "tracker Recruitment Team");
+  assert.equal(t.created.length, 1);
+  assert.match(t.admin.at(-1)!, /up to date and pinned/);
 });

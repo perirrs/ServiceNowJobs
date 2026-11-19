@@ -263,6 +263,33 @@ export class GraphChat {
     return msg.id;
   }
 
+  /** Post a message whose body is already HTML (a table, for instance). Returns its id. */
+  async sendHtml(chatId: string, html: string): Promise<string> {
+    const msg = await this.call<{ id: string }>("POST", `/chats/${encodeURIComponent(chatId)}/messages`, {
+      body: { contentType: "html", content: html },
+    });
+    return msg.id;
+  }
+
+  /** Replace the body of a message this person sent earlier. */
+  async updateHtml(chatId: string, messageId: string, html: string): Promise<void> {
+    const res = await fetch(`${GRAPH}/chats/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(messageId)}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${await this.token()}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ body: { contentType: "html", content: html } }),
+    });
+    if (!res.ok) {
+      throw new GraphError(`Graph PATCH message failed: ${res.status} ${(await res.text()).slice(0, 300)}`, res.status);
+    }
+  }
+
+  /** Pin a message to the top of a chat. */
+  async pin(chatId: string, messageId: string): Promise<void> {
+    await this.call("POST", `/chats/${encodeURIComponent(chatId)}/pinnedMessages`, {
+      "message@odata.bind": `${GRAPH}/chats/${chatId}/messages/${messageId}`,
+    });
+  }
+
   /**
    * The signed-in person's named group chats whose name contains `query`,
    * most recently active first. Where two chats share a name, only the most

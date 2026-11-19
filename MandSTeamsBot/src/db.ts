@@ -50,6 +50,8 @@ export interface WorkItem {
   lastUpdate: string;
   firstSeen: string;
   lastSeen: string;
+  /** The date this is due (YYYY-MM-DD), when the person gave one. */
+  due: string | null;
 }
 
 /** The structured note the AI writes at the end of each person's check-in. */
@@ -60,6 +62,8 @@ export interface NoteContent {
   painPoints: string[];
   helpNeeded: string[];
   followUpTomorrow: string[];
+  /** What they said in the morning they would do today. Absent on older notes. */
+  planToday?: string[];
 }
 
 export interface Note extends NoteContent {
@@ -163,6 +167,7 @@ function toItem(r: Row): WorkItem {
     lastUpdate: r.last_update as string,
     firstSeen: r.first_seen as string,
     lastSeen: r.last_seen as string,
+    due: (r.due as string | null) || null,
   };
 }
 
@@ -190,6 +195,8 @@ export class Store {
     // Added after the first release: older databases need the column.
     const columns = this.db.prepare("PRAGMA table_info(people)").all();
     if (!columns.some((c) => c.name === "chat_id")) this.db.exec("ALTER TABLE people ADD COLUMN chat_id TEXT");
+    const itemColumns = this.db.prepare("PRAGMA table_info(items)").all();
+    if (!itemColumns.some((c) => c.name === "due")) this.db.exec("ALTER TABLE items ADD COLUMN due TEXT");
   }
 
   close(): void {
@@ -391,22 +398,35 @@ export class Store {
       .map(toItem);
   }
 
-  addItem(personId: number, title: string, status: ItemStatus, update: string, date: string): void {
+  /** What belongs on a tracker today: everything still in play, plus what was finished today. */
+  trackerItems(personId: number, date: string): WorkItem[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM items WHERE person_id = ?
+           AND (status IN ('open', 'blocked') OR (status = 'done' AND last_seen = ?))
+         ORDER BY (status = 'done'), COALESCE(due, '9999-12-31'), id`,
+      )
+      .all(personId, date)
+      .map(toItem);
+  }
+
+  addItem(personId: number, title: string, status: ItemStatus, update: string, date: string, due = ""): void {
     this.db
       .prepare(
-        `INSERT INTO items (person_id, title, status, last_update, first_seen, last_seen)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO items (person_id, title, status, last_update, first_seen, last_seen, due)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(personId, title, status, update, date, date);
+      .run(personId, title, status, update, date, date, due || null);
   }
 
   /** Returns false if the item does not belong to this person, so the AI cannot touch others' items. */
-  updateItem(personId: number, itemId: number, status: ItemStatus, update: string, date: string): boolean {
+  updateItem(personId: number, itemId: number, status: ItemStatus, update: string, date: string, due = ""): boolean {
     const res = this.db
       .prepare(
-        "UPDATE items SET status = ?, last_update = ?, last_seen = ? WHERE id = ? AND person_id = ?",
+        // A due date is only replaced when a new one is given.
+        "UPDATE items SET status = ?, last_update = ?, last_seen = ?, due = COALESCE(?, due) WHERE id = ? AND person_id = ?",
       )
-      .run(status, update, date, itemId, personId);
+      .run(status, update, date, due || null, itemId, personId);
     return res.changes > 0;
   }
 
@@ -460,6 +480,14 @@ export class Store {
   get(key: string): string | undefined {
     const r = this.db.prepare("SELECT value FROM kv WHERE key = ?").get(key);
     return r ? (r.value as string) : undefined;
+  }
+
+  /** Every stored key that starts with `prefix`. */
+  keys(prefix: string): string[] {
+    return this.db
+      .prepare("SELECT key FROM kv WHERE key LIKE ? ESCAPE '\\'")
+      .all(`${prefix.replace(/[\\%_]/g, "\\$&")}%`)
+      .map((r) => r.key as string);
   }
 
   set(key: string, value: string): void {

@@ -28,9 +28,20 @@ Send **menu** (or just "hi") to the Daily Check-in bot for a card with buttons: 
 | `list` | Everyone added and today's status |
 | `report name` | Their last five notes and open items |
 | `digest` | Today's summary of everyone, now |
-| `schedule 17:00` / `schedule off` | Ask everyone automatically at that time, Monday to Friday, or stop |
+| `schedule morning 09:30` / `schedule evening 17:30` | The two daily messages, Monday to Friday. `schedule off` stops both |
+| `schedule priya morning 10:00` | A time of their own for one person or group |
+| `tracker Group Name` | Post or refresh the tracker table in that group; add `off` to stop |
+| `pause` / `resume` | Stop everything going out to staff at once, and start again |
 | `schedule digest 19:30` / `schedule digest off` | Send the digest automatically, or stop |
 | anything else | A question answered from the last 14 days of notes |
+
+### The daily rhythm
+
+- **Morning message** (`schedule morning 09:30`): asks each person what they will work on today and what will be finished by the end of the day, and raises anything of theirs that is due or overdue. You get each person's plan as it comes in.
+- **Evening message** (`schedule evening 17:30`): goes through what they said in the morning and asks what happened with it, then anything else done and anything blocking them. You get the update, set against the plan.
+- Each piece of work mentioned becomes a tracked item with its due date where one was given. Items stay open across days until the person says they are done, and overdue ones are raised first the next morning.
+- **Tracker.** In each followed group the assistant keeps one pinned message with a table: who, item, due date, status. It edits that message in place as people report, so the team has the current picture at the top of the chat. It shows titles, dates and status only, never notes or blocker details.
+- **Human pace.** Replies wait as long as a person would take to read and type (`HUMAN_DELAY`), and several quick messages get one answer.
 
 Nothing is asked automatically until a schedule is set. There is no schedule in `.env`: it is set from the chat and kept in the database. Times are read in `TIMEZONE`.
 
