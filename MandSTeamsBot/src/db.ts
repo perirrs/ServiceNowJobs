@@ -7,7 +7,10 @@ export interface Person {
   email: string;
   name: string | null;
   teamsUserId: string | null;
+  /** The person's one-to-one chat with the bot. */
   conversationId: string | null;
+  /** The person's one-to-one chat with the sender, in send-as-user mode. */
+  chatId: string | null;
   nominated: boolean;
   /** Free-text brief written by an admin: role, responsibilities, targets. */
   profile: string | null;
@@ -118,6 +121,7 @@ function toPerson(r: Row): Person {
     name: (r.name as string | null) ?? null,
     teamsUserId: (r.teams_user_id as string | null) ?? null,
     conversationId: (r.conversation_id as string | null) ?? null,
+    chatId: (r.chat_id as string | null) ?? null,
     nominated: r.nominated === 1,
     profile: (r.profile as string | null) ?? null,
   };
@@ -166,6 +170,9 @@ export class Store {
     }
     this.db.exec("PRAGMA foreign_keys = ON;");
     this.db.exec(SCHEMA);
+    // Added after the first release: older databases need the column.
+    const columns = this.db.prepare("PRAGMA table_info(people)").all();
+    if (!columns.some((c) => c.name === "chat_id")) this.db.exec("ALTER TABLE people ADD COLUMN chat_id TEXT");
   }
 
   close(): void {
@@ -192,7 +199,7 @@ export class Store {
   /** Create the person if needed, and fill in whichever details are provided. */
   upsertPerson(
     email: string,
-    details: { name?: string | null; teamsUserId?: string; conversationId?: string } = {},
+    details: { name?: string | null; teamsUserId?: string; conversationId?: string; chatId?: string } = {},
   ): Person {
     const key = email.toLowerCase();
     this.db.prepare("INSERT OR IGNORE INTO people (email) VALUES (?)").run(key);
@@ -201,10 +208,17 @@ export class Store {
         `UPDATE people SET
            name = COALESCE(?, name),
            teams_user_id = COALESCE(?, teams_user_id),
-           conversation_id = COALESCE(?, conversation_id)
+           conversation_id = COALESCE(?, conversation_id),
+           chat_id = COALESCE(?, chat_id)
          WHERE email = ?`,
       )
-      .run(details.name ?? null, details.teamsUserId ?? null, details.conversationId ?? null, key);
+      .run(
+        details.name ?? null,
+        details.teamsUserId ?? null,
+        details.conversationId ?? null,
+        details.chatId ?? null,
+        key,
+      );
     return this.personByEmail(key)!;
   }
 

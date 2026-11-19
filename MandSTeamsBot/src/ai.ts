@@ -85,7 +85,7 @@ function renderPersonBrief(ctx: CheckinContext): string {
     ? recentNotes.map((n) => `### ${n.date}\n${renderNote(n)}`).join("\n\n")
     : "(no earlier check-ins: this is their first)";
   return [
-    `Today is ${date}.`,
+    `Today is ${new Date(`${date}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "long", timeZone: "UTC" })} ${date}.`,
     `Person: ${displayName(person)}`,
     `## Role, responsibilities and targets (written by leadership)\n${person.profile ?? "(not provided yet: ask about their work in general terms)"}`,
     `## Items still open from earlier days\n${renderItems(activeItems)}`,
@@ -113,6 +113,11 @@ const SUBSTANCE = `The first message of every conversation gives you the person'
 - Ask in the words of their role and targets. A recruiter is asked about submissions and interviews, a developer about the feature they are building. Where their targets involve numbers, ask for the number if they did not give it.
 - If they say something was not done, did not work, or that there is no update, do not accept it as it stands: ask what the blocker is and why there was no progress, then what they need and when it will be done.
 - Otherwise follow up only where it earns its place: an answer too vague to act on, a blocker with no owner or next step, an open item they skipped. Most chats need two to four exchanges.
+- Read the situation each time and decide how far to go. The notes and item dates tell you what is new and what is dragging:
+  - If an item has been open for several days, or the same blocker or the same answer keeps coming back, do not accept another "in progress": ask what has changed since last time, what is stopping it, and the date it will be finished.
+  - If something promised on an earlier day ("will send tomorrow", "interview on Monday") is now due, ask what happened with it.
+  - If today's update is clear and complete and nothing older is hanging, one exchange is enough: close straight away.
+  - If they are plainly busy or giving short answers, ask only the one thing that matters most and leave the rest for tomorrow.
 - When you have what is needed, or the person signals they are busy or finished, close in one short line such as "Ok, noted." and set done to true. Never drag it out.
 - Do not evaluate their performance, give advice, or make promises.
 

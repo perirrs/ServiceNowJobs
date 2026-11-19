@@ -270,7 +270,7 @@ test("direct mode: nominating connects the chat at once and discloses the automa
   await t.engine.handleInstall(t.id(CTO));
   await t.engine.handleMessage(t.id(CTO), `nominate ${PRIYA}`);
   const priya = t.store.personByEmail(PRIYA)!;
-  assert.equal(priya.conversationId, `chat-${PRIYA}`);
+  assert.equal(priya.chatId, `chat-${PRIYA}`);
   assert.equal(priya.name, "Priya Rao");
   const welcome = t.sent.find((s) => s.to === `chat-${PRIYA}`)!.text;
   assert.match(welcome, /sent automatically by an AI assistant from my account/);
@@ -503,4 +503,23 @@ test("'ask <name> ...' runs a check-in for that person", async () => {
   await t.engine.handleMessage(t.id(CTO), "ask priya for what are the updates this week");
   assert.equal(t.brain.turns.length, 1);
   assert.match(t.to(CTO).at(-1)!, /Asked priya for an update/);
+});
+
+test("direct mode: an admin can also be nominated; commands use the bot chat, check-ins use the sender's chat", async () => {
+  const t = setup({ personal: true });
+  await t.engine.handleInstall(t.id(CTO));
+  await t.engine.handleInstall(t.id(CEO));
+  await t.engine.handleMessage(t.id(CTO), `nominate ${CEO}`);
+  const ceo = t.store.personByEmail(CEO)!;
+  assert.equal(ceo.conversationId, `c-${CEO}`);
+  assert.equal(ceo.chatId, `chat-${CEO}`);
+
+  await t.engine.runCheckins();
+  assert.equal(t.sent.filter((s) => s.to === `chat-${CEO}`).length, 1); // the question, in the sender's chat
+  await t.engine.handleMessage(t.id(CEO), "list"); // a command, in the bot chat
+  assert.match(t.to(CEO).at(-1)!, /Nominated \(1\)/);
+
+  await t.engine.handleDirectReply(ceo.id, "closed the Initech deal");
+  assert.match(t.to(CEO).at(-1)!, /Update from/); // summary reaches both admins through the bot
+  assert.match(t.to(CTO).at(-1)!, /Update from/);
 });

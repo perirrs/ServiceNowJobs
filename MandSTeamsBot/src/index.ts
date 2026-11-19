@@ -86,7 +86,7 @@ async function pollChats(g: GraphChat): Promise<void> {
       store.get(key) ??
       new Date((opened ? Date.parse(`${opened.replace(" ", "T")}Z`) : Date.now()) - 5000).toISOString();
     try {
-      for (const line of await g.messagesSince(person.conversationId!, since)) {
+      for (const line of await g.messagesSince(person.chatId!, since)) {
         store.set(key, line.createdAt);
         if (line.fromUserId !== senderId) {
           await engine.handleDirectReply(person.id, line.text);

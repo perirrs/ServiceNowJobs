@@ -114,11 +114,26 @@ export class Engine {
     return this.config.adminEmails.includes(person.email);
   }
 
+  /**
+   * Where a nominee's check-in goes: the sender's own chat with them in
+   * send-as-user mode, otherwise their chat with the bot. Null if unreachable.
+   */
+  private address(person: Person): string | null {
+    return this.direct ? person.chatId : person.conversationId;
+  }
+
+  /** Message a nominee as part of their check-in. */
   private async say(person: Person, text: string): Promise<void> {
-    if (!person.conversationId) return;
-    // Admins are always reached through the bot; nominees through the direct channel when there is one.
-    const channel = this.direct && !this.isAdmin(person) ? this.direct : this.messenger;
-    for (const part of chunk(text)) await channel.send(person.conversationId, part);
+    const to = this.address(person);
+    if (!to) return;
+    const channel = this.direct ?? this.messenger;
+    for (const part of chunk(text)) await channel.send(to, part);
+  }
+
+  /** Message an admin in their chat with the bot. One person can be both admin and nominee. */
+  private async sayAdmin(admin: Person, text: string): Promise<void> {
+    if (!admin.conversationId) return;
+    for (const part of chunk(text)) await this.messenger.send(admin.conversationId, part);
   }
 
   private enqueue<T>(personId: number, job: () => Promise<T>): Promise<T> {
@@ -176,6 +191,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           name: id.name ?? null,
           teamsUserId: id.teamsUserId,
           conversationId: id.conversationId,
+          chatId: null,
           nominated: false,
           profile: null,
         },
@@ -197,7 +213,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     const who = await this.identify(id);
     if (!who?.firstContact) return;
     const { person } = who;
-    if (this.isAdmin(person)) await this.say(person, ADMIN_HELP);
+    if (this.isAdmin(person)) await this.sayAdmin(person, ADMIN_HELP);
     else if (person.nominated) await this.say(person, this.welcomeText(person));
     // Everyone else hears nothing: an org-wide install should not message the whole company.
   }
@@ -240,7 +256,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
 
   /** Send today's opening question. Returns false if the person cannot be reached or already has one. */
   async startCheckin(person: Person, force = false): Promise<boolean> {
-    if (!person.conversationId) return false;
+    if (!this.address(person)) return false;
     const date = this.today();
     const existing = this.store.checkin(person.id, date);
     if (existing && !force) return false;
@@ -287,7 +303,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       .checkinsOn(this.today())
       .filter((c) => c.status === "open")
       .map((checkin) => ({ person: this.store.personById(checkin.personId), checkin }))
-      .filter((x): x is { person: Person; checkin: Checkin } => !!x.person?.nominated && !!x.person.conversationId);
+      .filter((x): x is { person: Person; checkin: Checkin } => !!x.person?.nominated && !!x.person.chatId);
   }
 
   private async handleUpdate(person: Person, text: string): Promise<void> {
@@ -381,7 +397,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     let sent = 0;
     const unreachable: Person[] = [];
     for (const person of this.store.nominees()) {
-      if (!person.conversationId) {
+      if (!this.address(person)) {
         unreachable.push(person);
         continue;
       }
@@ -451,7 +467,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         person,
         note,
         activeItems: this.store.activeItems(person.id),
-        missing: note ? null : person.conversationId ? "no_response" : "not_connected",
+        missing: note ? null : this.address(person) ? "no_response" : "not_connected",
       };
     });
 
@@ -467,7 +483,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         continue;
       }
       try {
-        await this.say(admin, text);
+        await this.sayAdmin(admin, text);
       } catch (err) {
         this.log(`Could not deliver digest to ${email}`, err);
       }
@@ -485,7 +501,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
   }
 
   private async handleAdmin(admin: Person, text: string): Promise<void> {
-    const reply = (msg: string) => this.say(admin, msg);
+    const reply = (msg: string) => this.sayAdmin(admin, msg);
     // Right after a nomination, the admin's next plain message is taken as that
     // person's role profile. Any message uses the opportunity up.
     const awaitingKey = `awaitingProfile:${admin.id}`;
@@ -511,7 +527,8 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
             return await reply("Tell me who by work email, for example: **nominate priya@company.com**");
           }
-          if (this.config.adminEmails.includes(email)) {
+          // Through the bot an admin's messages are commands, so they cannot also give updates there.
+          if (!this.direct && this.config.adminEmails.includes(email)) {
             return await reply("That's an admin account. Admins receive the digest rather than check-ins.");
           }
           let chat: { conversationId: string; name: string } | undefined;
@@ -527,9 +544,9 @@ So you know how it's used: your answers are summarised each day for the CTO and 
             }
             chat = found;
           }
-          const person = this.store.upsertPerson(email, chat);
+          const person = this.store.upsertPerson(email, chat && { name: chat.name, chatId: chat.conversationId });
           this.store.setNominated(person.id, true);
-          if (person.conversationId) {
+          if (this.address(person)) {
             if (!this.personal) await this.say(person, this.welcomeText(person));
             this.store.set(awaitingKey, String(person.id));
             return await reply(
@@ -578,7 +595,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           const date = this.today();
           const lines = nominees.map((p) => {
             const c = this.store.checkin(p.id, date);
-            const today = !p.conversationId
+            const today = !this.address(p)
               ? "not connected in Teams yet"
               : !c
                 ? "no check-in yet today"
@@ -618,7 +635,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
             );
           }
           const target = named[0]!;
-          if (!target.conversationId) return await reply(`${displayName(target)} is not connected yet.`);
+          if (!this.address(target)) return await reply(`${displayName(target)} is not connected yet.`);
           const started = await this.enqueue(target.id, () => this.startCheckin(target, true));
           return await reply(
             started
@@ -637,7 +654,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           }
           const target = this.resolveOne(arg);
           if (typeof target === "string") return await reply(target);
-          if (!target.conversationId) return await reply(`${displayName(target)} is not connected to me in Teams yet.`);
+          if (!this.address(target)) return await reply(`${displayName(target)} is not connected to me in Teams yet.`);
           const started = await this.enqueue(target.id, () => this.startCheckin(target, true));
           return await reply(
             started
