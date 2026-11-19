@@ -2545,6 +2545,7 @@ test("roles are read from the start of a profile", () => {
   assert.equal(roleOf("account owner for TCS"), "Account Owner");
   assert.equal(roleOf("Account Manager for Deloitte"), "Account Manager");
   assert.equal(roleOf("Recruitment Director. Owns the flow."), "Recruitment Director");
+  assert.equal(roleOf("HR Manager. Oversees blockers."), "HR Manager");
   assert.equal(roleOf("Developer"), null);
 });
 
@@ -2619,11 +2620,26 @@ test("the end-of-day summary carries a line per person and the director's team t
   g.setDate("2026-11-16T18:00:00Z");
   await g.engine.tick();
   assert.equal(posts.length, 1);
-  assert.match(posts[0]!, /Madan Mani \(Recruitment Director\): team target met today 50% on submissions; 67% of the month's joins so far\./);
+  assert.match(
+    posts[0]!,
+    /Madan Mani \(Recruitment Director\): 0 of 1 people reached 75% of today's submission target\. Below 75%: Priya Rao 50%\. Successful today only when everyone is at 75% or more: not yet\. Team: 50% of today's submissions, 67% of the month's joins so far\./,
+  );
   assert.match(posts[0]!, /Priya Rao: 3 submissions; 3 more needed tomorrow\.<br>Ravi Kumar: no update\./);
   assert.doesNotMatch(posts[0]!, /<td>Madan Mani/); // the director is measured by the team, not a row
   assert.deepEqual(asked[0]!.map((p) => p.name), ["Priya Rao", "Ravi Kumar"]);
   assert.equal(asked[0]![0]!.figures, "3 submitted to client");
+});
+
+test("the board shows group chats first and individual chats below them", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "hourly Recruitment Team 11:00-17:00");
+  const card = JSON.stringify((g.engine as unknown as { boardCard: () => unknown }).boardCard());
+  const groups = card.indexOf("Group chats (1)");
+  const people = card.indexOf("Individual chats");
+  assert.ok(groups > 0 && people > groups, "groups come before individual chats");
+  assert.ok(card.indexOf("Priya Rao") > people);
+  assert.match(card, /Hourly progress 11:00 to 17:00/);
 });
 
 test("after clock-out the group is not chased", async () => {

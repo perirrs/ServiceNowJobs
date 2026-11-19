@@ -270,14 +270,14 @@ const daysBetween = (from: string, to: string) => Math.round((Date.parse(`${to}T
 
 /** Dollars per million tokens, input and output. */
 /** The roles TalentFlow knows, as they appear at the start of a person's profile. */
-type Role = "Recruitment Director" | "Account Manager" | "Account Owner" | "Recruiter";
+type Role = "Recruitment Director" | "HR Manager" | "Account Manager" | "Account Owner" | "Recruiter";
 
 /** A person's role, read from the start of their profile. */
 export function roleOf(profile: string | null | undefined): Role | null {
-  const m = /^(Recruitment Director|Account Manager|Account Owner|Recruiter)\b/i.exec((profile ?? "").trim());
+  const m = /^(Recruitment Director|HR Manager|Account Manager|Account Owner|Recruiter)\b/i.exec((profile ?? "").trim());
   if (!m) return null;
   const word = m[1]!.toLowerCase();
-  return word === "recruitment director" ? "Recruitment Director" : word === "account manager" ? "Account Manager" : word === "account owner" ? "Account Owner" : "Recruiter";
+  return word === "recruitment director" ? "Recruitment Director" : word === "hr manager" ? "HR Manager" : word === "account manager" ? "Account Manager" : word === "account owner" ? "Account Owner" : "Recruiter";
 }
 
 /** Daily submissions and monthly joins expected of each role that does submissions. */
@@ -1030,6 +1030,8 @@ export class Engine {
     let teamSpocs = 0;
     const stale: string[] = [];
     const director: Person[] = [];
+    /** Each measured person's share of today's submission target. */
+    const measured: { name: string; share: number }[] = [];
     const rows: string[] = [];
     const forLines: { name: string; role: string; figures: string; note: string }[] = [];
     const notes = new Map(this.store.notesOn(date).map((x) => [x.personId, x]));
@@ -1039,11 +1041,14 @@ export class Engine {
         director.push(p);
         continue;
       }
+      // Oversees blockers and people issues: not measured on recruitment figures.
+      if (role === "HR Manager") continue;
       const f: TeamFigures | undefined = figures.get(p.email.toLowerCase());
       const day = f?.day ?? {};
       const month = f?.month ?? {};
       const target = role ? ROLE_TARGETS[role] : undefined;
       const sub = n(day, "submitted_to_client");
+      if (target && !this.isAway(p)) measured.push({ name: displayName(p), share: sub / target.daySubmissions });
       if (target) {
         teamSub += sub;
         teamSubTarget += target.daySubmissions;
@@ -1080,9 +1085,7 @@ export class Engine {
       `Team today: ${teamSub} of ${teamSubTarget} submissions (${pctOf(teamSub, teamSubTarget)}), ${teamL1} L1 selects, ${teamReqs} new requirements (${teamSpots} spots), ${teamSpocs} new SPOCs.`,
       `Month so far: ${teamJoin} of ${teamJoinTarget} joins (${pctOf(teamJoin, teamJoinTarget)}).`,
       stale.length ? `No TalentFlow update in the last 2 hours: ${stale.join(", ")}. Please update TalentFlow every hour.` : "",
-      final && director.length
-        ? `${director.map(displayName).join(", ")} (Recruitment Director): team target met today ${pctOf(teamSub, teamSubTarget)} on submissions; ${pctOf(teamJoin, teamJoinTarget)} of the month's joins so far.`
-        : "",
+      final && director.length ? this.directorLine(director, measured, pctOf(teamSub, teamSubTarget), pctOf(teamJoin, teamJoinTarget)) : "",
     ].filter(Boolean);
     let lines = "";
     if (final && this.brain.groupDayLines) {
@@ -1103,6 +1106,33 @@ export class Engine {
     const id = await this.direct.postHtml(group.chatId, html);
     this.store.set(`gpost:${id}`, "1");
     return id;
+  }
+
+  /**
+   * The recruitment director's result for the day: successful only when every
+   * measured person reached at least 75% of today's submission target.
+   */
+  private directorLine(director: Person[], measured: { name: string; share: number }[], teamSub: string, teamJoin: string): string {
+    const below = measured.filter((m) => m.share < 0.75);
+    const at = measured.length - below.length;
+    return [
+      `${director.map(displayName).join(", ")} (Recruitment Director): ${at} of ${measured.length} people reached 75% of today's submission target.`,
+      below.length ? `Below 75%: ${below.map((m) => `${m.name} ${Math.round(m.share * 100)}%`).join(", ")}.` : "",
+      `Successful today only when everyone is at 75% or more: ${measured.length && !below.length ? "yes" : "not yet"}.`,
+      `Team: ${teamSub} of today's submissions, ${teamJoin} of the month's joins so far.`,
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  /** "Hourly progress 11:00 to 17:00 · clock-out 18:00" for a group's board card, when set. */
+  private groupReportLine(g: Group): Record<string, unknown>[] {
+    const hourly = this.store.get(`hourly:group:${g.id}`);
+    const clock = this.store.get(`clockout:group:${g.id}`);
+    const parts: string[] = [];
+    if (hourly) parts.push(`Hourly progress ${hourly.split("@")[0]!.replace("-", " to ")}`);
+    if (clock) parts.push(`clock-out and day summary ${this.showTime(clock)}`);
+    return parts.length ? [{ type: "TextBlock", text: parts.join(" · "), wrap: true, spacing: "None", isSubtle: true, size: "Small" }] : [];
   }
 
   /** Whether a message in a group is one of the progress posts. */
@@ -2992,6 +3022,39 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       },
     ];
 
+    const groupList = this.store.groups();
+    if (groupList.length) {
+      body.push({ type: "TextBlock", text: `Group chats (${groupList.length})`, weight: "Bolder", spacing: "Large", separator: true });
+      for (const g of groupList) {
+        body.push({
+          type: "Container",
+          spacing: "Small",
+          items: [
+            { type: "TextBlock", text: g.name, weight: "Bolder", wrap: true },
+            {
+              type: "TextBlock",
+              text: `${this.store.groupMembers(g.id).length} people · asked and followed up in the group`,
+              wrap: true,
+              spacing: "None",
+              isSubtle: true,
+            },
+            ...scheduleLine(`group:${g.id}:`),
+            ...this.groupReportLine(g),
+            {
+              type: "ActionSet",
+              spacing: "Small",
+              actions: [
+                submit("Ask group now", { cmd: "askGroup", who: g.name }),
+                timePicker(`g${g.id}`, g.name, `group:${g.id}:`),
+                submit("Remove group", { cmd: "removeGroup", who: g.name }),
+              ],
+            },
+          ],
+        });
+      }
+    }
+
+    if (placed.length) body.push({ type: "TextBlock", text: "Individual chats", weight: "Bolder", size: "Medium", spacing: "Large", separator: true });
     groups.forEach((group, index) => {
       const rows = placed.filter((r) => r.group === index);
       if (!rows.length) return;
@@ -3031,37 +3094,6 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         });
       }
     });
-
-    const groupList = this.store.groups();
-    if (groupList.length) {
-      body.push({ type: "TextBlock", text: `Group chats (${groupList.length})`, weight: "Bolder", spacing: "Large", separator: true });
-      for (const g of groupList) {
-        body.push({
-          type: "Container",
-          spacing: "Small",
-          items: [
-            { type: "TextBlock", text: g.name, weight: "Bolder", wrap: true },
-            {
-              type: "TextBlock",
-              text: `${this.store.groupMembers(g.id).length} people · asked and followed up in the group`,
-              wrap: true,
-              spacing: "None",
-              isSubtle: true,
-            },
-            ...scheduleLine(`group:${g.id}:`),
-            {
-              type: "ActionSet",
-              spacing: "Small",
-              actions: [
-                submit("Ask group now", { cmd: "askGroup", who: g.name }),
-                timePicker(`g${g.id}`, g.name, `group:${g.id}:`),
-                submit("Remove group", { cmd: "removeGroup", who: g.name }),
-              ],
-            },
-          ],
-        });
-      }
-    }
 
     // The general settings: green when switched on, grey when off.
     const usage = this.usageLine(this.today());
