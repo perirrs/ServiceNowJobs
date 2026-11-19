@@ -251,6 +251,12 @@ export class Store {
     return this.checkin(personId, date)!;
   }
 
+  /** Remove a check-in that never got as far as a delivered message. */
+  discardEmptyCheckin(checkinId: number): void {
+    const n = this.db.prepare("SELECT COUNT(*) AS n FROM messages WHERE checkin_id = ?").get(checkinId);
+    if (n && n.n === 0) this.db.prepare("DELETE FROM checkins WHERE id = ?").run(checkinId);
+  }
+
   setCheckinStatus(checkinId: number, status: CheckinStatus): void {
     this.db.prepare("UPDATE checkins SET status = ? WHERE id = ?").run(status, checkinId);
   }

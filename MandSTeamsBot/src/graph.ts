@@ -98,14 +98,22 @@ export class GraphChat {
   }
 
   private async call<T>(method: string, url: string, body?: unknown): Promise<T> {
-    const res = await fetch(url.startsWith("http") ? url : `${GRAPH}${url}`, {
-      method,
-      headers: {
-        Authorization: `Bearer ${await this.token()}`,
-        ...(body ? { "Content-Type": "application/json" } : {}),
-      },
-      body: body ? JSON.stringify(body) : undefined,
-    });
+    let res: Response;
+    for (let attempt = 1; ; attempt++) {
+      res = await fetch(url.startsWith("http") ? url : `${GRAPH}${url}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${await this.token()}`,
+          ...(body ? { "Content-Type": "application/json" } : {}),
+        },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      // Graph throttles chat sends; it says how long to wait in Retry-After.
+      if (![429, 503, 504].includes(res.status) || attempt >= 4) break;
+      const wait = Math.min(Number(res.headers.get("retry-after")) || 5 * attempt, 60);
+      console.warn(`Graph asked us to slow down (${res.status}); retrying in ${wait}s`);
+      await new Promise((r) => setTimeout(r, wait * 1000));
+    }
     if (!res.ok) {
       throw new GraphError(
         `Graph ${method} ${url.split("?")[0]} failed: ${res.status} ${(await res.text()).slice(0, 300)}`,

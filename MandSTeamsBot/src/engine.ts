@@ -230,9 +230,17 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     if (existing?.status === "open") return false;
 
     const checkin = this.store.openCheckin(person.id, date);
-    const turn = await this.brain.nextTurn(this.context(person, checkin));
-    this.store.addMessage(checkin.id, "bot", turn.reply);
-    await this.say(person, turn.reply);
+    try {
+      const turn = await this.brain.nextTurn(this.context(person, checkin));
+      // Deliver first, record second: the record must only show what was really sent.
+      await this.say(person, turn.reply);
+      this.store.addMessage(checkin.id, "bot", turn.reply);
+    } catch (err) {
+      // Nothing reached the person, so leave today free for another attempt.
+      if (existing) this.store.setCheckinStatus(checkin.id, existing.status);
+      else this.store.discardEmptyCheckin(checkin.id);
+      throw err;
+    }
     return true;
   }
 
@@ -280,8 +288,8 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       const botTurns = this.store.messages(checkin.id).filter((m) => m.role === "bot").length;
       const finalTurn = botTurns >= this.config.maxBotTurns - 1;
       const turn = await this.brain.nextTurn(this.context(person, checkin, finalTurn));
-      this.store.addMessage(checkin.id, "bot", turn.reply);
       await this.say(person, turn.reply);
+      this.store.addMessage(checkin.id, "bot", turn.reply);
       if (turn.done) await this.finish(person, checkin);
     } catch (err) {
       this.log(`Check-in reply failed for ${person.email}`, err);

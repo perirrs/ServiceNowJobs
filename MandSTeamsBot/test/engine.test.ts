@@ -365,3 +365,35 @@ test("a command straight after a nomination is still a command, not a profile", 
   await t.engine.handleMessage(t.id(CTO), "some later remark");
   assert.equal(t.store.personByEmail(PRIYA)!.profile, null);
 });
+
+test("if the opening message cannot be delivered, nothing is recorded and a retry works", async () => {
+  const store = new Store(":memory:");
+  const brain = new FakeBrain();
+  let failing = true;
+  const sent: string[] = [];
+  const engine = new Engine(
+    store,
+    brain,
+    {
+      send: async (_to, text) => {
+        if (failing && !text.includes("admin commands") && !text.includes("nominated") && !text.includes("check-in assistant")) throw new Error("429");
+        sent.push(text);
+      },
+    },
+    config,
+    () => new Date("2026-11-16T17:00:00Z"),
+    () => undefined,
+  );
+  const id = (email: string): Identity => ({ teamsUserId: `t-${email}`, conversationId: `c-${email}`, lookupEmail: async () => email });
+  await engine.handleInstall(id(CTO));
+  await engine.handleMessage(id(CTO), `nominate ${PRIYA}`);
+  await engine.handleInstall(id(PRIYA));
+  const priya = store.personByEmail(PRIYA)!;
+
+  assert.equal((await engine.runCheckins()).sent, 0);
+  assert.equal(store.checkin(priya.id, "2026-11-16"), undefined);
+
+  failing = false;
+  assert.equal((await engine.runCheckins()).sent, 1);
+  assert.equal(store.messages(store.checkin(priya.id, "2026-11-16")!.id).length, 1);
+});

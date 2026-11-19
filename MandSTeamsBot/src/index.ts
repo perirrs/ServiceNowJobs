@@ -86,8 +86,15 @@ async function pollChats(g: GraphChat): Promise<void> {
     try {
       for (const line of await g.messagesSince(person.conversationId!, since)) {
         store.set(key, line.createdAt);
-        if (line.fromUserId !== senderId) await engine.handleDirectReply(person.id, line.text);
-        else if (!sentByAssistant.has(normalise(line.text))) engine.manualTakeover(person.id);
+        if (line.fromUserId !== senderId) {
+          await engine.handleDirectReply(person.id, line.text);
+          continue;
+        }
+        // From the sender's account: the assistant's own message, or the person typing?
+        // The recorded check-in messages cover the case where the bot was restarted.
+        const text = normalise(line.text);
+        const recorded = store.messages(checkin.id).some((m) => m.role === "bot" && normalise(m.text) === text);
+        if (!recorded && !sentByAssistant.has(text)) engine.manualTakeover(person.id);
       }
     } catch (err) {
       console.error(`Could not read the chat with ${person.email}`, err);
@@ -167,3 +174,13 @@ console.log(
   `Check-in bot running on port ${config.port}. Admins: ${config.adminEmails.join(", ")}. ` +
     `Check-ins "${config.checkinCron}", digest "${config.digestCron}" (${config.timezone}).`,
 );
+
+// One-off manual trigger: `node dist/index.js --checkin-now` asks everyone
+// nominated for an update straight away, then carries on running as normal.
+if (process.argv.includes("--checkin-now")) {
+  const { sent, unreachable } = await engine.runCheckins();
+  console.log(
+    `[manual trigger] sent ${sent} check-in(s)` +
+      (unreachable.length ? `; not connected: ${unreachable.map((p) => p.email).join(", ")}` : ""),
+  );
+}
