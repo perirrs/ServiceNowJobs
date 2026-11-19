@@ -56,6 +56,25 @@ This needs no Azure subscription, public server or tunnel. The bot connects out 
 4. Run `npm run build` then `npm start`, and leave it running.
 5. Each person in the trial opens Teams, finds **Daily Check-in** under *Apps → Built for your org*, adds it and says hello. Admins then `nominate` them.
 
+## Sending check-ins from your own account
+
+With `SEND_AS_USER=true`, check-ins arrive from a real person's Teams account, in that person's normal one-to-one chat with each colleague, instead of from the bot. Colleagues install nothing. The bot app is then only used by the admins, for commands and the digest.
+
+How it behaves:
+
+- On nomination, the colleague gets one message from your account saying the daily check-in is automated and sent by an AI assistant, and that answers are summarised for you and the CEO. The assistant also says so if asked.
+- The assistant only reads and replies in a chat while that day's check-in is open. Before the opening question and after it closes, the chat is ordinary conversation and is left alone.
+- If you type in a chat yourself during an open check-in, the assistant stays quiet there for the rest of the day. What the colleague says is still recorded for the note.
+- Replies are picked up by polling (`POLL_SECONDS`, default 20), so expect a short delay.
+
+Setup:
+
+1. In the Entra admin centre, open the bot's app registration → *Authentication* → set **Allow public client flows** to **Yes** and save. This permits the device-code sign-in below.
+2. Run `npm run signin` as the person the messages should come from, and enter the printed code at the address shown. Approve the permissions requested: read and send your Teams chats (`Chat.ReadWrite`) and look up colleagues by email (`User.ReadBasic.All`).
+3. Set `SEND_AS_USER=true` in `.env` and restart the bot.
+
+The sign-in token is saved in `data/graph-token.json`. Anyone who can read that file can read and send that person's Teams chats, so keep the machine and folder locked down. To revoke it, delete the file and remove the app's consent under *Enterprise applications* in Entra.
+
 ## Putting it into Teams for real
 
 You need to be (or work with) a Teams administrator for your Microsoft 365 tenant, and an Azure subscription.

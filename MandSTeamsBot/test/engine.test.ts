@@ -21,6 +21,8 @@ const config: Config = {
   maxBotTurns: 3,
   dataDir: ":memory:",
   model: "fake",
+  sendAsUser: false,
+  pollSeconds: 20,
 };
 
 /** Scripted stand-in for Claude that records what it was shown. */
@@ -60,7 +62,7 @@ class FakeBrain implements Brain {
   }
 }
 
-function setup() {
+function setup(opts: { direct?: boolean } = {}) {
   const store = new Store(":memory:");
   const brain = new FakeBrain();
   const sent: { to: string; text: string }[] = [];
@@ -72,6 +74,13 @@ function setup() {
     config,
     () => date,
     () => undefined,
+    opts.direct
+      ? {
+          senderName: "Sujith",
+          connect: async (email) => ({ conversationId: `chat-${email}`, name: "Priya Rao" }),
+          send: async (to, text) => void sent.push({ to, text }),
+        }
+      : undefined,
   );
   const id = (email: string): Identity => ({
     teamsUserId: `t-${email}`,
@@ -245,4 +254,60 @@ test("removed people stop getting check-ins", async () => {
 test("chunk splits long text at paragraph breaks", () => {
   const parts = chunk(["a".repeat(60), "b".repeat(60), "c".repeat(60)].join("\n\n"), 130);
   assert.deepEqual(parts.map((p) => p.length), [122, 60]);
+});
+
+// ---------- send-as-user mode ----------
+
+test("direct mode: nominating connects the chat at once and discloses the automation", async () => {
+  const t = setup({ direct: true });
+  await t.engine.handleInstall(t.id(CTO));
+  await t.engine.handleMessage(t.id(CTO), `nominate ${PRIYA}`);
+  const priya = t.store.personByEmail(PRIYA)!;
+  assert.equal(priya.conversationId, `chat-${PRIYA}`);
+  assert.equal(priya.name, "Priya Rao");
+  const welcome = t.sent.find((s) => s.to === `chat-${PRIYA}`)!.text;
+  assert.match(welcome, /sent automatically by an AI assistant from my account/);
+});
+
+test("direct mode: chat outside an open check-in is ignored; replies inside it are handled", async () => {
+  const t = setup({ direct: true });
+  await t.engine.handleInstall(t.id(CTO));
+  await t.engine.handleMessage(t.id(CTO), `nominate ${PRIYA}`);
+  const priya = t.store.personByEmail(PRIYA)!;
+
+  await t.engine.handleDirectReply(priya.id, "fancy lunch?");
+  assert.equal(t.store.checkin(priya.id, "2026-11-16"), undefined);
+  assert.equal(t.brain.turns.length, 0);
+
+  await t.engine.runCheckins();
+  assert.equal(t.engine.openDirectCheckins().length, 1);
+  await t.engine.handleDirectReply(priya.id, "sent 3 submissions");
+  assert.equal(t.store.checkin(priya.id, "2026-11-16")!.status, "completed");
+
+  // Closed again: later chat is ordinary conversation, not an update.
+  await t.engine.handleDirectReply(priya.id, "see you tomorrow");
+  assert.equal(t.brain.noteCalls.length, 1);
+});
+
+test("direct mode: when the sender types in the chat, the assistant goes quiet but keeps recording", async () => {
+  const t = setup({ direct: true });
+  await t.engine.handleInstall(t.id(CTO));
+  await t.engine.handleMessage(t.id(CTO), `nominate ${PRIYA}`);
+  const priya = t.store.personByEmail(PRIYA)!;
+  await t.engine.runCheckins();
+  const before = t.sent.length;
+
+  t.engine.manualTakeover(priya.id);
+  await t.engine.handleDirectReply(priya.id, "the Globex deal fell through");
+  assert.equal(t.sent.length, before);
+
+  await t.engine.runDigest();
+  assert.ok(t.brain.noteCalls[0]!.history.some((m) => m.text === "the Globex deal fell through"));
+});
+
+test("direct mode: the digest still reaches admins through the bot", async () => {
+  const t = setup({ direct: true });
+  await t.engine.handleInstall(t.id(CTO));
+  await t.engine.runDigest();
+  assert.match(t.to(CTO).at(-1)!, /Nobody is nominated/);
 });

@@ -100,6 +100,10 @@ CREATE TABLE IF NOT EXISTS items (
   first_seen TEXT NOT NULL,
   last_seen TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS kv (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS digests (
   date TEXT PRIMARY KEY,
   text TEXT NOT NULL,
@@ -334,6 +338,19 @@ export class Store {
       )
       .run(status, update, date, itemId, personId);
     return res.changes > 0;
+  }
+
+  // ---- small persistent flags and cursors ----
+
+  get(key: string): string | undefined {
+    const r = this.db.prepare("SELECT value FROM kv WHERE key = ?").get(key);
+    return r ? (r.value as string) : undefined;
+  }
+
+  set(key: string, value: string): void {
+    this.db
+      .prepare("INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
+      .run(key, value);
   }
 
   // ---- digests ----

@@ -9,6 +9,17 @@ export interface Messenger {
   send(conversationId: string, text: string): Promise<void>;
 }
 
+/**
+ * Present when check-ins are sent from a real person's Teams account rather
+ * than from the bot. Nominees are then reached in that person's own chats.
+ */
+export interface DirectChannel {
+  senderName: string;
+  /** Find or create the one-to-one chat with a colleague. */
+  connect(email: string): Promise<{ conversationId: string; name: string }>;
+  send(conversationId: string, text: string): Promise<void>;
+}
+
 /** Who a Teams activity came from. */
 export interface Identity {
   teamsUserId: string;
@@ -73,6 +84,7 @@ export class Engine {
     private now: () => Date = () => new Date(),
     private log: (msg: string, err?: unknown) => void = (msg, err) =>
       err ? console.error(msg, err) : console.log(msg),
+    private direct?: DirectChannel,
   ) {}
 
   private today(): string {
@@ -85,7 +97,9 @@ export class Engine {
 
   private async say(person: Person, text: string): Promise<void> {
     if (!person.conversationId) return;
-    for (const part of chunk(text)) await this.messenger.send(person.conversationId, part);
+    // Admins are always reached through the bot; nominees through the direct channel when there is one.
+    const channel = this.direct && !this.isAdmin(person) ? this.direct : this.messenger;
+    for (const part of chunk(text)) await channel.send(person.conversationId, part);
   }
 
   private enqueue<T>(personId: number, job: () => Promise<T>): Promise<T> {
@@ -97,6 +111,11 @@ export class Engine {
 
   private welcomeText(person: Person): string {
     const first = person.name?.split(" ")[0];
+    if (this.direct) {
+      return `Hi${first ? ` ${first}` : ""}, a heads-up from ${this.direct.senderName}: from now on a daily check-in will arrive in this chat each working day. It is sent automatically by an AI assistant from my account, so those messages are not me typing. It asks what you got done, how earlier things turned out, and anything that's in your way. It usually takes a couple of minutes.
+
+Your answers are summarised each day for me and the CEO, so we can see where people need help. If you need me personally, just say so here and I'll pick it up myself.`;
+    }
     return `Hi${first ? ` ${first}` : ""}, I'm the daily check-in assistant for ${this.config.companyName}. Each working day I'll message you here for a quick update on your work: what you got done, how earlier things turned out, and anything that's in your way. It usually takes a couple of minutes.
 
 So you know how it's used: your answers are summarised each day for the CTO and CEO, so they can see where people need help. You can also message me at any time to add to your update.`;
@@ -215,6 +234,35 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     return true;
   }
 
+  /**
+   * A colleague wrote in their one-to-one chat with the sender. Only counts
+   * while today's check-in is open: outside it, the chat is ordinary conversation.
+   */
+  async handleDirectReply(personId: number, text: string): Promise<void> {
+    const person = this.store.personById(personId);
+    if (!person?.nominated) return;
+    await this.enqueue(person.id, async () => {
+      const checkin = this.store.checkin(person.id, this.today());
+      if (checkin?.status === "open") await this.handleUpdate(person, text.trim());
+    });
+  }
+
+  /** The sender typed in the chat themselves: the assistant stays quiet there for the rest of the day. */
+  manualTakeover(personId: number): void {
+    const checkin = this.store.checkin(personId, this.today());
+    if (checkin?.status === "open") this.store.set(`takeover:${checkin.id}`, "1");
+  }
+
+  /** People whose check-in is open today and who are reached through the direct channel. */
+  openDirectCheckins(): { person: Person; checkin: Checkin }[] {
+    if (!this.direct) return [];
+    return this.store
+      .checkinsOn(this.today())
+      .filter((c) => c.status === "open")
+      .map((checkin) => ({ person: this.store.personById(checkin.personId), checkin }))
+      .filter((x): x is { person: Person; checkin: Checkin } => !!x.person?.nominated && !!x.person.conversationId);
+  }
+
   private async handleUpdate(person: Person, text: string): Promise<void> {
     if (!text) return;
     const date = this.today();
@@ -223,6 +271,8 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     // closing) opens or reopens today's, so nothing a person says is lost.
     if (!checkin || checkin.status !== "open") checkin = this.store.openCheckin(person.id, date);
     this.store.addMessage(checkin.id, "user", text);
+    // Recorded for tonight's note, but the human has taken over this chat.
+    if (this.store.get(`takeover:${checkin.id}`)) return;
 
     try {
       const botTurns = this.store.messages(checkin.id).filter((m) => m.role === "bot").length;
@@ -375,7 +425,11 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           if (this.config.adminEmails.includes(email)) {
             return await reply("That's an admin account. Admins receive the digest rather than check-ins.");
           }
-          const person = this.store.upsertPerson(email);
+          let person = this.store.upsertPerson(email);
+          if (this.direct) {
+            const chat = await this.direct.connect(email);
+            person = this.store.upsertPerson(email, chat);
+          }
           this.store.setNominated(person.id, true);
           if (person.conversationId) {
             await this.say(person, this.welcomeText(person));

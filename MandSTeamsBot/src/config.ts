@@ -9,6 +9,9 @@ export interface Config {
   maxBotTurns: number;
   dataDir: string;
   model: string;
+  /** Send check-ins from a signed-in person's own Teams account instead of from the bot. */
+  sendAsUser: boolean;
+  pollSeconds: number;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -28,6 +31,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     maxBotTurns: Number(env.MAX_BOT_TURNS ?? 6),
     dataDir: env.DATA_DIR ?? "./data",
     model: env.CLAUDE_MODEL ?? "claude-opus-5-5",
+    sendAsUser: env.SEND_AS_USER === "true",
+    pollSeconds: Math.max(10, Number(env.POLL_SECONDS ?? 20)),
   };
 }
 
