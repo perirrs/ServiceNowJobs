@@ -20,6 +20,8 @@ export interface CheckinContext {
   rapport?: string;
   /** How to open a message to this person, for example "Hi Anna". Plain "Hi" when not set. */
   greeting?: string;
+  /** The person's latest message was written in a group chat, not one to one. */
+  fromGroup?: boolean;
 }
 
 export interface Turn {
@@ -27,6 +29,8 @@ export interface Turn {
   done: boolean;
   /** The assistant should stop and a person should answer this one themselves. */
   handover?: boolean;
+  /** A group-chat message that was not this person's update: nothing to record or answer. */
+  ignore?: boolean;
 }
 
 export interface ItemChange {
@@ -61,6 +65,11 @@ export interface Brain {
     senderName: string,
     chat: { fromSender: boolean; text: string }[],
   ): Promise<{ brief: string; address: string }>;
+  /**
+   * Bring a stored memory up to date with new chat messages, or build one from
+   * nothing for a group. Returns the whole revised memory.
+   */
+  reviseMemory(input: { about: string; senderName: string; memory: string; transcript: string }): Promise<string>;
 }
 
 // ---------- rendering context for the model ----------
@@ -254,6 +263,7 @@ const TurnSchema = z.object({
   reply: z.string().describe("The message to send to the person in Teams."),
   done: z.boolean().describe("True when this message closes today's check-in."),
   handover: z.boolean().describe("True when a person must answer this themselves; reply is then empty."),
+  ignore: z.boolean().describe("True only for a group-chat message that is not this person's work update; reply is then empty."),
 });
 
 const NoteSchema = z.object({
@@ -322,13 +332,18 @@ export class ClaudeBrain implements Brain {
         }),
       ),
     ];
-    if (ctx.finalTurn) {
-      messages.push({
-        role: "system",
-        content:
-          "You have asked enough for today. Make this your closing message: one short line, ask nothing further, and set done to true.",
-      });
+    const notes: string[] = [];
+    if (ctx.fromGroup) {
+      notes.push(
+        "The person's latest message was written in a group chat, where the update was asked for and where people also talk to each other. If it is not this person's own work update (a reply to someone else, banter, a question to the group, an acknowledgement like \"ok\"), set ignore to true and leave reply empty. If it is their update, answer as usual: your reply is sent to them privately, one to one, so do not greet them again.",
+      );
     }
+    if (ctx.finalTurn) {
+      notes.push(
+        "You have asked enough for today. Make this your closing message: one short line, ask nothing further, and set done to true.",
+      );
+    }
+    if (notes.length) messages.push({ role: "system", content: notes.join("\n\n") });
 
     const turn = await this.structured(
       checkinSystem(this.company, { senderName: this.senderName, disclose: this.disclose }),
@@ -336,6 +351,7 @@ export class ClaudeBrain implements Brain {
       TurnSchema,
       "low",
     );
+    if (ctx.fromGroup && turn.ignore) return { reply: "", done: false, ignore: true };
     if (turn.handover) return { reply: "", done: false, handover: true };
     return { reply: tidyReply(turn.reply, ctx.person.name, ctx.greeting), done: turn.done || ctx.finalTurn };
   }
@@ -403,6 +419,25 @@ address: the word or short phrase ${senderName} uses to address this person when
 Describe only what the chat shows. Leave out anything personal or sensitive, such as health, family, money or other people's private matters, even if it appears in the chat.`,
       [{ role: "user", content: transcript }],
       RapportSchema,
+      "medium",
+    );
+  }
+
+  async reviseMemory(input: { about: string; senderName: string; memory: string; transcript: string }): Promise<string> {
+    const { about, senderName, memory, transcript } = input;
+    return this.text(
+      `You keep a short working memory for an assistant that asks people for daily work updates on behalf of ${senderName}. This memory is about ${about}. It exists so that tomorrow's questions are the right ones: specific, and aware of what has already been said.
+
+You are given the memory as it stands (it may be empty) and Teams chat messages that are new since it was written. Return the whole memory, revised, under 250 words:
+
+- Keep what is still true and still matters. Drop what is finished, resolved or stale.
+- Add what the new messages show: work in progress and who is doing it, what was promised and by when, what is blocked and on what, decisions made, numbers against targets.
+- For a group, organise it by person.
+- If the memory describes how ${senderName} writes to someone, keep that part as it is unless the new messages clearly show otherwise.
+- Record only what the messages say. Leave out anything personal or sensitive, such as health, family, money or other people's private matters.
+
+Write it as plain notes, no preamble.`,
+      `## Memory as it stands\n${memory || "(empty)"}\n\n## New messages\n${transcript}`,
       "medium",
     );
   }

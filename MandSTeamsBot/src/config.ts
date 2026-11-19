@@ -13,6 +13,10 @@ export interface Config {
   pollSeconds: number;
   /** Minutes of silence after which a conversation with replies is closed and summarised. */
   idleCloseMinutes: number;
+  /** How many of the most recent messages to read from a chat when first learning about a person or group. */
+  historyMessages: number;
+  /** Minutes after a group is asked during which replies in the group count as updates. */
+  groupWindowMinutes: number;
   /**
    * In send-as-user mode: true tells colleagues the check-in is automated;
    * false writes as the sender in the first person and never mentions automation.
@@ -39,6 +43,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     pollSeconds: Math.max(10, Number(env.POLL_SECONDS ?? 20)),
     discloseAutomation: env.DISCLOSE_AUTOMATION !== "false",
     idleCloseMinutes: Number(env.IDLE_CLOSE_MINUTES ?? 30),
+    groupWindowMinutes: Number(env.GROUP_WINDOW_MINUTES ?? 120),
+    historyMessages: Number(env.HISTORY_MESSAGES ?? 500),
   };
 }
 

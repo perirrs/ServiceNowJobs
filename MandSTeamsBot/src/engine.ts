@@ -2,7 +2,7 @@ import { displayName, renderItems, renderNote } from "./ai.js";
 import type { Brain, CheckinContext, DigestPerson } from "./ai.js";
 import { todayIn } from "./config.js";
 import type { Config } from "./config.js";
-import type { Checkin, Person, Store } from "./db.js";
+import type { Checkin, Group, Person, Store } from "./db.js";
 
 /** Sends a chat message to a Teams conversation. Implemented by teams.ts, faked in tests. */
 export interface Messenger {
@@ -23,9 +23,20 @@ export interface DirectChannel {
   connect(
     email: string,
   ): Promise<{ conversationId: string; name: string } | { notFound: true; suggestions: string[] }>;
-  send(conversationId: string, text: string): Promise<void>;
-  /** Recent messages in the sender's chat with a colleague, oldest first. */
-  history?(conversationId: string): Promise<{ fromSender: boolean; text: string }[]>;
+  send(conversationId: string, text: string, mentions?: { userId: string; name: string }[]): Promise<void>;
+  /** The sender's named group chats whose name contains the query. */
+  findGroups?(query: string): Promise<{ chatId: string; name: string }[]>;
+  /** Everyone in a group chat except the sender. */
+  groupMembers?(chatId: string): Promise<{ userId: string; email: string; name: string }[]>;
+  /**
+   * Messages in one of the sender's chats, oldest first: the most recent `max`,
+   * or with `since` only those after that time.
+   */
+  history?(
+    conversationId: string,
+    max: number,
+    since?: string,
+  ): Promise<{ fromSender: boolean; from: string; text: string; at: string }[]>;
 }
 
 /** Who a Teams activity came from. */
@@ -42,6 +53,7 @@ const ADMIN_HELP = `**Daily Check-in: what you can type**
 - **board** (or **menu**): the team board, with who has replied, who is blocked, and buttons for everything below
 - **add** name@company.com: start asking someone for updates
 - **remove** name: stop asking them (their notes are kept)
+- **add group** Group Name: follow a Teams group chat. Updates are asked for in the group; any follow-up questions go to each person privately. **ask group** Name asks now, **remove group** Name stops.
 - **ask** name: ask them for an update right now. **ask all** asks everyone.
 - **profile** name: their role, responsibilities and targets, so the questions fit their job
 - **style** name: what I learned from your past chat about how you write to them. **style name refresh** reads the chat again.
@@ -82,6 +94,12 @@ export function cardToCommand(value: unknown): string {
       return `remove ${str("who")}`;
     case "askAll":
       return "ask all";
+    case "addGroup":
+      return `add group ${str("groupName")}`;
+    case "askGroup":
+      return `ask group ${str("who")}`;
+    case "removeGroup":
+      return `remove group ${str("who")}`;
     case "digest":
       return "digest";
     case "list":
@@ -299,7 +317,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
 
   // ---------- the check-in conversation ----------
 
-  private context(person: Person, checkin: Checkin, finalTurn = false): CheckinContext {
+  private context(person: Person, checkin: Checkin, finalTurn = false, fromGroup = false): CheckinContext {
     return {
       date: checkin.date,
       person,
@@ -307,9 +325,82 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       recentNotes: this.store.recentNotes(person.id, 5, checkin.date),
       history: this.store.messages(checkin.id),
       finalTurn,
-      rapport: this.personal ? this.store.get(`rapport:${person.id}`) || undefined : undefined,
+      fromGroup,
+      rapport: this.personal ? this.memoryFor(person) : undefined,
       greeting: this.personal ? this.store.get(`greeting:${person.id}`) || undefined : undefined,
     };
+  }
+
+  /** What the assistant remembers about a person: their own memory, plus that of any group they are in. */
+  private memoryFor(person: Person): string | undefined {
+    const parts = [this.store.get(`rapport:${person.id}`) || ""];
+    for (const groupId of this.store.groupsOf(person.id)) {
+      const group = this.store.groups().find((g) => g.id === groupId);
+      const memory = this.store.get(`gmemory:${groupId}`);
+      if (group && memory) parts.push(`From the group chat "${group.name}":\n${memory}`);
+    }
+    return parts.filter(Boolean).join("\n\n") || undefined;
+  }
+
+  /**
+   * Make sure the memory of this person is ready and current before asking
+   * them anything: read their chat history the first time, and after that
+   * fold in whatever has been said in the chat since the last look, once a day.
+   */
+  private async refreshMemory(person: Person): Promise<void> {
+    if (!this.personal || !this.direct?.history || !person.chatId) return;
+    const key = `rapport:${person.id}`;
+    if (this.store.get(key) === undefined) {
+      await this.learnRapport(person);
+      return;
+    }
+    if (this.store.get(`memday:${person.id}`) === this.today()) return;
+    try {
+      const since = this.store.get(`memcursor:${person.id}`) || "";
+      const own = new Set(this.store.assistantTexts(person.id).map((t) => t.replace(/\s+/g, " ").trim()));
+      const fresh = (await this.direct.history(person.chatId, this.config.historyMessages, since)).filter(
+        (m) => !(m.fromSender && own.has(m.text.replace(/\s+/g, " ").trim())),
+      );
+      if (fresh.length) {
+        const transcript = fresh
+          .map((m) => `${m.fromSender ? this.direct!.senderName : displayName(person)}: ${m.text.slice(0, 300)}`)
+          .join("\n");
+        const revised = await this.brain.reviseMemory({
+          about: `${displayName(person)}, and how ${this.direct.senderName} works with them`,
+          senderName: this.direct.senderName,
+          memory: this.store.get(key) || "",
+          transcript,
+        });
+        if (revised) this.store.set(key, revised);
+      }
+      this.store.set(`memcursor:${person.id}`, this.now().toISOString());
+      this.store.set(`memday:${person.id}`, this.today());
+    } catch (err) {
+      this.log(`Could not update the memory of ${person.email}`, err);
+    }
+  }
+
+  /** The same for a group chat: its whole recent history the first time, then what is new each day. */
+  private async refreshGroupMemory(group: Group): Promise<void> {
+    if (!this.personal || !this.direct?.history) return;
+    if (this.store.get(`gmemday:${group.id}`) === this.today()) return;
+    try {
+      const since = this.store.get(`gmemcursor:${group.id}`) || "";
+      const fresh = await this.direct.history(group.chatId, this.config.historyMessages, since);
+      if (fresh.length) {
+        const revised = await this.brain.reviseMemory({
+          about: `the group chat "${group.name}" and the work of each person in it`,
+          senderName: this.direct.senderName,
+          memory: this.store.get(`gmemory:${group.id}`) || "",
+          transcript: fresh.map((m) => `${m.fromSender ? this.direct!.senderName : m.from || "Someone"}: ${m.text.slice(0, 300)}`).join("\n"),
+        });
+        if (revised) this.store.set(`gmemory:${group.id}`, revised);
+      }
+      this.store.set(`gmemcursor:${group.id}`, this.now().toISOString());
+      this.store.set(`gmemday:${group.id}`, this.today());
+    } catch (err) {
+      this.log(`Could not update the memory of group ${group.name}`, err);
+    }
   }
 
   /**
@@ -325,9 +416,11 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     try {
       // Leave out what the assistant itself sent, so it learns the person's style and not its own.
       const own = new Set(this.store.assistantTexts(person.id).map((t) => t.replace(/\s+/g, " ").trim()));
-      const chat = (await this.direct.history(person.chatId)).filter(
+      const chat = (await this.direct.history(person.chatId, this.config.historyMessages)).filter(
         (m) => !(m.fromSender && own.has(m.text.replace(/\s+/g, " ").trim())),
       );
+      this.store.set(`memcursor:${person.id}`, this.now().toISOString());
+      this.store.set(`memday:${person.id}`, this.today());
       // Too little to learn from: remember that, so we do not look again every time.
       let text = "";
       if (chat.filter((m) => m.fromSender).length >= 3) {
@@ -355,8 +448,9 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     if (existing && !force) return false;
     if (existing?.status === "open") return false;
 
-    await this.learnRapport(person);
+    await this.refreshMemory(person);
     const checkin = this.store.openCheckin(person.id, date);
+    this.store.set(`via:${checkin.id}`, "");
     try {
       const turn = await this.brain.nextTurn(this.context(person, checkin));
       // Deliver first, record second: the record must only show what was really sent.
@@ -401,21 +495,26 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       .filter((x): x is { person: Person; checkin: Checkin } => !!x.person?.nominated && !!x.person.chatId);
   }
 
-  private async handleUpdate(person: Person, text: string): Promise<void> {
+  private async handleUpdate(person: Person, text: string, fromGroup = false): Promise<void> {
     if (!text) return;
     const date = this.today();
     let checkin = this.store.checkin(person.id, date);
     // A message outside an open check-in (before the daily prompt, or after
     // closing) opens or reopens today's, so nothing a person says is lost.
     if (!checkin || checkin.status !== "open") checkin = this.store.openCheckin(person.id, date);
-    this.store.addMessage(checkin.id, "user", text);
+    const messageId = this.store.addMessage(checkin.id, "user", text);
     // Recorded for tonight's note, but the human has taken over this chat.
     if (this.store.get(`takeover:${checkin.id}`)) return;
 
     try {
       const botTurns = this.store.messages(checkin.id).filter((m) => m.role === "bot").length;
       const finalTurn = botTurns >= this.config.maxBotTurns - 1;
-      const turn = await this.brain.nextTurn(this.context(person, checkin, finalTurn));
+      const turn = await this.brain.nextTurn(this.context(person, checkin, finalTurn, fromGroup));
+      if (turn.ignore) {
+        // Group chatter, not an update: as if it was never said.
+        this.store.removeMessage(messageId);
+        return;
+      }
       if (turn.handover || !turn.reply) {
         // Something only a person should answer: go quiet here and tell the admins.
         this.store.set(`takeover:${checkin.id}`, "handover");
@@ -516,6 +615,144 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     });
   }
 
+  // ---------- group chats: asked together, followed up privately ----------
+
+  private resolveGroup(query: string): Group | string {
+    const q = query.trim().toLowerCase();
+    const all = this.store.groups();
+    const exact = all.filter((g) => g.name.toLowerCase() === q);
+    const matches = exact.length ? exact : all.filter((g) => q && g.name.toLowerCase().includes(q));
+    if (matches.length === 1) return matches[0]!;
+    if (!matches.length) return `I am not following a group chat matching "${query}". Send **list** to see the groups.`;
+    return `"${query}" matches several groups: ${matches.map((g) => g.name).join(", ")}. Use the full name.`;
+  }
+
+  private async addGroup(query: string): Promise<string> {
+    if (!this.direct?.findGroups || !this.direct.groupMembers) {
+      return "Group chats only work when messages are sent from your own Teams account.";
+    }
+    if (!query) return "Tell me the group chat's name, for example: **add group Recruitment Team**";
+    const found = await this.direct.findGroups(query);
+    const exact = found.filter((g) => g.name.toLowerCase() === query.toLowerCase());
+    const matches = exact.length ? exact : found;
+    if (!matches.length) {
+      return `None of your group chats has a name containing "${query}". The chat needs a name in Teams before I can find it.`;
+    }
+    if (matches.length > 1) {
+      return `Several group chats match:\n\n${matches.slice(0, 10).map((g) => `- ${g.name}`).join("\n")}\n\nSend the full name of the one you mean.`;
+    }
+    const group = this.store.addGroup(matches[0]!.chatId, matches[0]!.name);
+    const members = await this.syncGroup(group);
+    return `Now following **${group.name}** (${members.length} people: ${members.map(displayName).join(", ")}). Nothing has been posted there yet.\n\nSend **ask group ${group.name}** to ask now. The question goes in the group; any follow-up goes to each person privately.`;
+  }
+
+  /** Bring our record of who is in the group in line with Teams. */
+  private async syncGroup(group: Group): Promise<Person[]> {
+    const members: Person[] = [];
+    for (const m of await this.direct!.groupMembers!(group.chatId)) {
+      const person = this.store.upsertPerson(m.email, { name: m.name });
+      if (!person.nominated) this.store.setNominated(person.id, true);
+      this.store.set(`aad:${m.userId}`, String(person.id));
+      this.store.set(`aadOf:${person.id}`, m.userId);
+      members.push(this.store.personById(person.id)!);
+    }
+    this.store.setGroupMembers(group.id, members.map((p) => p.id));
+    return members;
+  }
+
+  /**
+   * Post one request for updates in the group. Members not yet asked today
+   * are covered; with `force`, so are those who finished earlier.
+   */
+  private async askGroup(group: Group, force = false): Promise<{ asked: number; message: string }> {
+    const date = this.today();
+    const due = (await this.syncGroup(group)).filter((p) => {
+      const c = this.store.checkin(p.id, date);
+      return !c || (force && c.status !== "open");
+    });
+    if (!due.length) return { asked: 0, message: `Everyone in ${group.name} has already been asked today.` };
+
+    const text = "Hi all, please share today's update.";
+    await this.direct!.send(group.chatId, text);
+    for (const person of due) {
+      const checkin = this.store.openCheckin(person.id, date);
+      this.store.addMessage(checkin.id, "bot", text);
+      this.store.set(`via:${checkin.id}`, String(group.id));
+    }
+    this.store.set(`gasked:${group.id}`, this.now().toISOString());
+    this.store.set(`gchased:${group.id}`, "");
+    this.store.set(`gcursor:${group.id}`, "");
+    await this.refreshGroupMemory(group);
+    return { asked: due.length, message: `Asked ${group.name} (${due.length} people). Summaries will appear here as each person finishes.` };
+  }
+
+  /** Groups whose chat should be watched for replies right now, with when they were asked. */
+  listeningGroups(): { group: Group; askedAt: string }[] {
+    return this.store
+      .groups()
+      .map((group) => ({ group, askedAt: this.store.get(`gasked:${group.id}`) ?? "" }))
+      .filter((g) => g.askedAt);
+  }
+
+  /** Someone wrote in a group chat that is being watched. `userId` is their directory id. */
+  async handleGroupReply(userId: string, text: string): Promise<void> {
+    const person = this.store.personById(Number(this.store.get(`aad:${userId}`) || 0));
+    if (!person?.nominated) return;
+    await this.enqueue(person.id, async () => {
+      const checkin = this.store.checkin(person.id, this.today());
+      if (checkin?.status !== "open") return;
+      // Follow-ups go to them one to one, so that chat has to exist.
+      let current = person;
+      if (!current.chatId && this.direct) {
+        const chat = await this.direct.connect(current.email);
+        if (!("notFound" in chat)) current = this.store.upsertPerson(current.email, { chatId: chat.conversationId });
+      }
+      await this.refreshMemory(current);
+      await this.handleUpdate(current, text.trim(), true);
+    });
+    await this.refreshBoards();
+  }
+
+  /** The one chase in each group, and the end of each group's listening window. */
+  private async runGroupTimers(): Promise<void> {
+    const date = this.today();
+    for (const { group, askedAt } of this.listeningGroups()) {
+      const minutes = (this.now().getTime() - Date.parse(askedAt)) / 60_000;
+      const silent = this.store.groupMembers(group.id).filter((p) => {
+        const c = this.store.checkin(p.id, date);
+        return (
+          c?.status === "open" &&
+          this.store.get(`via:${c.id}`) === String(group.id) &&
+          !this.store.messages(c.id).some((m) => m.role === "user")
+        );
+      });
+
+      if (silent.length && !this.store.get(`gchased:${group.id}`) && minutes >= this.config.chaseAfterMinutes) {
+        const nudge = this.nudgeText();
+        const mentions = silent
+          .map((p) => ({ userId: this.store.get(`aadOf:${p.id}`) ?? "", name: displayName(p) }))
+          .filter((m) => m.userId);
+        try {
+          await this.direct!.send(group.chatId, nudge, mentions);
+          this.store.set(`gchased:${group.id}`, "1");
+          for (const p of silent) {
+            const c = this.store.checkin(p.id, date)!;
+            this.store.addMessage(c.id, "bot", nudge);
+            this.store.markReminded(c.id);
+          }
+        } catch (err) {
+          this.log(`Could not chase in ${group.name}`, err);
+        }
+      }
+
+      if (minutes >= this.config.groupWindowMinutes) {
+        // Stop reading the group. Whoever said nothing is marked as not having replied.
+        for (const p of silent) this.store.setCheckinStatus(this.store.checkin(p.id, date)!.id, "no_response");
+        this.store.set(`gasked:${group.id}`, "");
+      }
+    }
+  }
+
   // ---------- the schedule, kept in the database and set from the chat ----------
 
   private localNow(): { date: string; minutes: number; weekend: boolean } {
@@ -548,6 +785,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
   /** Runs once a minute: the chase, closing quiet conversations, and anything scheduled. */
   async tick(): Promise<void> {
     await this.runReminders(this.config.chaseAfterMinutes);
+    await this.runGroupTimers();
     await this.closeIdle(this.config.idleCloseMinutes);
     await this.refreshBoards();
 
@@ -683,6 +921,32 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       }
     });
 
+    const groupList = this.store.groups();
+    if (groupList.length) {
+      body.push({ type: "TextBlock", text: `Group chats (${groupList.length})`, weight: "Bolder", spacing: "Large", separator: true });
+      for (const g of groupList) {
+        body.push({
+          type: "Container",
+          spacing: "Small",
+          items: [
+            { type: "TextBlock", text: g.name, weight: "Bolder", wrap: true },
+            {
+              type: "TextBlock",
+              text: `${this.store.groupMembers(g.id).length} people · asked in the group, followed up privately`,
+              wrap: true,
+              spacing: "None",
+              isSubtle: true,
+            },
+            {
+              type: "ActionSet",
+              spacing: "Small",
+              actions: [submit("Ask group now", { cmd: "askGroup", who: g.name }), submit("Remove group", { cmd: "removeGroup", who: g.name })],
+            },
+          ],
+        });
+      }
+    }
+
     body.push({
       type: "TextBlock",
       text: this.scheduleStatus().replace(/\*\*/g, ""),
@@ -707,6 +971,15 @@ So you know how it's used: your answers are summarised each day for the CTO and 
             type: "AdaptiveCard",
             body: [{ type: "Input.Text", id: "newEmail", placeholder: "name@company.com", label: "Their work email" }],
             actions: [submit("Add", { cmd: "add" })],
+          },
+        },
+        {
+          type: "Action.ShowCard",
+          title: "Add group",
+          card: {
+            type: "AdaptiveCard",
+            body: [{ type: "Input.Text", id: "groupName", placeholder: "Group chat name", label: "Name of the Teams group chat" }],
+            actions: [submit("Add group", { cmd: "addGroup" })],
           },
         },
         submit("Digest now", { cmd: "digest" }),
@@ -762,7 +1035,15 @@ So you know how it's used: your answers are summarised each day for the CTO and 
   async runCheckins(): Promise<{ sent: number; unreachable: Person[] }> {
     let sent = 0;
     const unreachable: Person[] = [];
+    for (const group of this.store.groups()) {
+      try {
+        sent += (await this.askGroup(group)).asked;
+      } catch (err) {
+        this.log(`Could not ask group ${group.name}`, err);
+      }
+    }
     for (const person of this.store.nominees()) {
+      if (this.store.groupsOf(person.id).length) continue; // asked with their group
       if (!this.address(person)) {
         unreachable.push(person);
         continue;
@@ -785,6 +1066,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     for (const checkin of this.store.checkinsOn(this.today())) {
       if (checkin.status !== "open" || checkin.reminded) continue;
       if (this.store.get(`takeover:${checkin.id}`)) continue;
+      if (this.store.get(`via:${checkin.id}`)) continue; // asked in a group: chased there, together
       const messages = this.store.messages(checkin.id);
       if (!messages.length || messages.some((m) => m.role === "user")) continue;
       const sentAt = Date.parse(`${messages[0]!.at.replace(" ", "T")}Z`);
@@ -913,6 +1195,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         }
 
         case "nominate": {
+          if (/^group\b/i.test(arg)) return await reply(await this.addGroup(arg.replace(/^group\s*/i, "").trim()));
           const email = arg.split(/\s+/)[0]?.toLowerCase() ?? "";
           if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
             return await reply("Tell me who by work email, for example: **nominate priya@company.com**");
@@ -936,6 +1219,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           }
           const person = this.store.upsertPerson(email, chat && { name: chat.name, chatId: chat.conversationId });
           this.store.setNominated(person.id, true);
+          this.store.set(`solo:${person.id}`, "1"); // added in their own right, not only through a group
           if (this.address(person)) {
             if (!this.personal) await this.say(person, this.welcomeText(person));
             this.store.set(awaitingKey, String(person.id));
@@ -982,7 +1266,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           const learned = await this.learnRapport(target, refresh);
           return await reply(
             learned
-              ? `**How you write to ${displayName(target)}** (read once from your past chat, and reused)\n\nGreeting: "${this.store.get(`greeting:${target.id}`) || "Hi"}"\n\n${learned}`
+              ? `**What I remember about ${displayName(target)}** (from your chat history, updated each day before asking)\n\nGreeting: "${this.store.get(`greeting:${target.id}`) || "Hi"}"\n\n${this.memoryFor(target) ?? learned}`
               : `There is not enough past chat with ${displayName(target)} to learn from, so I use the standard short, simple style.`,
           );
         }
@@ -1000,15 +1284,32 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         }
 
         case "remove": {
+          if (/^group\b/i.test(arg)) {
+            const group = this.resolveGroup(arg.replace(/^group\s*/i, ""));
+            if (typeof group === "string") return await reply(group);
+            const members = this.store.groupMembers(group.id);
+            this.store.removeGroup(group.id);
+            // People who were only followed through this group stop being followed.
+            for (const m of members) {
+              if (!this.store.get(`solo:${m.id}`) && !this.store.groupsOf(m.id).length) this.store.setNominated(m.id, false);
+            }
+            return await reply(`${group.name} is removed. Nothing was posted in the group, and past notes are kept.`);
+          }
           const target = this.resolveOne(arg);
           if (typeof target === "string") return await reply(target);
+          this.store.set(`solo:${target.id}`, "");
           this.store.setNominated(target.id, false);
           return await reply(`${displayName(target)} will no longer get check-ins. Their past notes are kept.`);
         }
 
         case "list": {
           const nominees = this.store.nominees();
-          if (!nominees.length) return await reply("Nobody is nominated yet. Send **nominate name@company.com** to add someone.");
+          const groupLines = this.store
+            .groups()
+            .map((g) => `- **${g.name}** (group chat): ${this.store.groupMembers(g.id).length} people`);
+          if (!nominees.length && !groupLines.length) {
+            return await reply("Nobody is added yet. Send **add name@company.com** or **add group Group Name**.");
+          }
           const date = this.today();
           const lines = nominees.map((p) => {
             const c = this.store.checkin(p.id, date);
@@ -1023,7 +1324,10 @@ So you know how it's used: your answers are summarised each day for the CTO and 
                     : "check-in in progress";
             return `- **${displayName(p)}** (${p.email}): ${today}${p.profile ? "" : "; no role profile set"}`;
           });
-          return await reply(`**Nominated (${nominees.length})**\n\n${lines.join("\n")}`);
+          return await reply(
+            `**People (${nominees.length})**\n\n${lines.join("\n")}` +
+              (groupLines.length ? `\n\n**Groups (${groupLines.length})**\n\n${groupLines.join("\n")}` : ""),
+          );
         }
 
         case "report": {
@@ -1040,12 +1344,28 @@ So you know how it's used: your answers are summarised each day for the CTO and 
 
         case "ask": {
           // "ask all", "ask priya", "ask mahanth for an update": ask now, even if already asked today.
+          if (/^group\b/i.test(arg)) {
+            const group = this.resolveGroup(arg.replace(/^group\s*/i, ""));
+            if (typeof group === "string") return await reply(group);
+            return await reply((await this.askGroup(group, true)).message);
+          }
           const nominees = this.store.nominees();
           const words = arg.toLowerCase().split(/[^a-z0-9@.]+/).filter((w) => w.length > 2);
           if (!arg || words.some((w) => ["all", "everyone", "everybody", "team"].includes(w))) {
-            if (!nominees.length) return await reply("Nobody is added yet. Send **add name@company.com** first.");
+            if (!nominees.length && !this.store.groups().length) {
+              return await reply("Nobody is added yet. Send **add name@company.com** or **add group Group Name** first.");
+            }
             const results: string[] = [];
+            for (const group of this.store.groups()) {
+              try {
+                results.push(`- ${(await this.askGroup(group, true)).message}`);
+              } catch (err) {
+                this.log(`Could not ask group ${group.name}`, err);
+                results.push(`- Could not post in ${group.name}.`);
+              }
+            }
             for (const p of nominees) {
+              if (this.store.groupsOf(p.id).length) continue; // asked with their group
               try {
                 results.push(`- ${await this.askNow(p)}`);
               } catch (err) {

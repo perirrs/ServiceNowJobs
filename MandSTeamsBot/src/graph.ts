@@ -17,6 +17,7 @@ export interface ChatLine {
   id: string;
   createdAt: string;
   fromUserId: string;
+  fromName: string;
   text: string;
 }
 
@@ -186,34 +187,88 @@ export class GraphChat {
   }
 
   /** Returns the id of the sent message. */
-  async send(chatId: string, text: string): Promise<string> {
+  async send(chatId: string, text: string, mentions: { userId: string; name: string }[] = []): Promise<string> {
+    // @mentions go in front of the text, each tied to the person's directory id.
+    const tags = mentions.map((m, i) => `<at id="${i}">${textToHtml(m.name)}</at>`).join(" ");
     const msg = await this.call<{ id: string }>("POST", `/chats/${encodeURIComponent(chatId)}/messages`, {
-      body: { contentType: "html", content: textToHtml(text) },
+      body: { contentType: "html", content: tags ? `${tags} ${textToHtml(text)}` : textToHtml(text) },
+      ...(mentions.length
+        ? {
+            mentions: mentions.map((m, i) => ({
+              id: i,
+              mentionText: m.name,
+              mentioned: { user: { id: m.userId, displayName: m.name, userIdentityType: "aadUser" } },
+            })),
+          }
+        : {}),
     });
     return msg.id;
   }
 
-  /** The most recent messages in a chat (up to `max`), oldest first. */
-  async history(chatId: string, max = 150): Promise<ChatLine[]> {
+  /** The signed-in person's named group chats whose name contains `query`. */
+  async findGroups(query: string): Promise<{ chatId: string; name: string }[]> {
+    type Page = { value: { id: string; topic?: string | null }[]; "@odata.nextLink"?: string };
+    const found: { chatId: string; name: string }[] = [];
+    const q = query.trim().toLowerCase();
+    let url: string | undefined = `/me/chats?$filter=${encodeURIComponent("chatType eq 'group'")}&$top=50`;
+    for (let page = 0; url && page < 6; page++) {
+      const r: Page = await this.call<Page>("GET", url);
+      for (const chat of r.value) {
+        if (chat.topic && chat.topic.toLowerCase().includes(q)) found.push({ chatId: chat.id, name: chat.topic });
+      }
+      url = r["@odata.nextLink"];
+    }
+    return found;
+  }
+
+  /** Everyone in a group chat except the signed-in person. People without an email (guests) are left out. */
+  async groupMembers(chatId: string): Promise<{ userId: string; email: string; name: string }[]> {
+    const me = await this.whoAmI();
+    const r = await this.call<{ value: { userId?: string; email?: string | null; displayName?: string }[] }>(
+      "GET",
+      `/chats/${encodeURIComponent(chatId)}/members`,
+    );
+    return r.value
+      .filter((m) => m.userId && m.email && m.userId !== me.id)
+      .map((m) => ({ userId: m.userId!, email: m.email!.toLowerCase(), name: m.displayName ?? m.email! }));
+  }
+
+  /**
+   * The most recent messages in a chat (up to `max`), oldest first. With
+   * `since`, only messages after that time.
+   */
+  async history(chatId: string, max = 500, since = ""): Promise<ChatLine[]> {
     type Page = {
       value: {
         id: string;
         messageType: string;
         createdDateTime: string;
         deletedDateTime?: string | null;
-        from?: { user?: { id?: string } | null } | null;
+        from?: { user?: { id?: string; displayName?: string } | null } | null;
         body?: { content?: string };
       }[];
       "@odata.nextLink"?: string;
     };
     const lines: ChatLine[] = [];
     let url: string | undefined = `/chats/${encodeURIComponent(chatId)}/messages?$top=50`;
-    while (url && lines.length < max) {
+    let reachedOlder = false;
+    while (url && lines.length < max && !reachedOlder) {
       const page: Page = await this.call<Page>("GET", url);
       for (const m of page.value) {
+        // Pages run newest first, so once we pass `since` the rest is older still.
+        if (since && m.createdDateTime <= since) {
+          reachedOlder = true;
+          break;
+        }
         const text = htmlToText(m.body?.content ?? "");
         if (m.messageType !== "message" || m.deletedDateTime || !m.from?.user?.id || !text) continue;
-        lines.push({ id: m.id, createdAt: m.createdDateTime, fromUserId: m.from.user.id, text });
+        lines.push({
+          id: m.id,
+          createdAt: m.createdDateTime,
+          fromUserId: m.from.user.id,
+          fromName: m.from.user.displayName ?? "",
+          text,
+        });
       }
       url = page["@odata.nextLink"];
     }
@@ -238,6 +293,7 @@ export class GraphChat {
         id: m.id,
         createdAt: m.createdDateTime,
         fromUserId: m.from!.user!.id!,
+        fromName: "",
         text: htmlToText(m.body?.content ?? ""),
       }))
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));

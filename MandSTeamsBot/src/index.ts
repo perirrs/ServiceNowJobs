@@ -43,12 +43,19 @@ if (config.sendAsUser) {
   direct = {
     senderName: me.name,
     connect: (email) => g.connect(email),
-    send: async (chatId, text) => {
+    send: async (chatId, text, mentions) => {
       sentByAssistant.add(normalise(text));
-      await g.send(chatId, text);
+      await g.send(chatId, text, mentions);
     },
-    history: async (chatId) =>
-      (await g.history(chatId)).map((m) => ({ fromSender: m.fromUserId === me.id, text: m.text })),
+    findGroups: (query) => g.findGroups(query),
+    groupMembers: (chatId) => g.groupMembers(chatId),
+    history: async (chatId, max, since) =>
+      (await g.history(chatId, max, since)).map((m) => ({
+        fromSender: m.fromUserId === me.id,
+        from: m.fromName,
+        text: m.text,
+        at: m.createdAt,
+      })),
   };
   console.log(
     `Check-ins will be sent from ${me.name} <${me.email}>'s Teams account` +
@@ -109,6 +116,23 @@ async function pollChats(g: GraphChat): Promise<void> {
   }
 }
 
+/** Read new messages in each group chat that was asked for updates and is still within its window. */
+async function pollGroups(g: GraphChat): Promise<void> {
+  for (const { group, askedAt } of engine.listeningGroups()) {
+    const key = `gcursor:${group.id}`;
+    const since = store.get(key) || new Date(Date.parse(askedAt) - 5000).toISOString();
+    try {
+      for (const line of await g.messagesSince(group.chatId, since)) {
+        store.set(key, line.createdAt);
+        // The sender's own messages in a group are ordinary conversation: nothing to do.
+        if (line.fromUserId !== senderId) await engine.handleGroupReply(line.fromUserId, line.text);
+      }
+    } catch (err) {
+      console.error(`Could not read the group chat ${group.name}`, err);
+    }
+  }
+}
+
 /** Build an Identity from an inbound activity. Only one-to-one chats count. */
 function identityOf(
   activity: { from: { id: string; name?: string }; conversation: { id: string; conversationType?: string } },
@@ -159,6 +183,7 @@ if (graph) {
     if (busy) return;
     busy = true;
     try {
+      await pollGroups(g);
       await pollChats(g);
     } finally {
       busy = false;

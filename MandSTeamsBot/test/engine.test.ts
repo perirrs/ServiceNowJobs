@@ -23,6 +23,7 @@ const config: Config = {
   pollSeconds: 20,
   discloseAutomation: true,
   idleCloseMinutes: 30,
+  groupWindowMinutes: 120,
 };
 
 /** Scripted stand-in for Claude that records what it was shown. */
@@ -38,6 +39,8 @@ class FakeBrain implements Brain {
   doneAfterUserMessages = 1;
   failNextTurn = false;
   handoverNext = false;
+  /** Group messages containing this text are treated as chatter. */
+  chatter = "lunch";
 
   async nextTurn(ctx: CheckinContext): Promise<Turn> {
     if (this.failNextTurn) {
@@ -45,6 +48,7 @@ class FakeBrain implements Brain {
       throw new Error("boom");
     }
     this.turns.push(ctx);
+    if (ctx.fromGroup && ctx.history.at(-1)?.text.includes(this.chatter)) return { reply: "", done: false, ignore: true };
     if (this.handoverNext) {
       this.handoverNext = false;
       return { reply: "", done: false, handover: true };
@@ -67,6 +71,11 @@ class FakeBrain implements Brain {
   }
   rapportCalls: { fromSender: boolean; text: string }[][] = [];
   learnedAddress = "";
+  revisions: { about: string; memory: string; transcript: string }[] = [];
+  async reviseMemory(input: { about: string; senderName: string; memory: string; transcript: string }): Promise<string> {
+    this.revisions.push(input);
+    return `MEMORY v${this.revisions.length}`;
+  }
   async learnRapport(_p: unknown, _s: string, chat: { fromSender: boolean; text: string }[]) {
     this.rapportCalls.push(chat);
     return { brief: "Casual. Says 'pls share'.", address: this.learnedAddress };
@@ -252,7 +261,7 @@ test("admin free text is answered from the notes; 'list' alone is a command", as
   assert.match(t.brain.questions[0]!.material, /Recruiter\. Target 10 submissions/);
 
   await t.engine.handleMessage(t.id(CTO), "list");
-  assert.match(t.to(CTO).at(-1)!, /Nominated \(1\)/);
+  assert.match(t.to(CTO).at(-1)!, /People \(1\)/);
 });
 
 test("removed people stop getting check-ins", async () => {
@@ -522,7 +531,7 @@ test("direct mode: an admin can also be nominated; commands use the bot chat, ch
   await t.engine.runCheckins();
   assert.equal(t.sent.filter((s) => s.to === `chat-${CEO}`).length, 1); // the question, in the sender's chat
   await t.engine.handleMessage(t.id(CEO), "list"); // a command, in the bot chat
-  assert.match(t.to(CEO).at(-1)!, /Nominated \(1\)/);
+  assert.match(t.to(CEO).at(-1)!, /People \(1\)/);
 
   await t.engine.handleDirectReply(ceo.id, "closed the Initech deal");
   assert.match(t.to(CEO).at(-1)!, /Update from/); // summary reaches both admins through the bot
@@ -680,6 +689,8 @@ test("a handover puts the person in 'needs you personally' with what they wrote"
 // ---------- learning the sender's tone from past chat ----------
 
 function rapportSetup(history: { fromSender: boolean; text: string }[]) {
+  const later: { fromSender: boolean; text: string }[] = [];
+  let date = new Date("2026-11-16T17:00:00Z");
   const store = new Store(":memory:");
   const brain = new FakeBrain();
   let reads = 0;
@@ -688,20 +699,20 @@ function rapportSetup(history: { fromSender: boolean; text: string }[]) {
     brain,
     { send: async () => undefined },
     { ...config, discloseAutomation: false },
-    () => new Date("2026-11-16T17:00:00Z"),
+    () => date,
     () => undefined,
     {
       senderName: "Sujith",
       connect: async (email) => ({ conversationId: `chat-${email}`, name: "Priya Rao" }),
       send: async () => undefined,
-      history: async () => {
+      history: async (_chat, _max, since) => {
         reads++;
-        return history;
+        return (since ? later : history).map((m) => ({ ...m, from: "", at: "" }));
       },
     },
   );
   const cto: Identity = { teamsUserId: "t", conversationId: "c", lookupEmail: async () => CTO };
-  return { store, brain, engine, cto, reads: () => reads };
+  return { store, brain, engine, cto, reads: () => reads, later, setDate: (d: string) => (date = new Date(d)) };
 }
 
 test("past chat is read once, the tone is stored, and it is reused on later days", async () => {
@@ -784,4 +795,167 @@ test("a greeting set by hand is kept when the chat is read, and 'off' means plai
   await r.engine.handleMessage(r.cto, "greeting priya off");
   await r.engine.handleMessage(r.cto, "ask priya");
   assert.equal(r.brain.turns.at(-1)!.greeting, undefined);
+});
+
+// ---------- group chats: asked together, followed up privately ----------
+
+function groupSetup() {
+  const store = new Store(":memory:");
+  const brain = new FakeBrain();
+  const sent: { to: string; text: string; mentions?: { userId: string; name: string }[] }[] = [];
+  const admin: string[] = [];
+  let date = new Date("2026-11-16T17:00:00Z");
+  const members = [
+    { userId: "u-priya", email: PRIYA, name: "Priya Rao" },
+    { userId: "u-ravi", email: "ravi@acme.test", name: "Ravi Kumar" },
+  ];
+  const engine = new Engine(
+    store,
+    brain,
+    { send: async (_to, text) => void admin.push(text) },
+    { ...config, discloseAutomation: false },
+    () => date,
+    () => undefined,
+    {
+      senderName: "Sujith",
+      connect: async (email) => ({ conversationId: `chat-${email}`, name: email }),
+      send: async (to, text, mentions) => void sent.push({ to, text, mentions }),
+      findGroups: async (q) =>
+        [
+          { chatId: "g-rec", name: "Recruitment Team" },
+          { chatId: "g-rec2", name: "Recruitment Leads" },
+        ].filter((g) => g.name.toLowerCase().includes(q.toLowerCase())),
+      groupMembers: async () => members,
+    },
+  );
+  const cto: Identity = { teamsUserId: "t", conversationId: "c", lookupEmail: async () => CTO };
+  return { store, brain, engine, cto, sent, admin, members, setDate: (d: string) => (date = new Date(d)) };
+}
+
+test("adding a group needs one clear match, lists the members, and posts nothing", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment");
+  assert.match(g.admin.at(-1)!, /Several group chats match/);
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  assert.match(g.admin.at(-1)!, /Now following \*\*Recruitment Team\*\* \(2 people/);
+  assert.equal(g.sent.length, 0);
+  assert.equal(g.store.nominees().length, 2);
+});
+
+test("a group is asked with one message; a reply there gets its follow-up privately", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "ask group recruitment team");
+  assert.deepEqual(g.sent.map((s) => s.to), ["g-rec"]);
+  assert.match(g.sent[0]!.text, /Hi all/);
+
+  g.brain.doneAfterUserMessages = 99;
+  await g.engine.handleGroupReply("u-priya", "sent 3 submissions today");
+  assert.equal(g.sent.at(-1)!.to, `chat-${PRIYA}`); // the follow-up is one to one
+  assert.equal(g.brain.turns.at(-1)!.fromGroup, true);
+  assert.equal(g.sent.filter((s) => s.to === "g-rec").length, 1); // nothing more in the group
+});
+
+test("group banter is ignored: not recorded, not answered", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  const before = g.sent.length;
+  await g.engine.handleGroupReply("u-ravi", "anyone for lunch?");
+  assert.equal(g.sent.length, before);
+  const ravi = g.store.personByEmail("ravi@acme.test")!;
+  assert.equal(g.store.messages(g.store.checkin(ravi.id, "2026-11-16")!.id).filter((m) => m.role === "user").length, 0);
+});
+
+test("silent members are chased once in the group with a mention, then marked as no reply when the window ends", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  await g.engine.handleGroupReply("u-priya", "sent 3 submissions today");
+
+  g.setDate("2026-11-16T17:50:00Z"); // past the 45-minute chase
+  await g.engine.tick();
+  await g.engine.tick();
+  const chases = g.sent.filter((s) => s.to === "g-rec" && s.mentions?.length);
+  assert.equal(chases.length, 1);
+  assert.deepEqual(chases[0]!.mentions, [{ userId: "u-ravi", name: "Ravi Kumar" }]);
+
+  g.setDate("2026-11-16T19:05:00Z"); // past the 2-hour window
+  await g.engine.tick();
+  const ravi = g.store.personByEmail("ravi@acme.test")!;
+  assert.equal(g.store.checkin(ravi.id, "2026-11-16")!.status, "no_response");
+  assert.equal(g.engine.listeningGroups().length, 0);
+});
+
+test("'ask all' posts once in each group and does not also message its members one by one", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "add solo@acme.test");
+  await g.engine.handleMessage(g.cto, "ask all");
+  assert.deepEqual(g.sent.map((s) => s.to).sort(), ["chat-solo@acme.test", "g-rec"]);
+});
+
+test("removing a group stops following people who were only there through it", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, `add ${PRIYA}`); // Priya is also followed in her own right
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "remove group Recruitment Team");
+  assert.deepEqual(g.store.nominees().map((p) => p.email), [PRIYA]);
+});
+
+// ---------- memory that is kept and brought up to date each day ----------
+
+test("on a later day, what was said in the chat since is folded into the memory before asking", async () => {
+  const r = rapportSetup(SOME_CHAT);
+  await r.engine.handleMessage(r.cto, `add ${PRIYA}`);
+  await r.engine.handleMessage(r.cto, "ask priya");
+  assert.equal(r.brain.revisions.length, 0); // first day: learned from history, nothing to revise
+  const priya = r.store.personByEmail(PRIYA)!;
+  await r.engine.handleDirectReply(priya.id, "done");
+
+  // Same day again: no second look at the chat.
+  await r.engine.handleMessage(r.cto, "ask priya");
+  assert.equal(r.reads(), 1);
+
+  // Next day, with something new said in the chat in between.
+  r.later.push({ fromSender: false, text: "Globex signed the contract" });
+  r.setDate("2026-11-17T17:00:00Z");
+  await r.engine.handleMessage(r.cto, "ask priya");
+  assert.equal(r.brain.revisions.length, 1);
+  assert.match(r.brain.revisions[0]!.transcript, /Globex signed the contract/);
+  assert.equal(r.brain.revisions[0]!.memory, "Casual. Says 'pls share'.");
+  assert.equal(r.brain.turns.at(-1)!.rapport, "MEMORY v1");
+});
+
+test("a group's chat history becomes a memory that each member's questions can draw on", async () => {
+  const store = new Store(":memory:");
+  const brain = new FakeBrain();
+  const engine = new Engine(
+    store,
+    brain,
+    { send: async () => undefined },
+    { ...config, discloseAutomation: false },
+    () => new Date("2026-11-16T17:00:00Z"),
+    () => undefined,
+    {
+      senderName: "Sujith",
+      connect: async (email) => ({ conversationId: `chat-${email}`, name: email }),
+      send: async () => undefined,
+      findGroups: async () => [{ chatId: "g-rec", name: "Recruitment Team" }],
+      groupMembers: async () => [{ userId: "u-priya", email: PRIYA, name: "Priya Rao" }],
+      history: async (chat) =>
+        chat === "g-rec"
+          ? [{ fromSender: false, from: "Priya Rao", text: "Initech wants 5 profiles by Friday", at: "" }]
+          : [],
+    },
+  );
+  const cto: Identity = { teamsUserId: "t", conversationId: "c", lookupEmail: async () => CTO };
+  await engine.handleMessage(cto, "add group Recruitment Team");
+  await engine.handleMessage(cto, "ask group Recruitment Team");
+  assert.match(brain.revisions[0]!.about, /group chat "Recruitment Team"/);
+  assert.match(brain.revisions[0]!.transcript, /Priya Rao: Initech wants 5 profiles by Friday/);
+
+  brain.doneAfterUserMessages = 99;
+  await engine.handleGroupReply("u-priya", "sent 2 profiles to Initech");
+  assert.match(brain.turns.at(-1)!.rapport!, /From the group chat "Recruitment Team":\nMEMORY v1/);
 });

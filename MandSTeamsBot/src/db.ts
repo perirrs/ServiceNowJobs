@@ -16,6 +16,13 @@ export interface Person {
   profile: string | null;
 }
 
+/** A Teams group chat whose members are asked together. */
+export interface Group {
+  id: number;
+  chatId: string;
+  name: string;
+}
+
 export type CheckinStatus = "open" | "completed" | "no_response";
 
 export interface Checkin {
@@ -102,6 +109,16 @@ CREATE TABLE IF NOT EXISTS items (
   last_update TEXT NOT NULL,
   first_seen TEXT NOT NULL,
   last_seen TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS groups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  chat_id TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS group_members (
+  group_id INTEGER NOT NULL REFERENCES groups(id),
+  person_id INTEGER NOT NULL REFERENCES people(id),
+  PRIMARY KEY (group_id, person_id)
 );
 CREATE TABLE IF NOT EXISTS kv (
   key TEXT PRIMARY KEY,
@@ -283,10 +300,16 @@ export class Store {
     return this.db.prepare("SELECT * FROM checkins WHERE date = ?").all(date).map(toCheckin);
   }
 
-  addMessage(checkinId: number, role: "bot" | "user", text: string): void {
-    this.db
+  /** Returns the new message's id. */
+  addMessage(checkinId: number, role: "bot" | "user", text: string): number {
+    const res = this.db
       .prepare("INSERT INTO messages (checkin_id, role, text) VALUES (?, ?, ?)")
       .run(checkinId, role, text);
+    return Number(res.lastInsertRowid);
+  }
+
+  removeMessage(messageId: number): void {
+    this.db.prepare("DELETE FROM messages WHERE id = ?").run(messageId);
   }
 
   messages(checkinId: number): ChatMessage[] {
@@ -369,6 +392,51 @@ export class Store {
       )
       .run(status, update, date, itemId, personId);
     return res.changes > 0;
+  }
+
+  // ---- group chats ----
+
+  groups(): Group[] {
+    return this.db
+      .prepare("SELECT id, chat_id, name FROM groups ORDER BY name")
+      .all()
+      .map((r) => ({ id: r.id as number, chatId: r.chat_id as string, name: r.name as string }));
+  }
+
+  addGroup(chatId: string, name: string): Group {
+    this.db
+      .prepare("INSERT INTO groups (chat_id, name) VALUES (?, ?) ON CONFLICT (chat_id) DO UPDATE SET name = excluded.name")
+      .run(chatId, name);
+    return this.groups().find((g) => g.chatId === chatId)!;
+  }
+
+  removeGroup(groupId: number): void {
+    this.db.prepare("DELETE FROM group_members WHERE group_id = ?").run(groupId);
+    this.db.prepare("DELETE FROM groups WHERE id = ?").run(groupId);
+  }
+
+  setGroupMembers(groupId: number, personIds: number[]): void {
+    this.db.prepare("DELETE FROM group_members WHERE group_id = ?").run(groupId);
+    const insert = this.db.prepare("INSERT OR IGNORE INTO group_members (group_id, person_id) VALUES (?, ?)");
+    for (const id of personIds) insert.run(groupId, id);
+  }
+
+  groupMembers(groupId: number): Person[] {
+    return this.db
+      .prepare(
+        `SELECT p.* FROM people p JOIN group_members gm ON gm.person_id = p.id
+         WHERE gm.group_id = ? ORDER BY COALESCE(p.name, p.email)`,
+      )
+      .all(groupId)
+      .map(toPerson);
+  }
+
+  /** Ids of the groups a person belongs to. */
+  groupsOf(personId: number): number[] {
+    return this.db
+      .prepare("SELECT group_id FROM group_members WHERE person_id = ?")
+      .all(personId)
+      .map((r) => r.group_id as number);
   }
 
   // ---- small persistent flags and cursors ----
