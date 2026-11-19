@@ -205,16 +205,25 @@ export class GraphChat {
     return msg.id;
   }
 
-  /** The signed-in person's named group chats whose name contains `query`. */
+  /**
+   * The signed-in person's named group chats whose name contains `query`,
+   * most recently active first. Where two chats share a name, only the most
+   * recently active one is returned.
+   */
   async findGroups(query: string): Promise<{ chatId: string; name: string }[]> {
-    type Page = { value: { id: string; topic?: string | null }[]; "@odata.nextLink"?: string };
+    type Page = { value: { id: string; topic?: string | null; chatType?: string }[]; "@odata.nextLink"?: string };
     const found: { chatId: string; name: string }[] = [];
+    const seen = new Set<string>();
     const q = query.trim().toLowerCase();
-    let url: string | undefined = `/me/chats?$filter=${encodeURIComponent("chatType eq 'group'")}&$top=50`;
-    for (let page = 0; url && page < 6; page++) {
+    let url: string | undefined = "/me/chats?$top=50&$orderby=lastMessagePreview/createdDateTime desc";
+    for (let page = 0; url && page < 20; page++) {
       const r: Page = await this.call<Page>("GET", url);
       for (const chat of r.value) {
-        if (chat.topic && chat.topic.toLowerCase().includes(q)) found.push({ chatId: chat.id, name: chat.topic });
+        const name = chat.topic?.trim();
+        if (chat.chatType !== "group" || !name || !name.toLowerCase().includes(q)) continue;
+        if (seen.has(name.toLowerCase())) continue;
+        seen.add(name.toLowerCase());
+        found.push({ chatId: chat.id, name });
       }
       url = r["@odata.nextLink"];
     }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { Brain, CheckinContext, DigestPerson, NoteResult, Turn } from "../src/ai.js";
+import type { AdminAction, Brain, CheckinContext, DigestPerson, NoteResult, Turn } from "../src/ai.js";
 import type { Config } from "../src/config.js";
 import { Store } from "../src/db.js";
 import { cardToCommand, chunk, Engine, parseTime } from "../src/engine.js";
@@ -71,6 +71,18 @@ class FakeBrain implements Brain {
   }
   rapportCalls: { fromSender: boolean; text: string }[][] = [];
   learnedAddress = "";
+  /** What the next free-form admin message will be understood as. Default: a question. */
+  nextActions: AdminAction[] | undefined;
+  async interpret(text: string): Promise<AdminAction[]> {
+    const actions = this.nextActions ?? [{ type: "question" as const, target: "", text }];
+    this.nextActions = undefined;
+    return actions;
+  }
+  groupAsks: { groupName: string; topic: string }[] = [];
+  async composeGroupAsk(input: { groupName: string; topic: string; memory: string }): Promise<string> {
+    this.groupAsks.push(input);
+    return `Hi team, ${input.topic}?`;
+  }
   revisions: { about: string; memory: string; transcript: string }[] = [];
   async reviseMemory(input: { about: string; senderName: string; memory: string; transcript: string }): Promise<string> {
     this.revisions.push(input);
@@ -359,7 +371,7 @@ test("a question with nobody nominated gets a pointer to nominate, not an AI ans
   const t = setup();
   await t.engine.handleMessage(t.id(CTO), "Can I please have a daily update");
   assert.equal(t.brain.questions.length, 0);
-  assert.match(t.to(CTO).at(-1)!, /nobody is nominated/);
+  assert.match(t.to(CTO).at(-1)!, /nobody is added/);
 });
 
 test("the message straight after a nomination becomes that person's role profile", async () => {
@@ -514,8 +526,10 @@ test("a question to the bot can see today's conversation while it is still in pr
 test("'ask <name> ...' runs a check-in for that person", async () => {
   const t = setup();
   await onboard(t);
-  await t.engine.handleMessage(t.id(CTO), "ask priya for what are the updates this week");
+  t.brain.nextActions = [{ type: "ask_person", target: "priya", text: "updates this week" }];
+  await t.engine.handleMessage(t.id(CTO), "ask priya for what are the updates and what did she do so far this week");
   assert.equal(t.brain.turns.length, 1);
+  assert.equal(t.brain.turns[0]!.topic, "updates this week");
   assert.match(t.to(CTO).at(-1)!, /Asked priya for an update/);
 });
 
@@ -847,7 +861,7 @@ test("a group is asked with one message; a reply there gets its follow-up privat
   await g.engine.handleMessage(g.cto, "add group Recruitment Team");
   await g.engine.handleMessage(g.cto, "ask group recruitment team");
   assert.deepEqual(g.sent.map((s) => s.to), ["g-rec"]);
-  assert.match(g.sent[0]!.text, /Hi all/);
+  assert.match(g.sent[0]!.text, /Hi team, please share today's update/);
 
   g.brain.doneAfterUserMessages = 99;
   await g.engine.handleGroupReply("u-priya", "sent 3 submissions today");
@@ -958,4 +972,53 @@ test("a group's chat history becomes a memory that each member's questions can d
   brain.doneAfterUserMessages = 99;
   await engine.handleGroupReply("u-priya", "sent 2 profiles to Initech");
   assert.match(brain.turns.at(-1)!.rapport!, /From the group chat "Recruitment Team":\nMEMORY v1/);
+});
+
+// ---------- one message, several instructions ----------
+
+test("a long message with several instructions is carried out in a sensible order", async () => {
+  const g = groupSetup();
+  g.brain.nextActions = [
+    { type: "ask_group", target: "Recruitment Team", text: "website updates and launch date" },
+    { type: "set_role", target: "Priya", text: "Content writer" },
+    { type: "set_role", target: "Ravi", text: "Web developer" },
+    { type: "set_role", target: "Nobody", text: "Ghost" },
+    { type: "add_group", target: "Recruitment Team", text: "" },
+  ];
+  await g.engine.handleMessage(
+    g.cto,
+    "add group Recruitment Team\n\nPriya is content writer\nRavi is web developer\n\nAsk group Recruitment Team on website updates and launch date",
+  );
+
+  // Added first, roles next, the question last, even though the list came in another order.
+  assert.equal(g.store.groups().length, 1);
+  assert.equal(g.store.personByEmail(PRIYA)!.profile, "Content writer");
+  assert.equal(g.store.personByEmail("ravi@acme.test")!.profile, "Web developer");
+  assert.ok(g.admin.some((m) => /Saved roles:[\s\S]*Priya Rao: Content writer/.test(m)));
+  assert.ok(g.admin.some((m) => /could not match[\s\S]*Nobody/.test(m)));
+
+  // The group message is worded around the topic, and each member's follow-up knows it.
+  assert.equal(g.brain.groupAsks[0]!.topic, "website updates and launch date");
+  assert.equal(g.sent.at(-1)!.text, "Hi team, website updates and launch date?");
+  g.brain.doneAfterUserMessages = 99;
+  await g.engine.handleGroupReply("u-priya", "homepage copy is done");
+  assert.equal(g.brain.turns.at(-1)!.topic, "website updates and launch date");
+  assert.equal(g.brain.turns.at(-1)!.person.profile, "Content writer");
+});
+
+test("a short command is still just a command and is not sent for interpreting", async () => {
+  const g = groupSetup();
+  g.brain.nextActions = [{ type: "digest", target: "", text: "" }]; // would be used if interpreted
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  assert.equal(g.store.groups().length, 1);
+  assert.ok(g.brain.nextActions); // untouched
+});
+
+test("an admin who is in the group is not chased or followed up there", async () => {
+  const g = groupSetup();
+  g.members.push({ userId: "u-ceo", email: CEO, name: "The CEO" });
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  assert.equal(g.store.checkin(g.store.personByEmail(CEO)!.id, "2026-11-16"), undefined);
+  assert.match(g.admin.at(-1)!, /\(2 people\)/);
 });

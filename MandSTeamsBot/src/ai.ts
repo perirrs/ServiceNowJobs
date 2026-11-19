@@ -22,6 +22,8 @@ export interface CheckinContext {
   greeting?: string;
   /** The person's latest message was written in a group chat, not one to one. */
   fromGroup?: boolean;
+  /** Something specific the admin asked to find out in this conversation. */
+  topic?: string;
 }
 
 export interface Turn {
@@ -54,6 +56,29 @@ export interface DigestPerson {
   missing: "no_response" | "not_connected" | null;
 }
 
+/** One thing an admin asked for in a free-form message. */
+export interface AdminAction {
+  type:
+    | "add_person"
+    | "add_group"
+    | "remove_person"
+    | "remove_group"
+    | "ask_person"
+    | "ask_group"
+    | "ask_all"
+    | "set_role"
+    | "set_greeting"
+    | "schedule"
+    | "digest"
+    | "list"
+    | "board"
+    | "question";
+  /** Who or what it applies to: an email, a person's name, or a group chat's name. */
+  target: string;
+  /** The role description, topic to ask about, greeting, time, or question. */
+  text: string;
+}
+
 export interface Brain {
   nextTurn(ctx: CheckinContext): Promise<Turn>;
   writeNote(ctx: CheckinContext): Promise<NoteResult>;
@@ -70,6 +95,10 @@ export interface Brain {
    * nothing for a group. Returns the whole revised memory.
    */
   reviseMemory(input: { about: string; senderName: string; memory: string; transcript: string }): Promise<string>;
+  /** Work out what an admin's free-form message is asking the bot to do. */
+  interpret(text: string, known: { people: { name: string; email: string }[]; groups: string[] }): Promise<AdminAction[]>;
+  /** Write the one message that asks a group chat for updates on a given topic. */
+  composeGroupAsk(input: { groupName: string; topic: string; memory: string }): Promise<string>;
 }
 
 // ---------- rendering context for the model ----------
@@ -99,7 +128,7 @@ function renderNote(n: Note | NoteContent): string {
 }
 
 function renderPersonBrief(ctx: CheckinContext): string {
-  const { person, activeItems, recentNotes, date, rapport, greeting } = ctx;
+  const { person, activeItems, recentNotes, date, rapport, greeting, topic } = ctx;
   const notes = recentNotes.length
     ? recentNotes.map((n) => `### ${n.date}\n${renderNote(n)}`).join("\n\n")
     : "(no earlier check-ins: this is their first)";
@@ -111,6 +140,9 @@ function renderPersonBrief(ctx: CheckinContext): string {
     `## Notes from their recent check-ins\n${notes}`,
     rapport ? `## How you normally write to this person, and what is going on between you (from your past chat)\n${rapport}` : "",
     `## Greeting for this person\nOpen your first message with exactly: "${greeting || "Hi"},"`,
+    topic
+      ? `## What to find out today (asked for specifically)\n${topic}\nMake sure the conversation covers each part of this, one question at a time, before anything else.`
+      : "",
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -283,6 +315,31 @@ const NoteSchema = z.object({
   ),
 });
 
+const ActionsSchema = z.object({
+  actions: z.array(
+    z.object({
+      type: z.enum([
+        "add_person",
+        "add_group",
+        "remove_person",
+        "remove_group",
+        "ask_person",
+        "ask_group",
+        "ask_all",
+        "set_role",
+        "set_greeting",
+        "schedule",
+        "digest",
+        "list",
+        "board",
+        "question",
+      ]),
+      target: z.string(),
+      text: z.string(),
+    }),
+  ),
+});
+
 const RapportSchema = z.object({
   brief: z.string(),
   address: z.string().describe("Form of address only, no greeting word. Empty if none."),
@@ -421,6 +478,58 @@ Describe only what the chat shows. Leave out anything personal or sensitive, suc
       RapportSchema,
       "medium",
     );
+  }
+
+  async interpret(
+    text: string,
+    known: { people: { name: string; email: string }[]; groups: string[] },
+  ): Promise<AdminAction[]> {
+    const out = await this.structured(
+      `You turn a manager's message to their team check-in bot into a list of actions, in the order they should happen. The manager writes informally and often puts several instructions in one message.
+
+Actions and what goes in target and text:
+- add_person: start following a person. target = their email.
+- add_group: start following a Teams group chat. target = the group chat's name only, exactly as the manager wrote it, with no other words.
+- remove_person / remove_group: stop following. target = the person or the group name.
+- ask_person: ask one person for an update now. target = the person. text = what the manager specifically wants to know, in the manager's words, or empty for a general update.
+- ask_group: ask a group chat for updates now. target = the group name. text = what the manager specifically wants to know, or empty.
+- ask_all: ask everyone now. text = the topic, or empty.
+- set_role: record what a person's job is. One action per person. target = the person. text = their role as stated, for example "Content writer".
+- set_greeting: how to open messages to a person. target = the person. text = the greeting, for example "Hi Anna".
+- schedule: target = "ask" or "digest". text = the time, or "off".
+- digest, list, board: show today's digest, the list of people, or the board. No target or text.
+- question: the manager is asking about the team's updates or notes. text = the question.
+
+For target, use the exact email or exact group name from the lists below when the manager clearly means one of them; otherwise give what the manager wrote. Remarks that are not instructions ("before you do anything read all the messages") need no action: the bot always reads the chat history first. If the message is only a question or a remark, return a single question action with the whole message as text.
+
+Known people:
+${known.people.map((p) => `- ${p.name} <${p.email}>`).join("\n") || "(none)"}
+
+Known group chats:
+${known.groups.map((g) => `- ${g}`).join("\n") || "(none)"}`,
+      [{ role: "user", content: text }],
+      ActionsSchema,
+      "medium",
+    );
+    return out.actions;
+  }
+
+  async composeGroupAsk(input: { groupName: string; topic: string; memory: string }): Promise<string> {
+    const who = this.senderName ?? "the manager";
+    const written = await this.text(
+      `Write one Microsoft Teams message that ${who} posts in the group chat "${input.groupName}" to ask the team for an update. It is sent from ${who}'s own account, so write it as ${who} would type it.
+
+- Start with "Hi team,".
+- Ask for what is listed under "Wants to know", all of it, and nothing else.
+- Very simple English, for readers whose first language is not English: short common words, no idioms.
+- As short as it can be while covering everything: one or two sentences, on one line.
+- No names, no thanks, no emojis, no mention of a bot, assistant, summary or automation.
+
+Reply with the message only.`,
+      `Wants to know:\n${input.topic}\n\nWhat is known about this group (for wording only, do not repeat it):\n${input.memory || "(nothing yet)"}`,
+      "low",
+    );
+    return tidyReply(written.replace(/^["']|["']$/g, ""), null);
   }
 
   async reviseMemory(input: { about: string; senderName: string; memory: string; transcript: string }): Promise<string> {
