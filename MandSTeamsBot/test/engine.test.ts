@@ -1012,9 +1012,10 @@ test("a group's chat history becomes a memory that each member's questions can d
       send: async () => undefined,
       findGroups: async () => [{ chatId: "g-rec", name: "Recruitment Team" }],
       groupMembers: async () => [{ userId: "u-priya", email: PRIYA, name: "Priya Rao" }],
-      history: async (chat) =>
-        chat === "g-rec"
-          ? [{ fromSender: false, from: "Priya Rao", text: "Initech wants 5 profiles by Friday", at: "" }]
+      // Like Teams: with a "since", only what came after it.
+      history: async (chat, _max, since) =>
+        chat === "g-rec" && !since
+          ? [{ fromSender: false, from: "Priya Rao", text: "Initech wants 5 profiles by Friday", at: "2026-11-16T09:00:00.000Z" }]
           : [],
     },
   );
@@ -2640,6 +2641,24 @@ test("the board shows group chats first and individual chats below them", async 
   assert.ok(groups > 0 && people > groups, "groups come before individual chats");
   assert.ok(card.indexOf("Priya Rao") > people);
   assert.match(card, /Hourly progress 11:00 to 17:00/);
+});
+
+test("a question reads what was said in the groups since they were last read, the same day", async () => {
+  const g = groupSetup();
+  let lines: { fromSender: boolean; from: string; text: string; at: string }[] = [];
+  (g.engine as unknown as { direct: { history: (c: string, m: number, s?: string) => Promise<typeof lines> } }).direct.history = async (_c, _m, since) =>
+    lines.filter((l) => !since || l.at > since);
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  const before = g.brain.revisions.length;
+  lines = [{ fromSender: false, from: "Madan Mani", text: "we can connect tomorrow on the targets", at: "2026-11-16T17:30:00.000Z" }];
+  g.setDate("2026-11-16T17:40:00Z");
+  await g.engine.handleMessage(g.cto, "what did madan say in the recruitment group about targets?");
+  assert.equal(g.brain.revisions.length, before + 1);
+  assert.match(g.brain.revisions.at(-1)!.transcript, /Madan Mani: we can connect tomorrow on the targets/);
+  assert.equal(g.brain.questions.length, 1);
+
+  await g.engine.handleMessage(g.cto, "and what else?");
+  assert.equal(g.brain.revisions.length, before + 1); // nothing new: no second read
 });
 
 test("after clock-out the group is not chased", async () => {

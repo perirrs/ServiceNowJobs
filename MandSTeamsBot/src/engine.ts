@@ -1600,9 +1600,9 @@ So you know how it's used: your answers are summarised each day for the CTO and 
   }
 
   /** The same for a group chat: its whole recent history the first time, then what is new each day. */
-  private async refreshGroupMemory(group: Group): Promise<void> {
+  private async refreshGroupMemory(group: Group, fresh = false): Promise<void> {
     if (!this.personal || !this.direct?.history) return;
-    if (this.store.get(`gmemday:${group.id}`) === this.today()) return;
+    if (!fresh && this.store.get(`gmemday:${group.id}`) === this.today()) return;
     try {
       const since = this.store.get(`gmemcursor:${group.id}`) || "";
       const fresh = (await this.direct.history(group.chatId, this.config.historyMessages, since)).filter(
@@ -1614,7 +1614,8 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           senderName: this.direct.senderName,
           memory: this.store.get(`gmemory:${group.id}`) || "",
           transcript: fresh
-            .map((m) => `${m.at.slice(0, 10)} ${m.fromSender ? this.direct!.senderName : m.from || "Someone"}: ${m.text.slice(0, 300)}`)
+            // Long posts (tables of figures) are kept whole enough to be understood.
+            .map((m) => `${m.at.slice(0, 10)} ${m.fromSender ? this.direct!.senderName : m.from || "Someone"}: ${m.text.slice(0, 6000)}`)
             .join("\n"),
           today: this.today(),
         });
@@ -2347,8 +2348,8 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       return c?.status === "open" && this.store.get(`kind:${c.id}`) === round;
     });
 
-    // Read before asking: the group's chat, and (for a small group) each member's own chat with the sender.
-    await this.refreshGroupMemory(group);
+    // Read before asking: everything new in the group's chat, and (for a small group) each member's own chat with the sender.
+    await this.refreshGroupMemory(group, true);
     if (this.personal && due.length <= 12) {
       for (let i = 0; i < due.length; i++) {
         let member = due[i]!;
@@ -3113,10 +3114,15 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     const morningAt = this.store.get("schedule:morning");
     const eveningAt = this.store.get("schedule:evening");
     const digestAt = this.store.get("schedule:digest");
+    const ownTimes = !!this.ownTimes();
     body.push(
       {
         type: "TextBlock",
-        text: morningAt ? `ON · Morning plan: everyone is asked at ${this.showTime(morningAt)}, Monday to Friday` : "OFF · No morning plan message",
+        text: morningAt
+          ? `ON · Morning plan: everyone is asked at ${this.showTime(morningAt)}, Monday to Friday`
+          : ownTimes
+            ? "No general morning time · groups and people with their own times (shown above) are asked then"
+            : "OFF · No morning plan message",
         wrap: true,
         size: "Small",
         spacing: "Large",
@@ -3125,7 +3131,11 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       },
       {
         type: "TextBlock",
-        text: eveningAt ? `ON · End of day: everyone is asked at ${this.showTime(eveningAt)}, Monday to Friday` : "OFF · No end-of-day message",
+        text: eveningAt
+          ? `ON · End of day: everyone is asked at ${this.showTime(eveningAt)}, Monday to Friday`
+          : ownTimes
+            ? "No general end-of-day time · groups and people with their own times (shown above) are asked then"
+            : "OFF · No end-of-day message",
         wrap: true,
         size: "Small",
         spacing: "None",
@@ -4036,7 +4046,9 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           if (!this.store.nominees().length) {
             await reply("There are no notes yet because nobody is added. Send **add name@company.com** or **add group Group Name**, or **help** for everything you can type.");
           } else {
-            await reply(await this.brain.answer(detail || original, this.material()));
+            // What was said in the groups since they were last read counts too.
+            for (const g of this.store.groups()) await this.refreshGroupMemory(g, true);
+            await reply(await this.brain.answer(`${displayName(admin)} asks (answer them as "you"): ${detail || original}`, this.material()));
           }
           break;
       }
