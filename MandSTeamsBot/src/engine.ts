@@ -2,7 +2,7 @@ import { displayName, renderItems, renderNote } from "./ai.js";
 import type { AdminAction, Brain, CheckinContext, DigestPerson, Round, TrackerEntry } from "./ai.js";
 import { todayIn } from "./config.js";
 import type { Config } from "./config.js";
-import type { ChatMessage, Checkin, Group, Person, Store } from "./db.js";
+import type { ChatMessage, Checkin, Group, Person, Store, WorkItem } from "./db.js";
 
 /** Sends a chat message to a Teams conversation. Implemented by teams.ts, faked in tests. */
 export interface Messenger {
@@ -34,6 +34,10 @@ export interface DirectChannel {
   senderEmail?: string;
   /** Delete a message the sender sent. */
   unsend?(conversationId: string, messageId: string): Promise<void>;
+  /** Who is out of office between two times (by email), from Outlook. */
+  awayBetween?(emails: string[], startIso: string, endIso: string): Promise<Map<string, boolean>>;
+  /** The sender's meetings between two times. */
+  meetings?(startIso: string, endIso: string): Promise<{ id: string; subject: string; start: string; end: string; attendees: string[]; chatId: string }[]>;
   /** Post the tracker table in a group chat and pin it. Returns the new message's id. */
   createTracker?(chatId: string, html: string): Promise<string>;
   /** Replace the tracker table in place. */
@@ -70,6 +74,9 @@ const ADMIN_HELP = `**Daily Check-in: what you can type**
 - **timezone India**: the time I work in, for office hours and schedules.
 - **sent**: everything I sent as you today, each with a Delete button. You also get this list once a day after office hours.
 - **approve** Name: every message to that person or group comes to you first as a draft to send, edit or skip. **approve Name off** stops it. On the day someone is added this is on by default.
+- **leave** priya until 2026-11-25 (or **today**, or **off**): I will not ask or chase them. People out of office in Outlook are skipped automatically.
+- **holiday** 2026-12-25 Christmas: nobody is asked that day. **holidays** lists them.
+- Before a meeting with people I follow, you get a short brief on each of them; after it, action items agreed in the meeting chat go on the tracker.
 - **pause**: stop sending anything to anyone, at once. **resume** starts again.
 - **board** (or **menu**): the team board, with who has replied, who is blocked, and buttons for everything below
 - **add** name@company.com: start asking someone for updates. I first read your whole chat history with them and put their work on the tracker.
@@ -521,6 +528,125 @@ export class Engine {
     });
   }
 
+  /** A public holiday today, by name, or "". */
+  private holidayToday(): string {
+    return this.store.get(`holiday:${this.today()}`) || "";
+  }
+
+  /** On leave today: a holiday, out of office in Outlook, or marked on leave by an admin. */
+  private isAway(person: Person): boolean {
+    const date = this.today();
+    if (this.holidayToday()) return true;
+    if (this.store.get(`oof:${person.id}`) === date) return true;
+    const until = this.store.get(`leave:${person.id}`) || "";
+    return !!until && until >= date;
+  }
+
+  /** Read out-of-office from Outlook for everyone followed, every two hours. */
+  async refreshLeave(): Promise<void> {
+    if (!this.direct?.awayBetween) return;
+    const last = this.store.get("leavecheck");
+    if (last && this.now().getTime() - Date.parse(last) < 2 * 3_600_000) return;
+    this.store.set("leavecheck", this.now().toISOString());
+    const people = this.store.nominees().filter((p) => !this.isAdmin(p));
+    if (!people.length) return;
+    try {
+      const start = this.now();
+      const away = await this.direct.awayBetween(
+        people.map((p) => p.email),
+        start.toISOString(),
+        new Date(start.getTime() + 10 * 3_600_000).toISOString(),
+      );
+      const date = this.today();
+      for (const p of people) this.store.set(`oof:${p.id}`, away.get(p.email) ? date : "");
+    } catch (err) {
+      this.log("Could not read out-of-office from Outlook", err);
+    }
+  }
+
+  // ---------- meetings: a brief before, action items after ----------
+
+  /** What to know about someone before a meeting: open work, flags, and what to ask. No AI call. */
+  private personBrief(p: Person): string {
+    const date = this.today();
+    const items = this.store.activeItems(p.id);
+    const flag = (i: WorkItem) =>
+      i.status === "blocked"
+        ? ` (blocked${i.waitingOn ? `, waiting on ${i.waitingOn}` : ""})`
+        : i.due && i.due < date
+          ? ` (overdue, due ${i.due})`
+          : i.due === date
+            ? " (due today)"
+            : "";
+    const note = this.store.recentNotes(p.id, 1)[0];
+    return [
+      `**${displayName(p)}**${this.isAway(p) ? " (on leave)" : ""}`,
+      items.length ? items.slice(0, 5).map((i) => `- ${i.title}${flag(i)}`).join("\n") : "- nothing open on the tracker",
+      note ? `Last update (${note.date}): ${note.summary}` : "",
+      note?.followUpTomorrow.length ? `Worth asking: ${note.followUpTomorrow.slice(0, 2).join("; ")}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  /**
+   * Every ten minutes: a brief on the people in any meeting starting within
+   * half an hour, and after a meeting with a chat, the action items agreed
+   * in that chat put on the tracker.
+   */
+  async meetingCycle(): Promise<void> {
+    if (!this.direct?.meetings) return;
+    const last = this.store.get("meetcheck");
+    const now = this.now();
+    if (last && now.getTime() - Date.parse(last) < 10 * 60_000) return;
+    this.store.set("meetcheck", now.toISOString());
+    let meetings;
+    try {
+      meetings = await this.direct.meetings(new Date(now.getTime() - 4 * 3_600_000).toISOString(), new Date(now.getTime() + 45 * 60_000).toISOString());
+    } catch (err) {
+      this.log("Could not read the calendar", err);
+      return;
+    }
+    const followed = (m: { attendees: string[] }) =>
+      this.store.nominees().filter((p) => !this.isAdmin(p) && m.attendees.includes(p.email));
+
+    for (const m of meetings) {
+      const startsIn = (Date.parse(m.start) - now.getTime()) / 60_000;
+      const endedAgo = (now.getTime() - Date.parse(m.end)) / 60_000;
+      const people = followed(m);
+      if (!people.length) continue;
+
+      if (startsIn > 0 && startsIn <= 35 && !this.store.get(`meetprep:${m.id}`)) {
+        this.store.set(`meetprep:${m.id}`, "1");
+        await this.toSender(`**Before "${m.subject}"** at ${this.clock(m.start.replace("T", " ").slice(0, 19))}\n\n${people.map((p) => this.personBrief(p)).join("\n\n")}`);
+      }
+
+      if (endedAgo >= 10 && endedAgo <= 240 && m.chatId && this.direct.history && !this.store.get(`meetdone:${m.id}`)) {
+        this.store.set(`meetdone:${m.id}`, "1");
+        try {
+          const since = new Date(Date.parse(m.start) - 15 * 60_000).toISOString();
+          const lines = await this.direct.history(m.chatId, 2000, since);
+          if (lines.length < 2) continue;
+          const entries = await this.brain.extractTracker({
+            groupName: `meeting "${m.subject}" on ${this.today()}`,
+            today: this.today(),
+            transcript: this.transcriptOf(lines),
+            people: people.map((p) => ({ name: displayName(p), role: p.profile ?? "", memory: "" })),
+          });
+          const counts = this.applyTrackerEntries(people, entries);
+          const found = entries.filter((e) => people.some((p) => displayName(p).toLowerCase().split(" ")[0] === e.person.toLowerCase().split(" ")[0]));
+          if ([...counts.values()].some((n) => n > 0)) {
+            await this.toSender(
+              `**From "${m.subject}"**: put on the tracker\n\n${found.map((e) => `- ${e.person}: ${e.title}${e.due ? ` (due ${e.due})` : ""}`).join("\n")}`,
+            );
+          }
+        } catch (err) {
+          this.log(`Could not read the chat of "${m.subject}"`, err);
+        }
+      }
+    }
+  }
+
   /** A colleague named in a "waiting on", if they are one of the people followed. */
   private resolveColleague(name: string): Person | undefined {
     const want = name.trim().toLowerCase();
@@ -548,7 +674,7 @@ export class Engine {
       if (this.store.get(`depchase:${item.id}`) === date) continue;
       const owner = this.store.personById(item.personId);
       const helper = this.resolveColleague(item.waitingOn);
-      if (!owner?.nominated || !helper || helper.id === owner.id || this.isAdmin(helper)) continue;
+      if (!owner?.nominated || !helper || helper.id === owner.id || this.isAdmin(helper) || this.isAway(helper)) continue;
 
       const ownerName = displayName(owner).split(" ")[0]!;
       const pool = [
@@ -925,6 +1051,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
   async startCheckin(person: Person, force = false, topic = "", round: Round = this.roundNow()): Promise<boolean> {
     if (this.paused) return false;
     if (!this.address(person)) return false;
+    if (this.isAway(person)) return false;
     const date = this.today();
     const existing = this.store.checkin(person.id, date);
     if (!this.dueFor(person, date, round, force)) return false;
@@ -1347,7 +1474,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       const lastAt = Date.parse(`${messages.at(-1)!.at.replace(" ", "T")}Z`);
       if (minMinutes > 0 && this.now().getTime() - lastAt < minMinutes * 60_000) continue;
       const person = this.store.personById(checkin.personId);
-      if (!person?.nominated || !this.address(person)) continue;
+      if (!person?.nominated || !this.address(person) || this.isAway(person)) continue;
       try {
         const nudge = this.nudgeText("followup");
         const inGroup =
@@ -1414,6 +1541,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
   private async askNow(target: Person, topic = ""): Promise<string> {
     const name = displayName(target);
     if (this.paused) return `Paused: ${name} was not asked. Send **resume** first.`;
+    if (this.isAway(target)) return `${name} is on leave today${this.holidayToday() ? ` (${this.holidayToday()})` : ""}, so I have not asked.`;
     if (!this.address(target)) return `${name} is not connected yet.`;
     return this.enqueue(target.id, async () => {
       const checkin = this.store.checkin(target.id, this.today());
@@ -1544,6 +1672,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       // On the group's schedule, someone with a time of their own for this message waits for it.
       const slot = round === "plan" ? "morning" : round === "review" ? "evening" : "";
       if (!force && slot && this.store.get(`schedule:person:${p.id}:${slot}`)) return false;
+      if (this.isAway(p)) return false;
       // Asked by hand: everyone except people in the middle of replying.
       // On a schedule: once a day for each kind of message.
       return this.dueFor(p, date, round, force);
@@ -1704,6 +1833,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       const silent = this.store.groupMembers(group.id).filter((p) => {
         const c = this.store.checkin(p.id, date);
         return (
+          !this.isAway(p) &&
           c?.status === "open" &&
           this.store.get(`via:${c.id}`) === String(group.id) &&
           !this.sinceAsk(c.id).some((m) => m.role === "user")
@@ -1754,7 +1884,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       .groupMembers(group.id)
       .filter((p) => !this.isAdmin(p))
       .map((p) => {
-        const name = esc((p.name ?? p.email).split(" ")[0]!);
+        const name = `${esc((p.name ?? p.email).split(" ")[0]!)}${this.isAway(p) ? " (on leave)" : ""}`;
         const items = this.store.trackerItems(p.id, date).slice(0, 8);
         rows += items.length;
         if (!items.length) return `<tr><td>${name}</td><td>No items yet</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>`;
@@ -2010,6 +2140,8 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     await this.pushSentLog();
     await this.chaseDependencies();
     await this.escalate();
+    await this.refreshLeave();
+    await this.meetingCycle();
     await this.refreshBoards();
 
     type Job = [string, () => Promise<unknown>];
@@ -2040,7 +2172,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       // A ten-minute window, so a restart just after the time still runs it, once.
       if (minutes < due || minutes > due + 10 || this.store.get(`ran:${kind}`) === date) continue;
       // The digest goes to you; everything else goes to staff and waits for office hours.
-      if (kind !== "digest" && !this.inOfficeHours()) continue;
+      if (kind !== "digest" && (!this.inOfficeHours() || this.holidayToday())) continue;
       this.store.set(`ran:${kind}`, date);
       this.log(`[schedule] running ${kind} for ${date}`);
       try {
@@ -2155,6 +2287,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       const blockedItem = this.store.activeItems(person.id).find((i) => i.status === "blocked");
 
       if (!this.address(person)) return { group: 5, person, line: "Not connected in Teams yet." };
+      if (this.isAway(person)) return { group: 5, person, line: this.holidayToday() ? `Holiday: ${this.holidayToday()}.` : "On leave today." };
       if (checkin?.status === "open" && this.store.get(`takeover:${checkin.id}`) === "handover") {
         return { group: 0, person, line: `They wrote: "${clip(lastFromThem?.text ?? "", 100)}"` };
       }
@@ -2427,7 +2560,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       const sentAt = Date.parse(`${messages[0]!.at.replace(" ", "T")}Z`);
       if (minMinutes > 0 && this.now().getTime() - sentAt < minMinutes * 60_000) continue;
       const person = this.store.personById(checkin.personId);
-      if (!person?.nominated) continue;
+      if (!person?.nominated || this.isAway(person)) continue;
       try {
         const nudge = this.nudgeText();
         await this.say(person, nudge);
@@ -2682,6 +2815,33 @@ So you know how it's used: your answers are summarised each day for the CTO and 
                 ? `Every message to ${label} will come to you first as a draft, until you send **approve ${label} off**.`
                 : `Messages to ${label} come to you as drafts for the rest of today.`,
           );
+        }
+
+        case "leave": {
+          // "leave priya until 2026-11-25", "leave priya today", "leave priya off"
+          const m = /^(.+?)\s+(off|today|until\s+(\d{4}-\d{2}-\d{2})|till\s+(\d{4}-\d{2}-\d{2}))$/i.exec(arg);
+          if (!m) return await reply("Use **leave priya today**, **leave priya until 2026-11-25** or **leave priya off**.");
+          const target = this.resolveOne(m[1]!);
+          if (typeof target === "string") return await reply(target);
+          const word = m[2]!.toLowerCase();
+          const until = word === "off" ? "" : word === "today" ? this.today() : (m[3] ?? m[4])!;
+          this.store.set(`leave:${target.id}`, until);
+          return await reply(until ? `${displayName(target)} is on leave until ${until}. I will not ask or chase them until then.` : `${displayName(target)} is back: I will ask them as usual.`);
+        }
+
+        case "holiday":
+        case "holidays": {
+          const m = /^(off\s+)?(\d{4}-\d{2}-\d{2})\s*(.*)$/i.exec(arg);
+          if (!m) {
+            const list = this.store
+              .keys("holiday:")
+              .filter((k) => this.store.get(k) && k.slice(8) >= this.today())
+              .sort()
+              .map((k) => `- ${k.slice(8)}: ${this.store.get(k)}`);
+            return await reply(list.length ? `**Holidays**\n${list.join("\n")}` : "No holidays set. Add one with **holiday 2026-12-25 Christmas**.");
+          }
+          this.store.set(`holiday:${m[2]}`, m[1] ? "" : m[3]!.trim() || "Holiday");
+          return await reply(m[1] ? `${m[2]} is no longer a holiday.` : `${m[2]} is a holiday (${m[3]!.trim() || "Holiday"}): nobody is asked or chased that day.`);
         }
 
         case "pause":

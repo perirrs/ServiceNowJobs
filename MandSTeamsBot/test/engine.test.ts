@@ -2132,3 +2132,62 @@ test("blocked two days or overdue three days goes to the admins once, with a sug
   t.setDate("2026-11-17T11:00:00Z");
   assert.equal(await t.engine.escalate(), 0); // and each item once per reason
 });
+
+// ---------- leave, holidays and meetings ----------
+
+test("people out of office, on leave or on a holiday are not asked or chased", async () => {
+  const g = groupSetup();
+  const direct = (g.engine as unknown as { direct: Record<string, unknown> }).direct;
+  direct.awayBetween = async () => new Map([[PRIYA, true]]);
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.refreshLeave();
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  assert.match(g.admin.at(-1)!, /\(1 people\)/); // only Ravi
+  await g.engine.handleMessage(g.cto, "ask priya");
+  assert.match(g.admin.at(-1)!, /on leave today/);
+
+  await g.engine.handleMessage(g.cto, "leave ravi until 2026-11-20");
+  const ravi = g.store.personByEmail("ravi@acme.test")!;
+  assert.equal(await g.engine.startCheckin(ravi, true), false);
+  await g.engine.handleMessage(g.cto, "leave ravi off");
+  assert.match(g.admin.at(-1)!, /is back/);
+
+  await g.engine.handleMessage(g.cto, "holiday 2026-11-16 Founders Day");
+  await g.engine.handleMessage(g.cto, "ask ravi");
+  assert.match(g.admin.at(-1)!, /on leave today \(Founders Day\)/);
+});
+
+test("before a meeting you get a brief; after it, action items in its chat go on the tracker", async () => {
+  const g = groupSetup();
+  const toCto: string[] = [];
+  const direct = (g.engine as unknown as { direct: Record<string, unknown> }).direct;
+  direct.senderEmail = CTO;
+  direct.meetings = async () => [
+    { id: "m1", subject: "Weekly touchbase", start: "2026-11-16T17:20:00Z", end: "2026-11-16T17:50:00Z", attendees: [PRIYA, CTO], chatId: "" },
+    { id: "m2", subject: "Website review", start: "2026-11-16T15:00:00Z", end: "2026-11-16T16:00:00Z", attendees: ["ravi@acme.test"], chatId: "19:meeting_x@thread.v2" },
+  ];
+  direct.history = async (chat: string) =>
+    chat === "19:meeting_x@thread.v2"
+      ? [
+          { fromSender: true, from: "", text: "ravi pls finish the QA fixes by friday", at: "2026-11-16T15:30:00Z" },
+          { fromSender: false, from: "Ravi Kumar", text: "ok will do", at: "2026-11-16T15:31:00Z" },
+        ]
+      : [];
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  g.admin.length = 0;
+  const priya = g.store.personByEmail(PRIYA)!;
+  g.store.addItem(priya.id, "Client deck", "open", "half done", "2026-11-10", "2026-11-12");
+  g.brain.trackerEntries = [{ person: "Ravi Kumar", title: "QA fixes", status: "open", due: "2026-11-20", progress: -1, doneSoFar: "agreed in review" }];
+
+  await g.engine.meetingCycle();
+  const brief = g.admin.find((m) => /Before "Weekly touchbase"/.test(m))!;
+  assert.match(brief, /\*\*Priya Rao\*\*\n- Client deck \(overdue, due 2026-11-12\)/);
+  assert.match(g.admin.find((m) => /From "Website review"/.test(m))!, /Ravi Kumar: QA fixes \(due 2026-11-20\)/);
+  const ravi = g.store.personByEmail("ravi@acme.test")!;
+  assert.deepEqual(g.store.activeItems(ravi.id).map((i) => i.title), ["QA fixes"]);
+
+  const before = g.admin.length;
+  await g.engine.meetingCycle(); // within ten minutes: nothing again
+  assert.equal(g.admin.length, before);
+  void toCto;
+});

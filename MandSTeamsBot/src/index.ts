@@ -53,6 +53,8 @@ if (config.sendAsUser) {
     },
     senderEmail: me.email,
     unsend: (chatId, messageId) => g.softDelete(chatId, messageId),
+    awayBetween: (emails, start, end) => g.awayBetween(emails, start, end),
+    meetings: (start, end) => g.meetings(start, end),
     sync: () => pollNow(),
     createTracker: async (chatId, html) => {
       const id = await g.sendHtml(chatId, html);

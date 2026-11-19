@@ -71,6 +71,16 @@ export interface Quote {
   name: string;
 }
 
+/** A meeting in the sender's calendar. Times are ISO, UTC. */
+export interface Meeting {
+  id: string;
+  subject: string;
+  start: string;
+  end: string;
+  attendees: string[];
+  chatId: string;
+}
+
 class GraphError extends Error {
   constructor(
     message: string,
@@ -104,10 +114,10 @@ export class GraphChat {
     return result.account.username;
   }
 
-  private async token(): Promise<string> {
+  private async token(scopes: string[] = GRAPH_SCOPES): Promise<string> {
     const [account] = await this.pca.getTokenCache().getAllAccounts();
     if (!account) throw new Error("Nobody is signed in for sending. Run: npm run signin");
-    const result = await this.pca.acquireTokenSilent({ account, scopes: GRAPH_SCOPES });
+    const result = await this.pca.acquireTokenSilent({ account, scopes });
     return result.accessToken;
   }
 
@@ -269,6 +279,68 @@ export class GraphChat {
       body: { contentType: "html", content: html },
     });
     return msg.id;
+  }
+
+  /** Calendar calls use their own permission, so the rest keeps working without it. */
+  private async calendar<T>(method: string, path: string, body?: unknown): Promise<T> {
+    const res = await fetch(`${GRAPH}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${await this.token(["Calendars.Read"])}`,
+        "Content-Type": "application/json",
+        Prefer: 'outlook.timezone="UTC"',
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!res.ok) throw new GraphError(`Graph ${method} ${path.split("?")[0]} failed: ${res.status} ${(await res.text()).slice(0, 300)}`, res.status);
+    return (await res.json()) as T;
+  }
+
+  /** Who is out of office at some point between two times, from their Outlook calendars. Unknown means not away. */
+  async awayBetween(emails: string[], startIso: string, endIso: string): Promise<Map<string, boolean>> {
+    const away = new Map<string, boolean>();
+    for (let i = 0; i < emails.length; i += 20) {
+      const r = await this.calendar<{ value?: { scheduleId: string; scheduleItems?: { status: string }[] }[] }>(
+        "POST",
+        "/me/calendar/getSchedule",
+        {
+          schedules: emails.slice(i, i + 20),
+          startTime: { dateTime: startIso.slice(0, 19), timeZone: "UTC" },
+          endTime: { dateTime: endIso.slice(0, 19), timeZone: "UTC" },
+          availabilityViewInterval: 60,
+        },
+      );
+      for (const s of r.value ?? []) away.set(s.scheduleId.toLowerCase(), (s.scheduleItems ?? []).some((x) => x.status === "oof"));
+    }
+    return away;
+  }
+
+  /** The sender's meetings between two times, with attendees and the meeting's chat when it has one. */
+  async meetings(startIso: string, endIso: string): Promise<Meeting[]> {
+    const r = await this.calendar<{
+      value?: {
+        id: string;
+        subject?: string;
+        start?: { dateTime: string };
+        end?: { dateTime: string };
+        isCancelled?: boolean;
+        attendees?: { emailAddress?: { address?: string } }[];
+        onlineMeeting?: { joinUrl?: string } | null;
+      }[];
+    }>(
+      "GET",
+      `/me/calendarView?startDateTime=${encodeURIComponent(startIso)}&endDateTime=${encodeURIComponent(endIso)}&$select=id,subject,start,end,isCancelled,attendees,onlineMeeting&$top=50`,
+    );
+    return (r.value ?? [])
+      .filter((e) => !e.isCancelled && e.start && e.end)
+      .map((e) => ({
+        id: e.id,
+        subject: e.subject || "(no title)",
+        start: `${e.start!.dateTime.slice(0, 19)}Z`,
+        end: `${e.end!.dateTime.slice(0, 19)}Z`,
+        attendees: (e.attendees ?? []).map((a) => (a.emailAddress?.address ?? "").toLowerCase()).filter(Boolean),
+        chatId: /19:meeting_[^/?&]+@thread\.v2/.exec(decodeURIComponent(e.onlineMeeting?.joinUrl ?? ""))?.[0] ?? "",
+      }));
   }
 
   /** Delete a message this person sent. */
