@@ -1,5 +1,5 @@
 import { displayName, renderItems, renderNote } from "./ai.js";
-import type { AdminAction, Brain, CheckinContext, DigestPerson, Round } from "./ai.js";
+import type { AdminAction, Brain, CheckinContext, DigestPerson, Round, TrackerEntry } from "./ai.js";
 import { todayIn } from "./config.js";
 import type { Config } from "./config.js";
 import type { ChatMessage, Checkin, Group, Person, Store } from "./db.js";
@@ -64,11 +64,11 @@ const ADMIN_HELP = `**Daily Check-in: what you can type**
 
 - **pause**: stop sending anything to anyone, at once. **resume** starts again.
 - **board** (or **menu**): the team board, with who has replied, who is blocked, and buttons for everything below
-- **add** name@company.com: start asking someone for updates
+- **add** name@company.com: start asking someone for updates. I first read your whole chat history with them and put their work on the tracker.
 - **remove** name: stop asking them (their notes are kept)
 - **tracker build** Group Name: go through the group's whole chat history and build its tracker: each piece of work by person, what is done so far, progress and due date.
 - **tracker** Group Name: post (or refresh) the tracker table in that group: who is doing what, due dates and status, pinned at the top and kept up to date by me. **tracker Group Name off** stops it.
-- **add group** Group Name: follow a Teams group chat. Updates are asked for in the group, and follow-up questions stay there with the person tagged; only something that should not be said in front of the group goes to them one to one. **ask group** Name asks now, **remove group** Name stops.
+- **add group** Group Name: follow a Teams group chat. I first read the group's whole chat history and each member's whole chat with you, then build and pin the tracker. Updates are asked for in the group, and follow-up questions stay there with the person tagged; only something that should not be said in front of the group goes to them one to one. **ask group** Name asks now, **remove group** Name stops.
 - **ask** name: ask them for an update right now. **ask all** asks everyone.
 - **profile** name: their role, responsibilities and targets, so the questions fit their job
 - **style** name: what I learned from your past chat about how you write to them. **style name refresh** reads the chat again.
@@ -1088,7 +1088,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     return `"${query}" matches several groups: ${matches.map((g) => g.name).join(", ")}. Use the full name.`;
   }
 
-  private async addGroup(query: string): Promise<string> {
+  private async addGroup(query: string, progress?: (message: string) => Promise<void>): Promise<string> {
     if (!this.direct?.findGroups || !this.direct.groupMembers) {
       return "Group chats only work when messages are sent from your own Teams account.";
     }
@@ -1104,8 +1104,51 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     }
     const group = this.store.addGroup(matches[0]!.chatId, matches[0]!.name);
     const members = await this.syncGroup(group);
-    await this.refreshGroupMemory(group); // read the group's history now, before anything is asked
-    return `Now following **${group.name}** (${members.length} people: ${members.map(displayName).join(", ")}). Nothing has been posted there yet.\n\nSend **ask group ${group.name}** to ask now. The question and any follow-ups stay in the group, with people tagged.`;
+    const tracked = members.filter((p) => !this.isAdmin(p));
+    if (progress) {
+      await progress(
+        `Found **${group.name}** (${members.length} people). Reading its whole chat history, and each person's whole chat with you, before anything else. This can take a few minutes.`,
+      );
+    }
+
+    // Always from scratch, even if this group or these people were followed before:
+    // the whole history is read again, so nothing said in the meantime is missed.
+    const read: string[] = [];
+    if (this.personal) {
+      for (let i = 0; i < tracked.length; i++) {
+        let member = tracked[i]!;
+        try {
+          if (!member.chatId && this.direct.connect) {
+            const chat = await this.direct.connect(member.email);
+            if (!("notFound" in chat)) member = this.store.upsertPerson(member.email, { chatId: chat.conversationId });
+          }
+          const learned = await this.learnRapport(member, true);
+          read.push(`- ${displayName(member)}: ${learned ? "one-to-one chat read" : "no one-to-one chat with you to read"}`);
+        } catch (err) {
+          this.log(`Could not read the chat with ${member.email}`, err);
+          read.push(`- ${displayName(member)}: could not read the one-to-one chat`);
+        }
+      }
+    }
+    for (const key of ["gmemory", "gmemcursor", "gmemday"]) this.store.set(`${key}:${group.id}`, "");
+    await this.refreshGroupMemory(group);
+
+    let tracker = "";
+    try {
+      tracker = this.direct.history && this.direct.createTracker ? await this.buildTracker(group, true) : "";
+    } catch (err) {
+      this.log(`Could not build the tracker for ${group.name}`, err);
+      tracker = "I could not build the tracker. The server log has the details; send **tracker build** with the group's name to try again.";
+    }
+
+    return [
+      `Now following **${group.name}** (${members.length} people: ${members.map(displayName).join(", ")}). No question has been posted there.`,
+      read.length ? `Read the group's whole chat history, and:\n${read.join("\n")}` : "",
+      tracker,
+      `Send **ask group ${group.name}** to ask now. The question and any follow-ups stay in the group, with people tagged.`,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
   }
 
   /** Bring our record of who is in the group in line with Teams. */
@@ -1384,32 +1427,9 @@ So you know how it's used: your answers are summarised each day for the CTO and 
    * the tracker, by person: what is done so far, progress and due date.
    * Items already tracked are updated rather than duplicated.
    */
-  private async buildTracker(group: Group): Promise<string> {
-    if (!this.direct?.history || !this.direct.createTracker) {
-      return "Building a tracker needs messages to be sent from your own Teams account.";
-    }
-    if (this.paused) return `Paused: nothing was posted in ${group.name}. Send **resume** first.`;
+  /** Put tracker entries from the model onto the right people's items. Returns how many each got. */
+  private applyTrackerEntries(members: Person[], entries: TrackerEntry[]): Map<number, number> {
     const date = this.today();
-    const members = (await this.syncGroup(group)).filter((p) => !this.isAdmin(p));
-    if (!members.length) return `I found nobody in ${group.name} to track.`;
-
-    const lines = (await this.direct.history(group.chatId, 2000)).filter(
-      (m) => !(m.fromSender && m.text.startsWith("Team tracker")),
-    );
-    const transcript = lines
-      .map((m) => `${m.at.slice(0, 10)} ${m.fromSender ? this.direct!.senderName : m.from || "Someone"}: ${m.text.slice(0, 400)}`)
-      .join("\n");
-    const entries = await this.brain.extractTracker({
-      groupName: group.name,
-      today: date,
-      transcript,
-      people: members.map((p) => ({
-        name: displayName(p),
-        role: p.profile ?? "",
-        memory: this.store.get(`rapport:${p.id}`) || "",
-      })),
-    });
-
     const counts = new Map<number, number>();
     for (const entry of entries) {
       const wanted = entry.person.trim().toLowerCase();
@@ -1424,15 +1444,68 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       else this.store.addItem(person.id, entry.title.trim(), entry.status, entry.doneSoFar, date, due, progress);
       counts.set(person.id, (counts.get(person.id) ?? 0) + 1);
     }
+    return counts;
+  }
+
+  private transcriptOf(lines: { fromSender: boolean; from: string; text: string; at: string }[], other = "Someone"): string {
+    return lines
+      .filter((m) => !(m.fromSender && m.text.startsWith("Team tracker")))
+      .map((m) => `${m.at.slice(0, 10)} ${m.fromSender ? this.direct!.senderName : m.from || other}: ${m.text.slice(0, 400)}`)
+      .join("\n");
+  }
+
+  /**
+   * Read a group's whole chat history and put every piece of work in it on
+   * the tracker, by person: what is done so far, progress and due date.
+   * Items already tracked are updated rather than duplicated. With
+   * `skipIfEmpty`, nothing is posted when nothing was found.
+   */
+  private async buildTracker(group: Group, skipIfEmpty = false): Promise<string> {
+    if (!this.direct?.history || !this.direct.createTracker) {
+      return "Building a tracker needs messages to be sent from your own Teams account.";
+    }
+    if (this.paused) return `Paused: nothing was posted in ${group.name}. Send **resume** first.`;
+    const members = (await this.syncGroup(group)).filter((p) => !this.isAdmin(p));
+    if (!members.length) return `I found nobody in ${group.name} to track.`;
+
+    const lines = await this.direct.history(group.chatId, this.config.historyMessages);
+    const entries = await this.brain.extractTracker({
+      groupName: group.name,
+      today: this.today(),
+      transcript: this.transcriptOf(lines),
+      people: members.map((p) => ({
+        name: displayName(p),
+        role: p.profile ?? "",
+        memory: this.store.get(`rapport:${p.id}`) || "",
+      })),
+    });
+    const counts = this.applyTrackerEntries(members, entries);
+    const found = [...counts.values()].reduce((sum, n) => sum + n, 0);
+    const summary = members.map((p) => `- ${displayName(p)}: ${counts.get(p.id) ?? 0}`).join("\n");
+    if (skipIfEmpty && !found) {
+      return `I found no open work in ${group.name}'s history, so there is no tracker yet. It appears as soon as people report.`;
+    }
 
     this.store.set(`trackeroff:${group.id}`, "");
     this.store.set(`trackerhash:${group.id}`, "");
     await this.refreshTrackers(group);
-    const posted = !!this.store.get(`tracker:${group.id}`);
-    const summary = members.map((p) => `- ${displayName(p)}: ${counts.get(p.id) ?? 0}`).join("\n");
-    return posted
+    return this.store.get(`tracker:${group.id}`)
       ? `Built the tracker for **${group.name}** from ${lines.length} messages of its chat history, and pinned it at the top of that chat.\n\nItems found:\n${summary}\n\nI keep it up to date as people reply, and the morning and evening messages follow up on what is due or overdue on it.`
       : `I read ${lines.length} messages of ${group.name} and found:\n${summary}\n\nbut could not post the tracker there. The server log has the details.`;
+  }
+
+  /** The work in someone's one-to-one chat with the sender, put on their items. */
+  private async trackFromOwnChat(person: Person): Promise<number> {
+    if (!this.direct?.history || !person.chatId) return 0;
+    const lines = await this.direct.history(person.chatId, this.config.historyMessages);
+    if (!lines.length) return 0;
+    const entries = await this.brain.extractTracker({
+      groupName: `one-to-one chat between ${this.direct.senderName} and ${displayName(person)}`,
+      today: this.today(),
+      transcript: this.transcriptOf(lines, displayName(person)),
+      people: [{ name: displayName(person), role: person.profile ?? "", memory: this.store.get(`rapport:${person.id}`) || "" }],
+    });
+    return this.applyTrackerEntries([person], entries).get(person.id) ?? 0;
   }
 
   /**
@@ -2164,7 +2237,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         }
 
         case "nominate": {
-          if (/^group\b/i.test(arg)) return await reply(await this.addGroup(arg.replace(/^group\s*/i, "").trim()));
+          if (/^group\b/i.test(arg)) return await reply(await this.addGroup(arg.replace(/^group\s*/i, "").trim(), reply));
           const email = arg.split(/\s+/)[0]?.toLowerCase() ?? "";
           if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
             return await reply("Tell me who by work email, for example: **nominate priya@company.com**");
@@ -2189,11 +2262,26 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           const person = this.store.upsertPerson(email, chat && { name: chat.name, chatId: chat.conversationId });
           this.store.setNominated(person.id, true);
           this.store.set(`solo:${person.id}`, "1"); // added in their own right, not only through a group
+          let history = "";
+          if (this.personal && person.chatId) {
+            // Always from scratch, even if they were followed before.
+            await reply(`Reading your whole chat history with ${displayName(person)} first. This can take a minute.`);
+            try {
+              const learned = await this.learnRapport(person, true);
+              const items = await this.trackFromOwnChat(person);
+              history = learned || items
+                ? `Read your whole chat with them and found ${items} piece${items === 1 ? "" : "s"} of work to track.`
+                : "There is no chat history with them to read yet.";
+            } catch (err) {
+              this.log(`Could not read the chat with ${person.email}`, err);
+              history = "I could not read your chat history with them; the server log has the details.";
+            }
+          }
           if (this.address(person)) {
             if (!this.personal) await this.say(person, this.welcomeText(person));
             this.store.set(awaitingKey, String(person.id));
             return await reply(
-              `${displayName(person)} is nominated. ${
+              `${displayName(person)} is nominated. ${history ? `${history} ` : ""}${
                 this.personal
                   ? "Nothing has been sent to them yet."
                   : this.direct
@@ -2408,7 +2496,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           await command(`add ${target}`);
           break;
         case "add_group":
-          await reply(await this.addGroup(target));
+          await reply(await this.addGroup(target, reply));
           break;
         case "remove_person":
           await command(`remove ${target}`);

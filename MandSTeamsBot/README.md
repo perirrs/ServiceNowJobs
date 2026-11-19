@@ -90,8 +90,9 @@ With `DISCLOSE_AUTOMATION=false` the assistant instead writes as you in the firs
 
 In this mode the assistant builds a memory before it asks anyone anything, and keeps it current:
 
-- **First time a person is asked:** it reads the most recent `HISTORY_MESSAGES` (default 500) of your one-to-one chat with them and stores a short note: how you write to them, how you address them, and the work going on between you.
-- **First time a group is asked:** it reads the same amount of the group chat and stores a note of the work in progress, organised by person. Members' questions draw on both notes.
+- **When a person is added** (`add`): it reads your whole one-to-one chat history with them, stores a short note (how you write to them, how you address them, the work going on between you), and puts their open work on the tracked items.
+- **When a group is added** (`add group`): it reads the group's whole chat history and each member's whole one-to-one chat with you, stores notes for the group and for each person, and builds and pins the tracker.
+- Both happen every time, from scratch, even for a person or group that was followed before. `HISTORY_MESSAGES` (default 20000) is only a safety ceiling.
 - **Each later day, before asking:** it reads only what has been said in those chats since its last look and revises the notes, dropping what is finished and adding what is new.
 
 Chat text is sent to the Claude API to write these notes; only the notes are kept, in the local database. Personal matters and the assistant's own messages are left out. `style name` shows what it remembers about someone; `style name refresh` rebuilds it. The writing rules (one short line, no thanks) still win over anything it learns.

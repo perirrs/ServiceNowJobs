@@ -755,7 +755,7 @@ function rapportSetup(history: { fromSender: boolean; text: string }[]) {
   return { store, brain, engine, cto, reads: () => reads, later, setDate: (d: string) => (date = new Date(d)) };
 }
 
-test("past chat is read once, the tone is stored, and it is reused on later days", async () => {
+test("past chat is read when someone is added, the tone is stored, and asking does not read it again", async () => {
   const r = rapportSetup([
     { fromSender: true, text: "pls share the list" },
     { fromSender: false, text: "ok sir" },
@@ -763,14 +763,15 @@ test("past chat is read once, the tone is stored, and it is reused on later days
     { fromSender: true, text: "call me when free" },
   ]);
   await r.engine.handleMessage(r.cto, `add ${PRIYA}`);
+  const afterAdd = r.reads(); // read once for the tone, once for the work
   await r.engine.handleMessage(r.cto, "ask priya");
-  assert.equal(r.reads(), 1);
+  assert.equal(r.reads(), afterAdd);
   assert.equal(r.brain.turns.at(-1)!.rapport, "Casual. Says 'pls share'.");
 
   const priya = r.store.personByEmail(PRIYA)!;
   await r.engine.handleDirectReply(priya.id, "done");
   await r.engine.handleMessage(r.cto, "ask priya");
-  assert.equal(r.reads(), 1); // not read again
+  assert.equal(r.reads(), afterAdd); // not read again
   assert.equal(r.brain.rapportCalls.length, 1);
 });
 
@@ -781,23 +782,24 @@ test("the assistant's own earlier messages are left out of what it learns from",
     { fromSender: true, text: "call me when free" },
     { fromSender: true, text: "Thanks, that's all." }, // what the assistant sent on an earlier day
   ]);
-  await r.engine.handleMessage(r.cto, `add ${PRIYA}`);
-  const priya = r.store.personByEmail(PRIYA)!;
+  // She was followed before, and the assistant wrote to her then.
+  const priya = r.store.upsertPerson(PRIYA);
   const earlier = r.store.openCheckin(priya.id, "2026-11-13");
   r.store.addMessage(earlier.id, "bot", "Thanks, that's all.");
   r.store.setCheckinStatus(earlier.id, "completed");
 
-  await r.engine.handleMessage(r.cto, "ask priya");
+  await r.engine.handleMessage(r.cto, `add ${PRIYA}`);
   assert.deepEqual(r.brain.rapportCalls[0]!.map((m) => m.text), ["pls share the list", "any update on globex", "call me when free"]);
 });
 
 test("with too little past chat nothing is learned, and it does not keep looking", async () => {
   const r = rapportSetup([{ fromSender: false, text: "hello sir" }]);
   await r.engine.handleMessage(r.cto, `add ${PRIYA}`);
+  const afterAdd = r.reads();
   await r.engine.handleMessage(r.cto, "ask priya");
   await r.engine.handleMessage(r.cto, "ask priya");
   assert.equal(r.brain.rapportCalls.length, 0);
-  assert.equal(r.reads(), 1);
+  assert.equal(r.reads(), afterAdd);
   assert.equal(r.brain.turns.at(-1)!.rapport, undefined);
 });
 
@@ -968,8 +970,9 @@ test("on a later day, what was said in the chat since is folded into the memory 
   await r.engine.handleDirectReply(priya.id, "done");
 
   // Same day again: no second look at the chat.
+  const beforeSecondAsk = r.reads();
   await r.engine.handleMessage(r.cto, "ask priya");
-  assert.equal(r.reads(), 1);
+  assert.equal(r.reads(), beforeSecondAsk);
 
   // Next day, with something new said in the chat in between.
   r.later.push({ fromSender: false, text: "Globex signed the contract" });
@@ -1850,7 +1853,7 @@ test("a tracker is built from the group's history: items by person, progress and
     t.store.activeItems(ravi.id).map((i) => [i.title, i.due, i.progress]),
     [["Website", "2026-11-14", 80]],
   );
-  const html = t.created.at(-1)!.html;
+  const html = (t.updated.at(-1) ?? t.created.at(-1))!.html;
   assert.match(html, /<th>Progress<\/th><th>Status<\/th><th>Done so far<\/th>/);
   assert.match(html, /Website<\/td><td>14 Nov<\/td><td>▰▰▰▰▱ 80%<\/td><td>🔴 Overdue<\/td><td>80% done, live by Friday \(10 Nov\)/);
   assert.match(html, /LinkedIn posts<\/td><td>-<\/td><td>▰▰▰▰▰ 100%<\/td><td>✅ Done/);
@@ -1864,4 +1867,57 @@ test("a tracker is built from the group's history: items by person, progress and
     t.store.activeItems(ravi.id).map((i) => [i.title, i.due, i.progress]),
     [["Website", "2026-11-14", 90]],
   );
+});
+
+// ---------- adding a group or a person always starts with the whole history ----------
+
+test("adding a group reads every member's chat afresh, the group's history, and builds the tracker", async () => {
+  const t = trackerSetup();
+  const direct = (t.engine as unknown as { direct: Record<string, unknown> }).direct;
+  const reads: { chat: string; max: number; since?: string }[] = [];
+  direct.history = async (chat: string, max: number, since?: string) => {
+    reads.push({ chat, max, since });
+    return chat === "g-rec"
+      ? [{ fromSender: false, from: "Ravi Kumar", text: "website 80% done", at: "2026-11-10T09:00:00Z" }]
+      : Array.from({ length: 10 }, (_, i) => ({ fromSender: i % 2 === 0, from: "", text: `msg ${i}`, at: "2026-11-01T09:00:00Z" }));
+  };
+  t.brain.trackerEntries = [{ person: "Ravi Kumar", title: "Website", status: "open", due: "", progress: 80, doneSoFar: "80% done" }];
+
+  // Someone already known: the old note must not stop a fresh read.
+  const priya = t.store.upsertPerson(PRIYA);
+  t.store.set(`rapport:${priya.id}`, "OLD NOTE");
+
+  await t.engine.handleMessage(t.cto, "add group Recruitment Team");
+  assert.ok(t.admin.some((m) => /Reading its whole chat history, and each person's whole chat with you/.test(m)));
+  assert.deepEqual(reads.filter((r) => r.chat.startsWith("chat-")).map((r) => r.chat).sort(), [`chat-${PRIYA}`, "chat-ravi@acme.test"]);
+  assert.ok(reads.every((r) => !r.since && r.max === config.historyMessages)); // whole history, not just what is new
+  assert.equal(t.store.get(`rapport:${priya.id}`), "Casual. Says 'pls share'.");
+  assert.equal(t.created.length, 1); // the tracker was built and posted
+  assert.match(t.admin.at(-1)!, /Now following[\s\S]*Ravi Kumar: one-to-one chat read[\s\S]*Built the tracker/);
+  assert.equal(t.sent.filter((s) => s.to === "g-rec").length, 0); // no question posted
+
+  // Removed and added again: the whole read happens again.
+  const before = reads.length;
+  await t.engine.handleMessage(t.cto, "remove group Recruitment Team");
+  await t.engine.handleMessage(t.cto, "add group Recruitment Team");
+  assert.ok(reads.length >= before + 3);
+});
+
+test("adding a person reads their whole one-to-one chat and tracks the work in it", async () => {
+  const r = rapportSetup(SOME_CHAT);
+  r.brain.trackerEntries = [{ person: "Priya Rao", title: "Client deck", status: "open", due: "2026-11-20", progress: 40, doneSoFar: "draft shared" }];
+  await r.engine.handleMessage(r.cto, `add ${PRIYA}`);
+  const priya = r.store.personByEmail(PRIYA)!;
+  assert.deepEqual(r.store.activeItems(priya.id).map((i) => [i.title, i.due, i.progress]), [["Client deck", "2026-11-20", 40]]);
+  assert.equal(r.store.get(`rapport:${priya.id}`), "Casual. Says 'pls share'.");
+});
+
+test("a group with nothing open in its history gets no empty tracker posted", async () => {
+  const t = trackerSetup();
+  const direct = (t.engine as unknown as { direct: Record<string, unknown> }).direct;
+  direct.history = async () => [];
+  t.brain.trackerEntries = [];
+  await t.engine.handleMessage(t.cto, "add group Recruitment Team");
+  assert.equal(t.created.length, 0);
+  assert.match(t.admin.at(-1)!, /found no open work/);
 });

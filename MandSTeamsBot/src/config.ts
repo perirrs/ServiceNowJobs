@@ -47,7 +47,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     humanDelay: env.HUMAN_DELAY !== "false",
     idleCloseMinutes: Number(env.IDLE_CLOSE_MINUTES ?? 30),
     groupWindowMinutes: Number(env.GROUP_WINDOW_MINUTES ?? 120),
-    historyMessages: Number(env.HISTORY_MESSAGES ?? 500),
+    // The whole history by default. The ceiling only guards against a runaway read.
+    historyMessages: Number(env.HISTORY_MESSAGES ?? 20000),
   };
 }
 
