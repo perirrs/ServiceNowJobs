@@ -8,6 +8,8 @@ import type { Config } from "../src/config.js";
 import { Store } from "../src/db.js";
 import { cardToCommand, chunk, Engine, parseTime, takeZone } from "../src/engine.js";
 import type { Identity } from "../src/engine.js";
+import { Base44TalentFlow, describeCounts } from "../src/ats.js";
+import type { Base44 } from "../src/base44.js";
 
 const CTO = "cto@acme.test";
 const CEO = "ceo@acme.test";
@@ -2270,11 +2272,11 @@ test("with TalentFlow connected, a recruiter's real figures go into the check-in
   t.engine.ats = {
     stats: async (email, from) => {
       calls.push(`${email} ${from}`);
-      return { submitted_to_client: 3, l1_interview: 1 };
+      return { l1_select: 1, submitted_to_client: 3 };
     },
   };
   await t.engine.handleMessage(t.id(CTO), "ask priya");
-  assert.equal(t.brain.turns.at(-1)!.facts, "Today so far: 3 submitted to client, 1 L1 interview.");
+  assert.equal(t.brain.turns.at(-1)!.facts, "Today so far: 3 submitted to client, 1 L1 select.");
   assert.match(calls[0]!, /^priya@acme\.test 2026-11-16T00:00:00\.000Z$/);
 
   t.brain.doneAfterUserMessages = 99;
@@ -2283,7 +2285,7 @@ test("with TalentFlow connected, a recruiter's real figures go into the check-in
 
   t.setDate("2026-11-20T18:30:00Z");
   await t.engine.runWeekly(true);
-  assert.match(t.brain.weeklyInputs.at(-1)!.material, /In TalentFlow this week: 3 submitted to client, 1 L1 interview\./);
+  assert.match(t.brain.weeklyInputs.at(-1)!.material, /In TalentFlow this week: 3 submitted to client, 1 L1 select\./);
 });
 
 test("if TalentFlow cannot be reached the check-in goes ahead without figures", async () => {
@@ -2293,6 +2295,61 @@ test("if TalentFlow cannot be reached the check-in goes ahead without figures", 
   await t.engine.handleMessage(t.id(CTO), "ask priya");
   assert.equal(t.brain.turns.at(-1)!.facts, undefined);
   assert.equal(t.to(PRIYA).length > 0, true);
+});
+
+test("someone who is not a TalentFlow recruiter gets no figures, not 'nothing recorded'", async () => {
+  const t = setup();
+  await onboard(t);
+  t.engine.ats = { stats: async () => null };
+  await t.engine.handleMessage(t.id(CTO), "ask priya");
+  assert.equal(t.brain.turns.at(-1)!.facts, undefined);
+});
+
+test("with a target for the month, progress against it goes into the check-in", async () => {
+  const t = setup();
+  await onboard(t);
+  const froms: string[] = [];
+  t.engine.ats = {
+    stats: async (_email, from) => {
+      froms.push(from);
+      return from.startsWith("2026-11-01") ? { submitted_to_client: 7 } : { submitted_to_client: 2 };
+    },
+    targets: async (_email, month) => (month === "2026-11" ? { submitted_to_client: 20, onboarded: 1 } : null),
+  };
+  await t.engine.handleMessage(t.id(CTO), "ask priya");
+  assert.equal(
+    t.brain.turns.at(-1)!.facts,
+    "Today so far: 2 submitted to client.\nThis month against target: submitted to client 7 of 20, joined 0 of 1.",
+  );
+  assert.deepEqual(froms, ["2026-11-16T00:00:00.000Z", "2026-11-01T00:00:00.000Z"]);
+});
+
+test("TalentFlow figures count each move into a status inside the window, from Base44", async () => {
+  const calls: { entity: string; q?: unknown }[] = [];
+  const fake = {
+    findApp: async (ref: string) => (ref === "mats" ? { id: "app1", name: "TalentFlow", slug: "mats" } : undefined),
+    list: async (_app: string, entity: string, opts: { q?: unknown } = {}) => {
+      calls.push({ entity, q: opts.q });
+      if (entity === "Recruiter") return [{ id: "r1", email: "Priya@Acme.test " }];
+      return [
+        {
+          status_history: [
+            { status: "Applied", changed_at: "2026-11-15T09:00:00Z" },
+            { status: "Submitted to Client", changed_at: "2026-11-16T05:00:00Z" },
+            { status: "L1 Interview Scheduled", changed_at: "2026-11-16T07:00:00Z" },
+          ],
+        },
+        { status_history: [{ status: "Submitted to Client", changed_at: "2026-11-16T08:00:00Z" }, { status: "Client Hold", changed_at: "2026-11-16T09:00:00Z" }] },
+      ];
+    },
+  };
+  const tf = new Base44TalentFlow(fake as unknown as Base44, "mats");
+  const counts = await tf.stats("priya@acme.test", "2026-11-16T00:00:00.000Z", "2026-11-16T12:00:00.000Z");
+  assert.deepEqual(counts, { submitted_to_client: 2, l1_scheduled: 1 });
+  assert.equal(describeCounts(counts!), "2 submitted to client, 1 L1 scheduled");
+  assert.deepEqual(calls.at(-1)!.q, { recruiter_id: "r1", updated_date: { $gte: "2026-11-16T00:00:00" } });
+  assert.equal(await tf.stats("nobody@acme.test", "2026-11-16T00:00:00.000Z", "2026-11-16T12:00:00.000Z"), null);
+  assert.equal(calls.filter((c) => c.entity === "Recruiter").length, 1); // recruiters read once, not per call
 });
 
 // ---------- held drafts: nothing counts until it has really gone out ----------

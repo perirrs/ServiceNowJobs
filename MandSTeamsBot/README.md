@@ -109,7 +109,7 @@ With `DISCLOSE_AUTOMATION=false` the assistant instead writes as you in the firs
 
 ### TalentFlow figures (optional)
 
-With `ATS_URL` and `ATS_TOKEN` set, each recruiter's real figures for the day (submitted to client, interviews, offers, joined) come from TalentFlow into their check-in, so the bot asks about outcomes rather than numbers, and the weekly report shows the week's figures. It expects `GET ATS_URL?email=&from=&to=` with a bearer token, answering `{ "counts": { "submitted_to_client": 3, ... } }` using TalentFlow's metric buckets. TalentFlow does not have this endpoint yet.
+With `BASE44_API_KEY` set (one read-only Base44 key for every Base44 app you hold) and `TALENTFLOW_APP` naming TalentFlow's app (`mats`), each recruiter's real figures for the day come from TalentFlow into their check-in: moves to submitted to client, L1/L2/L3 scheduled and select, final select, offered and joined, counted from each application's status history. The bot then asks about outcomes rather than numbers. When TalentFlow has a target for the month (TeamMemberTarget), progress against it is included too, and the weekly report shows the week's figures. People who are not TalentFlow recruiters (matched by email) get no figures. `npm run base44 -- mats` lists an app's tables, fields and counts without printing any records.
 
 ### Memory
 

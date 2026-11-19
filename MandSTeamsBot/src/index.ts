@@ -5,7 +5,8 @@ import { Store } from "./db.js";
 import { cardToCommand, Engine } from "./engine.js";
 import type { DirectChannel, Identity } from "./engine.js";
 import { GraphChat, htmlToText, textToHtml } from "./graph.js";
-import { TalentFlowAts } from "./ats.js";
+import { Base44TalentFlow } from "./ats.js";
+import { Base44 } from "./base44.js";
 
 const config = loadConfig();
 
@@ -255,8 +256,8 @@ await app.start(config.port);
 console.log(`Check-in bot running. Admins: ${config.adminEmails.join(", ")}. Timezone ${config.timezone}.`);
 
 brain.onUsage = (model, input, output) => engine.recordUsage(model, input, output);
-if (config.atsUrl && config.atsToken) {
-  engine.ats = new TalentFlowAts(config.atsUrl, config.atsToken);
+if (config.base44Key && config.talentflowApp) {
+  engine.ats = new Base44TalentFlow(new Base44(config.base44Key), config.talentflowApp);
   console.log("TalentFlow connected: recruiters' real figures are used in check-ins.");
 }
 await engine.announceStart();

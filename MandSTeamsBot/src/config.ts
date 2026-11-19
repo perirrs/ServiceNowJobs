@@ -10,9 +10,6 @@ export interface Config {
   model: string;
   /** The stronger model for the jobs where quality matters most: the digest, the weekly report, tracker building, questions. */
   smartModel: string;
-  /** TalentFlow's recruiter-stats endpoint and its token. Both empty: no ATS figures. */
-  atsUrl: string;
-  atsToken: string;
   /** One Base44 key for every Base44 app the user holds; empty: no Base44 portals. */
   base44Key: string;
   /** TalentFlow's Base44 app (slug, name or id). */
@@ -53,8 +50,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     dataDir: env.DATA_DIR ?? "./data",
     model: env.CLAUDE_MODEL ?? "claude-opus-5-5",
     smartModel: env.CLAUDE_SMART_MODEL ?? "claude-sonnet-5-5",
-    atsUrl: env.ATS_URL ?? "",
-    atsToken: env.ATS_TOKEN ?? "",
     base44Key: env.BASE44_API_KEY ?? "",
     talentflowApp: env.TALENTFLOW_APP ?? "mats",
     sendAsUser: env.SEND_AS_USER === "true",

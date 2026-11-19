@@ -3,7 +3,7 @@ import type { AdminAction, Brain, CheckinContext, DigestPerson, Round, TrackerEn
 import { todayIn } from "./config.js";
 import type { Config } from "./config.js";
 import type { ChatMessage, Checkin, Group, Person, Store, WorkItem } from "./db.js";
-import { describeCounts } from "./ats.js";
+import { describeCounts, describeProgress } from "./ats.js";
 import type { Ats } from "./ats.js";
 
 /** Sends a chat message to a Teams conversation. Implemented by teams.ts, faked in tests. */
@@ -733,7 +733,8 @@ export class Engine {
       const all = Promise.all(
         people.map(async (p) => {
           try {
-            weekFacts.set(p.id, describeCounts(await ats.stats(p.email, fromIso, this.now().toISOString())));
+            const counts = await ats.stats(p.email, fromIso, this.now().toISOString());
+            if (counts) weekFacts.set(p.id, describeCounts(counts) || "nothing recorded");
           } catch (err) {
             this.log(`Could not read TalentFlow for ${p.email}`, err);
           }
@@ -823,9 +824,23 @@ export class Engine {
       // From midnight today in the bot's timezone, as UTC.
       const midnight = new Date(this.now().getTime() - this.localNow().minutes * 60_000);
       midnight.setUTCSeconds(0, 0);
-      const counts = await this.ats.stats(person.email, midnight.toISOString(), this.now().toISOString());
+      const nowIso = this.now().toISOString();
+      const counts = await this.ats.stats(person.email, midnight.toISOString(), nowIso);
+      if (!counts) {
+        // Not in TalentFlow: nothing to say, rather than "nothing recorded".
+        this.store.set(`atsfacts:${person.id}`, "");
+        return;
+      }
       const text = describeCounts(counts);
-      this.store.set(`atsfacts:${person.id}`, text ? `Today so far: ${text}.` : "Today so far: nothing recorded.");
+      const lines = [text ? `Today so far: ${text}.` : "Today so far: nothing recorded."];
+      // Progress against this month's targets, when TalentFlow has them.
+      const month = this.today().slice(0, 7);
+      const targets = this.ats.targets ? await this.ats.targets(person.email, month) : null;
+      if (targets) {
+        const monthCounts = (await this.ats.stats(person.email, this.localMidnightIso(`${month}-01`), nowIso)) ?? {};
+        lines.push(`This month against target: ${describeProgress(monthCounts, targets)}.`);
+      }
+      this.store.set(`atsfacts:${person.id}`, lines.join("\n"));
     } catch (err) {
       this.log(`Could not read TalentFlow for ${person.email}`, err);
       this.store.set(`atsfacts:${person.id}`, "");
