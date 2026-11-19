@@ -1776,3 +1776,42 @@ test("chases are worded differently each time", async () => {
   assert.equal(chases.length, 5);
   for (let i = 1; i < chases.length; i++) assert.notEqual(chases[i], chases[i - 1]);
 });
+
+// ---------- the tracker follows the conversation as it happens ----------
+
+test("progress is recorded a couple of minutes after someone speaks, without waiting for the end", async () => {
+  const t = trackerSetup();
+  await t.engine.handleMessage(t.cto, "add group Recruitment Team");
+  await t.engine.handleMessage(t.cto, "ask group Recruitment Team");
+  t.brain.doneAfterUserMessages = 99;
+  t.brain.nextNote = {
+    note: { summary: "x", progressVsTargets: "", blockers: [], painPoints: [], helpNeeded: [], followUpTomorrow: [] },
+    items: [{ itemId: null, title: "Login page", status: "open", update: "half done", due: "2026-11-16" }],
+  };
+  await t.engine.handleGroupReply("u-priya", "login page half done");
+
+  // Real message times are stamped by the clock; move "now" well past them.
+  t.setDate("2099-01-01T00:00:00Z");
+  const priya = t.store.personByEmail(PRIYA)!;
+  const checkin = t.store.checkin(priya.id, "2026-11-16")!;
+  (t.engine as unknown as { today: () => string }).today = () => "2026-11-16";
+
+  assert.equal(await t.engine.noteProgress(), 1);
+  assert.equal(t.store.checkin(priya.id, "2026-11-16")!.status, "open"); // still going
+  assert.equal(t.store.activeItems(priya.id)[0]!.title, "Login page");
+  assert.equal(await t.engine.noteProgress(), 0); // nothing new said since
+
+  await t.engine.refreshTrackers();
+  assert.match(t.created[0]!.html, /Login page/);
+  void checkin;
+});
+
+test("the group message is given each person's tracker items to work from", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  const ravi = g.store.personByEmail("ravi@acme.test") ?? g.store.upsertPerson("ravi@acme.test");
+  g.store.addItem(ravi.id, "TalentFlow app", "open", "in testing", "2026-11-10", "2026-11-14");
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  const raviBrief = g.brain.groupAsks.at(-1)!.members.find((m) => m.name === "Ravi Kumar") as { memory?: string };
+  assert.match(raviBrief.memory ?? "", /On the tracker:[\s\S]*TalentFlow app[\s\S]*OVERDUE/);
+});

@@ -639,7 +639,8 @@ opening: one short line that starts with "Hi team,". In the morning it asks what
 
 questions: a specific question for an individual, only where there is something specific to ask them. Each one is posted on its own line with that person tagged in front, so do not write their name in it. Use one where:
 - ${who} named that person or their work in what they want to know, or
-- the notes show that person owes something that is due today, overdue, or has gone quiet: ask about that item by name ("TalentFlow app - where are we, when is it done?").
+- their tracker items, or the notes, show something due today, overdue, or gone quiet: ask about that item by name ("TalentFlow app - where are we, when is it done?"). The tracker comes first: it is what the team sees pinned at the top of the chat.
+- In the morning, someone with tracker items due today or overdue is asked which of them will be finished today.
 At most one question per person, and pick the one that matters most now. Leave out anything old enough to have lapsed or been overtaken (a festival video a month after the festival, a request from several months ago with nothing since): asking about it makes the message look out of touch. If you cannot tell whether an old item still matters, do not tag anyone for it. Leave a person out when there is nothing specific; the opening already covers them. Use each name exactly as given in the list.
 
 Wording: very simple English for readers whose first language is not English, short common words, each question one short line. Firmer where something is overdue, light where things are on track. No thanks, no emojis, and no mention of a bot, assistant, summary or automation.`,

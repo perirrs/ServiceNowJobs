@@ -868,10 +868,9 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     this.store.setCheckinStatus(checkin.id, this.store.hasNote(checkin.id) ? "completed" : "no_response");
   }
 
-  /** Turn the day's conversation into a note and update the person's open items. */
-  private async finish(person: Person, checkin: Checkin, announce = true): Promise<void> {
-    const ctx = this.context(person, checkin);
-    const { note, items } = await this.brain.writeNote(ctx);
+  /** Write the note and update the person's items from what has been said so far. */
+  private async recordProgress(person: Person, checkin: Checkin) {
+    const { note, items } = await this.brain.writeNote(this.context(person, checkin));
     this.store.saveNote(checkin, note);
     for (const change of items) {
       const updated =
@@ -881,6 +880,41 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         this.store.addItem(person.id, change.title, change.status, change.update, checkin.date, validDate(change.due));
       }
     }
+    this.store.set(`noted:${checkin.id}`, String(this.store.messages(checkin.id).filter((m) => m.role === "user").length));
+    return note;
+  }
+
+  /**
+   * Conversations still going: once someone has said something new and then
+   * paused for a couple of minutes, record it, so the tracker and the board
+   * show it now rather than only when the conversation finishes.
+   */
+  async noteProgress(): Promise<number> {
+    let noted = 0;
+    for (const checkin of this.store.checkinsOn(this.today())) {
+      if (checkin.status !== "open") continue;
+      const messages = this.store.messages(checkin.id);
+      const said = messages.filter((m) => m.role === "user");
+      if (!said.length || String(said.length) === this.store.get(`noted:${checkin.id}`)) continue;
+      const lastAt = Date.parse(`${said.at(-1)!.at.replace(" ", "T")}Z`);
+      if (this.now().getTime() - lastAt < 2 * 60_000) continue;
+      const person = this.store.personById(checkin.personId);
+      if (!person) continue;
+      try {
+        await this.enqueue(person.id, async () => {
+          if (this.store.checkin(person.id, checkin.date)?.status === "open") await this.recordProgress(person, checkin);
+        });
+        noted++;
+      } catch (err) {
+        this.log(`Could not record progress for ${person.email}`, err);
+      }
+    }
+    return noted;
+  }
+
+  /** Turn the day's conversation into a note and update the person's open items. */
+  private async finish(person: Person, checkin: Checkin, announce = true): Promise<void> {
+    const note = await this.recordProgress(person, checkin);
     this.store.setCheckinStatus(checkin.id, "completed");
     if (announce) {
       await this.notifyAdmins(
@@ -1151,7 +1185,12 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           members: due.map((p) => ({
             name: displayName(p),
             role: p.profile ?? "",
-            memory: this.store.get(`rapport:${p.id}`) || "",
+            memory: [
+              this.store.get(`rapport:${p.id}`) || "",
+              `On the tracker:\n${renderItems(this.store.activeItems(p.id), date)}`,
+            ]
+              .filter(Boolean)
+              .join("\n\n"),
           })),
         });
         opening = composed.opening || opening;
@@ -1450,6 +1489,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     await this.runGroupTimers();
     await this.chaseFollowUps(this.config.chaseAfterMinutes);
     await this.closeIdle(this.config.idleCloseMinutes);
+    await this.noteProgress();
     await this.refreshTrackers();
     await this.refreshBoards();
 
