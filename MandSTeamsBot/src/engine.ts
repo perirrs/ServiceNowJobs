@@ -369,13 +369,14 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       );
       if (fresh.length) {
         const transcript = fresh
-          .map((m) => `${m.fromSender ? this.direct!.senderName : displayName(person)}: ${m.text.slice(0, 300)}`)
+          .map((m) => `${m.at.slice(0, 10)} ${m.fromSender ? this.direct!.senderName : displayName(person)}: ${m.text.slice(0, 300)}`)
           .join("\n");
         const revised = await this.brain.reviseMemory({
           about: `${displayName(person)}, and how ${this.direct.senderName} works with them`,
           senderName: this.direct.senderName,
           memory: this.store.get(key) || "",
           transcript,
+          today: this.today(),
         });
         if (revised) this.store.set(key, revised);
       }
@@ -398,7 +399,10 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           about: `the group chat "${group.name}" and the work of each person in it`,
           senderName: this.direct.senderName,
           memory: this.store.get(`gmemory:${group.id}`) || "",
-          transcript: fresh.map((m) => `${m.fromSender ? this.direct!.senderName : m.from || "Someone"}: ${m.text.slice(0, 300)}`).join("\n"),
+          transcript: fresh
+            .map((m) => `${m.at.slice(0, 10)} ${m.fromSender ? this.direct!.senderName : m.from || "Someone"}: ${m.text.slice(0, 300)}`)
+            .join("\n"),
+          today: this.today(),
         });
         if (revised) this.store.set(`gmemory:${group.id}`, revised);
       }
@@ -429,8 +433,9 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       this.store.set(`memday:${person.id}`, this.today());
       // Too little to learn from: remember that, so we do not look again every time.
       let text = "";
-      if (chat.filter((m) => m.fromSender).length >= 3) {
-        const learned = await this.brain.learnRapport(person, this.direct.senderName, chat);
+      // Enough to learn a tone from, or at least enough to know what is going on.
+      if (chat.filter((m) => m.fromSender).length >= 3 || chat.length >= 8) {
+        const learned = await this.brain.learnRapport(person, this.direct.senderName, chat, this.today());
         text = learned.brief;
         // A greeting the admin set by hand is never overwritten by what was learned.
         const address = learned.address.replace(/^hi\b[\s,]*/i, "").replace(/[\n,.!]+/g, " ").trim().slice(0, 30);
@@ -702,25 +707,54 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       }
     }
 
-    let text = "Hi team, please share today's update.";
-    if (topic) {
+    let opening = "Hi team, please share today's update.";
+    let tagged: { person: Person; userId: string; question: string }[] = [];
+    if (this.personal || topic) {
       try {
-        text =
-          (await this.brain.composeGroupAsk({
-            groupName: group.name,
-            topic,
-            memory: this.store.get(`gmemory:${group.id}`) || "",
-          })) || text;
+        const composed = await this.brain.composeGroupAsk({
+          groupName: group.name,
+          topic,
+          memory: this.store.get(`gmemory:${group.id}`) || "",
+          today: date,
+          members: due.map((p) => ({
+            name: displayName(p),
+            role: p.profile ?? "",
+            memory: this.store.get(`rapport:${p.id}`) || "",
+          })),
+        });
+        opening = composed.opening || opening;
+        // Only people who are being asked, who can be tagged, and one question each.
+        for (const q of composed.questions) {
+          const person = due.find((p) => displayName(p).toLowerCase() === q.name.toLowerCase());
+          const userId = person ? this.store.get(`aadOf:${person.id}`) : "";
+          if (person && userId && !tagged.some((t) => t.person.id === person.id)) {
+            tagged.push({ person, userId, question: q.question });
+          }
+        }
       } catch (err) {
         this.log(`Could not word the question for ${group.name}; using the standard one`, err);
+        tagged = [];
       }
     }
-    await this.direct!.send(group.chatId, text);
+
+    // {@0}, {@1}... mark where each person's tag goes when the message is sent.
+    const lines = (name: (i: number) => string) =>
+      [opening, ...tagged.map((t, i) => `${name(i)} ${t.question}`)].join("\n");
+    const text = lines((i) => `@${displayName(tagged[i]!.person)}`); // as it reads, for our record
+    await this.direct!.send(
+      group.chatId,
+      lines((i) => `{@${i}}`),
+      tagged.map((t) => ({ userId: t.userId, name: displayName(t.person) })),
+    );
     for (const person of due) {
       const checkin = this.store.openCheckin(person.id, date);
       this.store.addMessage(checkin.id, "bot", text);
       this.store.set(`via:${checkin.id}`, String(group.id));
-      this.store.set(`topic:${checkin.id}`, topic);
+      const own = tagged.find((t) => t.person.id === person.id)?.question;
+      this.store.set(
+        `topic:${checkin.id}`,
+        [topic, own ? `In the group they were asked directly: "${own}"` : ""].filter(Boolean).join("\n"),
+      );
     }
     this.store.set(`gasked:${group.id}`, this.now().toISOString());
     this.store.set(`gchased:${group.id}`, "");

@@ -188,10 +188,17 @@ export class GraphChat {
 
   /** Returns the id of the sent message. */
   async send(chatId: string, text: string, mentions: { userId: string; name: string }[] = []): Promise<string> {
-    // @mentions go in front of the text, each tied to the person's directory id.
-    const tags = mentions.map((m, i) => `<at id="${i}">${textToHtml(m.name)}</at>`).join(" ");
+    // Each @mention is tied to the person's directory id. A marker like {@0} in
+    // the text says where that mention goes; with no markers they go in front.
+    const tag = (i: number) => `<at id="${i}">${textToHtml(mentions[i]!.name)}</at>`;
+    let content = textToHtml(text);
+    if (mentions.some((_, i) => content.includes(`{@${i}}`))) {
+      mentions.forEach((_, i) => (content = content.replace(`{@${i}}`, tag(i))));
+    } else if (mentions.length) {
+      content = `${mentions.map((_, i) => tag(i)).join(" ")} ${content}`;
+    }
     const msg = await this.call<{ id: string }>("POST", `/chats/${encodeURIComponent(chatId)}/messages`, {
-      body: { contentType: "html", content: tags ? `${tags} ${textToHtml(text)}` : textToHtml(text) },
+      body: { contentType: "html", content },
       ...(mentions.length
         ? {
             mentions: mentions.map((m, i) => ({

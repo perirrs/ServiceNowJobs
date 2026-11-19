@@ -88,17 +88,30 @@ export interface Brain {
   learnRapport(
     person: Person,
     senderName: string,
-    chat: { fromSender: boolean; text: string }[],
+    chat: { fromSender: boolean; text: string; at?: string }[],
+    today?: string,
   ): Promise<{ brief: string; address: string }>;
   /**
    * Bring a stored memory up to date with new chat messages, or build one from
    * nothing for a group. Returns the whole revised memory.
    */
-  reviseMemory(input: { about: string; senderName: string; memory: string; transcript: string }): Promise<string>;
+  reviseMemory(input: {
+    about: string;
+    senderName: string;
+    memory: string;
+    transcript: string;
+    today?: string;
+  }): Promise<string>;
   /** Work out what an admin's free-form message is asking the bot to do. */
   interpret(text: string, known: { people: { name: string; email: string }[]; groups: string[] }): Promise<AdminAction[]>;
   /** Write the one message that asks a group chat for updates on a given topic. */
-  composeGroupAsk(input: { groupName: string; topic: string; memory: string }): Promise<string>;
+  composeGroupAsk(input: {
+    groupName: string;
+    topic: string;
+    memory: string;
+    today: string;
+    members: { name: string; role: string; memory: string }[];
+  }): Promise<{ opening: string; questions: { name: string; question: string }[] }>;
 }
 
 // ---------- rendering context for the model ----------
@@ -172,6 +185,7 @@ const SUBSTANCE = `The first message of every conversation gives you the person'
 - Read the situation each time and decide how far to go. The notes and item dates tell you what is new and what is dragging:
   - If an item has been open for several days, or the same blocker or the same answer keeps coming back, do not accept another "in progress": ask what has changed since last time, what is stopping it, and the date it will be finished.
   - If something promised on an earlier day ("will send tomorrow", "interview on Monday") is now due, ask what happened with it.
+  - Compare the dates in the notes with today's date. Something due today or already overdue comes first, and you ask plainly whether it is done and, if not, the new date. Something comfortably on track needs only a light check.
   - If today's update is clear and complete and nothing older is hanging, one exchange is enough: close straight away.
   - If they are plainly busy or giving short answers, ask only the one thing that matters most and leave the rest for tomorrow.
 - When you have what is needed, or the person signals they are busy or finished, close in one short line such as "Ok, noted." and set done to true. Never drag it out.
@@ -340,6 +354,11 @@ const ActionsSchema = z.object({
   ),
 });
 
+const GroupAskSchema = z.object({
+  opening: z.string(),
+  questions: z.array(z.object({ name: z.string(), question: z.string() })),
+});
+
 const RapportSchema = z.object({
   brief: z.string(),
   address: z.string().describe("Form of address only, no greeting word. Empty if none."),
@@ -457,19 +476,22 @@ export class ClaudeBrain implements Brain {
   async learnRapport(
     person: Person,
     senderName: string,
-    chat: { fromSender: boolean; text: string }[],
+    chat: { fromSender: boolean; text: string; at?: string }[],
+    today = "",
   ): Promise<{ brief: string; address: string }> {
-    const transcript = chat
-      .map((m) => `${m.fromSender ? senderName : displayName(person)}: ${m.text.slice(0, 300)}`)
-      .join("\n");
+    const transcript =
+      (today ? `Today is ${today}.\n\n` : "") +
+      chat
+        .map((m) => `${m.at ? `${m.at.slice(0, 10)} ` : ""}${m.fromSender ? senderName : displayName(person)}: ${m.text.slice(0, 300)}`)
+        .join("\n");
     return this.structured(
       `You are preparing a short private briefing for an assistant that will write Microsoft Teams messages as ${senderName} to a colleague, ${displayName(person)}, asking for daily work updates. You are given their recent one-to-one chat. The assistant should sound like ${senderName} does with this particular person, and know what is going on between them.
 
 Produce two things.
 
-brief: under 200 words, in two parts.
+brief: under 280 words, in two parts.
 1. How ${senderName} writes to this person: how formal or casual, how messages open and close, typical length, any mix of languages or regional words, punctuation and capitalisation habits, favourite phrases. Then quote three to six short messages ${senderName} actually sent, word for word, as examples.
-2. Work context: what they are working on together, anything promised or pending between them that a daily update would touch.
+2. Work context: what they are working on together, and a timeline of anything promised or pending that a daily update would touch: each item with who owes it and the date it is due or was promised (work the date out from the message dates), marked overdue if that date has passed. Recent months matter most; leave out what is long finished.
 
 address: the word or short phrase ${senderName} uses to address this person when greeting them, exactly as ${senderName} writes it, for example "Anna", "Ravi", "sir" or "bro". Give only the form of address, without "Hi". Leave it empty if ${senderName} does not consistently use one.
 
@@ -514,39 +536,73 @@ ${known.groups.map((g) => `- ${g}`).join("\n") || "(none)"}`,
     return out.actions;
   }
 
-  async composeGroupAsk(input: { groupName: string; topic: string; memory: string }): Promise<string> {
+  async composeGroupAsk(input: {
+    groupName: string;
+    topic: string;
+    memory: string;
+    today: string;
+    members: { name: string; role: string; memory: string }[];
+  }): Promise<{ opening: string; questions: { name: string; question: string }[] }> {
     const who = this.senderName ?? "the manager";
-    const written = await this.text(
-      `Write one Microsoft Teams message that ${who} posts in the group chat "${input.groupName}" to ask the team for an update. It is sent from ${who}'s own account, so write it as ${who} would type it.
+    const out = await this.structured(
+      `You write the Microsoft Teams message that ${who} posts in the group chat "${input.groupName}" to ask the team for today's update. It is sent from ${who}'s own account, so write it as ${who} would type it. You are given what ${who} wants to know (it may be empty), what is known about the group and each person from the chat history, and today's date.
 
-- Start with "Hi team,".
-- Ask for what is listed under "Wants to know", all of it, and nothing else.
-- Very simple English, for readers whose first language is not English: short common words, no idioms.
-- As short as it can be while covering everything: one or two sentences, on one line.
-- No names, no thanks, no emojis, no mention of a bot, assistant, summary or automation.
+Produce two things.
 
-Reply with the message only.`,
-      `Wants to know:\n${input.topic}\n\nWhat is known about this group (for wording only, do not repeat it):\n${input.memory || "(nothing yet)"}`,
-      "low",
+opening: one short line that starts with "Hi team," and asks for the update. If ${who} wants to know something specific, the opening asks for that, all of it.
+
+questions: a specific question for an individual, only where there is something specific to ask them. Each one is posted on its own line with that person tagged in front, so do not write their name in it. Use one where:
+- ${who} named that person or their work in what they want to know, or
+- the notes show that person owes something that is due today, overdue, or has gone quiet: ask about that item by name ("TalentFlow app - where are we, when is it done?").
+At most one question per person, and pick the one that matters most now. Leave out anything old enough to have lapsed or been overtaken (a festival video a month after the festival, a request from several months ago with nothing since): asking about it makes the message look out of touch. If you cannot tell whether an old item still matters, do not tag anyone for it. Leave a person out when there is nothing specific; the opening already covers them. Use each name exactly as given in the list.
+
+Wording: very simple English for readers whose first language is not English, short common words, each question one short line. Firmer where something is overdue, light where things are on track. No thanks, no emojis, and no mention of a bot, assistant, summary or automation.`,
+      [
+        {
+          role: "user",
+          content: [
+            `Today is ${input.today}.`,
+            `## Wants to know\n${input.topic || "(nothing specific: a general update)"}`,
+            `## What is known about the group\n${input.memory || "(nothing yet)"}`,
+            `## People\n${input.members
+              .map((m) => `### ${m.name}\nRole: ${m.role || "(not given)"}\n${m.memory || "(no notes)"}`)
+              .join("\n\n")}`,
+          ].join("\n\n"),
+        },
+      ],
+      GroupAskSchema,
+      "medium",
     );
-    return tidyReply(written.replace(/^["']|["']$/g, ""), null);
+    return {
+      opening: tidyReply(out.opening, null),
+      questions: out.questions
+        .map((q) => ({ name: q.name.trim(), question: tidyReply(q.question, q.name) }))
+        .filter((q) => q.name && q.question),
+    };
   }
 
-  async reviseMemory(input: { about: string; senderName: string; memory: string; transcript: string }): Promise<string> {
-    const { about, senderName, memory, transcript } = input;
+  async reviseMemory(input: {
+    about: string;
+    senderName: string;
+    memory: string;
+    transcript: string;
+    today?: string;
+  }): Promise<string> {
+    const { about, senderName, memory, transcript, today } = input;
     return this.text(
       `You keep a short working memory for an assistant that asks people for daily work updates on behalf of ${senderName}. This memory is about ${about}. It exists so that tomorrow's questions are the right ones: specific, and aware of what has already been said.
 
-You are given the memory as it stands (it may be empty) and Teams chat messages that are new since it was written. Return the whole memory, revised, under 250 words:
+You are given the memory as it stands (it may be empty) and Teams chat messages that are new since it was written. Return the whole memory, revised, under 350 words:
 
 - Keep what is still true and still matters. Drop what is finished, resolved or stale.
-- Add what the new messages show: work in progress and who is doing it, what was promised and by when, what is blocked and on what, decisions made, numbers against targets.
+- Add what the new messages show: work in progress and who is doing it, what is blocked and on what, decisions made, numbers against targets.
+- Keep a timeline for each person: every commitment or deadline with the date it is due, worked out from the message dates ("by Friday" said on a Tuesday becomes that Friday's date). Mark an item overdue when its date is before today and nothing shows it was done. This is what tomorrow's questions are built from, so be exact.
 - For a group, organise it by person.
 - If the memory describes how ${senderName} writes to someone, keep that part as it is unless the new messages clearly show otherwise.
 - Record only what the messages say. Leave out anything personal or sensitive, such as health, family, money or other people's private matters.
 
 Write it as plain notes, no preamble.`,
-      `## Memory as it stands\n${memory || "(empty)"}\n\n## New messages\n${transcript}`,
+      `${today ? `Today is ${today}.\n\n` : ""}## Memory as it stands\n${memory || "(empty)"}\n\n## New messages\n${transcript}`,
       "medium",
     );
   }

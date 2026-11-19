@@ -78,18 +78,19 @@ class FakeBrain implements Brain {
     this.nextActions = undefined;
     return actions;
   }
-  groupAsks: { groupName: string; topic: string }[] = [];
-  async composeGroupAsk(input: { groupName: string; topic: string; memory: string }): Promise<string> {
+  groupAsks: { groupName: string; topic: string; members: { name: string; role: string }[] }[] = [];
+  nextGroupQuestions: { name: string; question: string }[] = [];
+  async composeGroupAsk(input: { groupName: string; topic: string; memory: string; members: { name: string; role: string; memory: string }[] }) {
     this.groupAsks.push(input);
-    return `Hi team, ${input.topic}?`;
+    return { opening: input.topic ? `Hi team, ${input.topic}?` : "", questions: this.nextGroupQuestions };
   }
   revisions: { about: string; memory: string; transcript: string }[] = [];
-  async reviseMemory(input: { about: string; senderName: string; memory: string; transcript: string }): Promise<string> {
+  async reviseMemory(input: { about: string; senderName: string; memory: string; transcript: string; today?: string }): Promise<string> {
     this.revisions.push(input);
     return `MEMORY v${this.revisions.length}`;
   }
   async learnRapport(_p: unknown, _s: string, chat: { fromSender: boolean; text: string }[]) {
-    this.rapportCalls.push(chat);
+    this.rapportCalls.push(chat.map((m) => ({ fromSender: m.fromSender, text: m.text })));
     return { brief: "Casual. Says 'pls share'.", address: this.learnedAddress };
   }
 }
@@ -1072,4 +1073,42 @@ test("the board shows what is switched on in green, and each person has a time p
   assert.match(json, /"text":"ON · Everyone is asked at 17:00, Monday to Friday"[^}]*"color":"Good"/);
   assert.match(json, /"text":"ON · Asked at 10:30, Monday to Friday","color":"Good"/);
   assert.match(json, /"title":"Time: 10:30"/);
+});
+
+// ---------- tagging people in the group with their own question ----------
+
+test("the group message tags individuals with their own question, and each follow-up knows what was asked", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  g.brain.nextGroupQuestions = [
+    { name: "Ravi Kumar", question: "TalentFlow app - where are we?" },
+    { name: "Someone Else", question: "ignored: not in the group" },
+    { name: "Ravi Kumar", question: "a second one for the same person is dropped" },
+  ];
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+
+  const post = g.sent.at(-1)!;
+  assert.equal(post.to, "g-rec");
+  assert.equal(post.text, "Hi team, please share today's update.\n{@0} TalentFlow app - where are we?");
+  assert.deepEqual(post.mentions, [{ userId: "u-ravi", name: "Ravi Kumar" }]);
+
+  // Our own record reads the way the message looks in Teams.
+  const ravi = g.store.personByEmail("ravi@acme.test")!;
+  const recorded = g.store.messages(g.store.checkin(ravi.id, "2026-11-16")!.id)[0]!.text;
+  assert.match(recorded, /@Ravi Kumar TalentFlow app - where are we\?/);
+
+  g.brain.doneAfterUserMessages = 99;
+  await g.engine.handleGroupReply("u-ravi", "testing is going on");
+  assert.match(g.brain.turns.at(-1)!.topic!, /asked directly: "TalentFlow app - where are we\?"/);
+  await g.engine.handleGroupReply("u-priya", "3 submissions");
+  assert.equal(g.brain.turns.at(-1)!.topic, undefined); // nobody tagged her
+});
+
+test("the wording step is given each person's role and the day's date to work from", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "profile ravi: Web developer");
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  const asked = g.brain.groupAsks.at(-1)!;
+  assert.deepEqual(asked.members.map((m) => [m.name, m.role]), [["Priya Rao", ""], ["Ravi Kumar", "Web developer"]]);
 });
