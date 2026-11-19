@@ -81,6 +81,11 @@ export class Base44 {
     );
   }
 
+  /** The app's users (not paged by Base44: one call returns them all). */
+  users<T = Record<string, unknown>>(appId: string): Promise<T[]> {
+    return this.get<T[]>(`/apps/${appId}/entities/User`, {});
+  }
+
   async schemas(appId: string): Promise<EntitySchema[]> {
     return (await this.get<{ schemas: EntitySchema[] }>(`/apps/${appId}/entity-schemas`)).schemas;
   }

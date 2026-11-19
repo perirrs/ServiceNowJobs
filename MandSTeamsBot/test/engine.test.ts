@@ -6,7 +6,8 @@ Math.random = () => 0;
 import type { AdminAction, Brain, CheckinContext, DigestPerson, NoteResult, Turn } from "../src/ai.js";
 import type { Config } from "../src/config.js";
 import { Store } from "../src/db.js";
-import { cardToCommand, chunk, Engine, parseTime, takeZone } from "../src/engine.js";
+import { cardToCommand, chunk, Engine, parseTime, roleOf, takeZone } from "../src/engine.js";
+import { describeTrackRecord } from "../src/trackrecord.js";
 import type { Identity } from "../src/engine.js";
 import { Base44TalentFlow, describeCounts } from "../src/ats.js";
 import type { Base44 } from "../src/base44.js";
@@ -2365,6 +2366,7 @@ test("TalentFlow figures count each move into a status inside the window, from B
   const calls: { entity: string; q?: unknown }[] = [];
   const fake = {
     findApp: async (ref: string) => (ref === "mats" ? { id: "app1", name: "TalentFlow", slug: "mats" } : undefined),
+    users: async () => [],
     list: async (_app: string, entity: string, opts: { q?: unknown } = {}) => {
       calls.push({ entity, q: opts.q });
       if (entity === "Recruiter") return [{ id: "r1", email: "Priya@Acme.test " }];
@@ -2534,4 +2536,158 @@ test("asking for the weekly report by hand does not cancel Friday's", async () =
   t.setDate("2026-11-20T18:30:00Z");
   await t.engine.runWeekly();
   assert.equal(t.brain.weeklyInputs.length, 2);
+});
+
+// ---------- hourly progress, end of day, TalentFlow history ----------
+
+test("roles are read from the start of a profile", () => {
+  assert.equal(roleOf("Recruiter. Does submissions only."), "Recruiter");
+  assert.equal(roleOf("account owner for TCS"), "Account Owner");
+  assert.equal(roleOf("Account Manager for Deloitte"), "Account Manager");
+  assert.equal(roleOf("Recruitment Director. Owns the flow."), "Recruitment Director");
+  assert.equal(roleOf("Developer"), null);
+});
+
+test("hourly progress and the end-of-day summary are posted in the group from TalentFlow", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "profile priya: Recruiter. Does submissions only.");
+  await g.engine.handleMessage(g.cto, "profile ravi: Account Manager for TCS.");
+  const posts: string[] = [];
+  (g.engine as unknown as { direct: { postHtml: (c: string, h: string) => Promise<string> } }).direct.postHtml = async (c, h) => {
+    posts.push(`${c}|${h}`);
+    return `m${posts.length}`;
+  };
+  g.engine.ats = {
+    stats: async () => ({}),
+    team: async () =>
+      new Map([
+        [PRIYA, { day: { submitted_to_client: 2, l1_select: 1 }, month: { submitted_to_client: 9, onboarded: 1 }, lastToday: "2026-11-16T10:30:00.000Z" }],
+        ["ravi@acme.test", { day: { new_requirements: 1, new_spots: 3 }, month: {}, lastToday: "2026-11-16T07:00:00.000Z" }],
+      ]),
+  };
+  await g.engine.handleMessage(g.cto, "hourly Recruitment Team 11:00-17:00");
+  assert.match(g.admin.at(-1)!, /Every hour from \*\*11:00 to 17:00 UTC\*\*/);
+  await g.engine.handleMessage(g.cto, "clockout Recruitment Team 18:00");
+  assert.match(g.admin.at(-1)!, /Clock-out for Recruitment Team is \*\*18:00 UTC\*\*/);
+
+  g.setDate("2026-11-16T10:02:00Z");
+  await g.engine.tick(); // before the first hour
+  assert.equal(posts.length, 0);
+  g.setDate("2026-11-16T11:02:00Z");
+  await g.engine.tick();
+  await g.engine.tick(); // once an hour
+  assert.equal(posts.length, 1);
+  assert.match(posts[0]!, /^g-rec\|<p><b>Team progress at 11:02<\/b><\/p>/);
+  assert.match(posts[0]!, /Priya Rao<\/td><td>Recruiter<\/td><td>2 of 6<\/td><td>1<\/td><td>9 · 0 · 1 of 3<\/td><td>-<\/td><td>10:30<\/td>/);
+  assert.match(posts[0]!, /Ravi Kumar<\/td><td>Account Manager<\/td><td>-<\/td><td>0<\/td><td>-<\/td><td>1 · 3 · 0<\/td>/);
+  assert.match(posts[0]!, /Team today: 2 of 6 submissions \(33%\), 1 L1 selects, 1 new requirements \(3 spots\)/);
+  assert.match(posts[0]!, /No TalentFlow update in the last 2 hours: Ravi Kumar\./);
+  assert.equal(g.engine.isGroupReport("m1"), true);
+  assert.equal(g.sent.length, 0); // the posts are not chat messages, and nothing else was sent
+
+  g.setDate("2026-11-16T18:03:00Z");
+  await g.engine.tick();
+  assert.equal(posts.length, 2);
+  assert.match(posts[1]!, /<b>End of day summary, 16 Nov<\/b>/);
+  g.setDate("2026-11-16T18:09:00Z");
+  await g.engine.tick(); // once a day, and no hourly post after clock-out
+  assert.equal(posts.length, 2);
+});
+
+test("the end-of-day summary carries a line per person and the director's team target met", async () => {
+  const g = groupSetup();
+  g.members.push({ userId: "u-madan", email: "madan@acme.test", name: "Madan Mani" });
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "profile priya: Recruiter.");
+  await g.engine.handleMessage(g.cto, "profile madan: Recruitment Director.");
+  const posts: string[] = [];
+  (g.engine as unknown as { direct: { postHtml: (c: string, h: string) => Promise<string> } }).direct.postHtml = async (_c, h) => {
+    posts.push(h);
+    return "x";
+  };
+  const asked: { name: string; figures: string }[][] = [];
+  (g.brain as unknown as { groupDayLines: (i: { people: { name: string; figures: string }[] }) => Promise<string> }).groupDayLines = async (i) => {
+    asked.push(i.people);
+    return "Priya Rao: 3 submissions; 3 more needed tomorrow.\nRavi Kumar: no update.";
+  };
+  g.engine.ats = {
+    stats: async () => ({}),
+    team: async () => new Map([[PRIYA, { day: { submitted_to_client: 3 }, month: { onboarded: 2 }, lastToday: null }]]),
+  };
+  await g.engine.handleMessage(g.cto, "clockout Recruitment Team 18:00");
+  g.setDate("2026-11-16T18:00:00Z");
+  await g.engine.tick();
+  assert.equal(posts.length, 1);
+  assert.match(posts[0]!, /Madan Mani \(Recruitment Director\): team target met today 50% on submissions; 67% of the month's joins so far\./);
+  assert.match(posts[0]!, /Priya Rao: 3 submissions; 3 more needed tomorrow\.<br>Ravi Kumar: no update\./);
+  assert.doesNotMatch(posts[0]!, /<td>Madan Mani/); // the director is measured by the team, not a row
+  assert.deepEqual(asked[0]!.map((p) => p.name), ["Priya Rao", "Ravi Kumar"]);
+  assert.equal(asked[0]![0]!.figures, "3 submitted to client");
+});
+
+test("after clock-out the group is not chased", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "clockout Recruitment Team 18:00");
+  g.setDate("2026-11-16T17:30:00Z");
+  await g.engine.handleMessage(g.cto, "ask group recruitment team");
+  const asked = g.sent.length;
+  g.setDate("2026-11-16T18:30:00Z"); // well past the chase time, but past clock-out too
+  await g.engine.tick();
+  assert.equal(g.sent.length, asked);
+});
+
+test("the TalentFlow history becomes a private brief that the check-ins see", async () => {
+  const t = setup();
+  await onboard(t);
+  t.engine.ats = {
+    stats: async () => ({}),
+    trackRecord: async (email) => (email === PRIYA ? "Submitted to client: 140." : null),
+  };
+  (t.brain as unknown as { trackBrief: (i: { record: string }) => Promise<string> }).trackBrief = async ({ record }) => `Strengths: ${record}`;
+  await t.engine.handleMessage(t.id(CTO), "talentflow");
+  assert.match(t.to(CTO).at(-1)!, /\*\*TalentFlow track record\*\*[\s\S]*Strengths: Submitted to client: 140\./);
+  await t.engine.handleMessage(t.id(CTO), "ask priya");
+  assert.match(t.brain.turns.at(-1)!.facts!, /track record in TalentFlow \(private[\s\S]*Strengths: Submitted to client: 140\./);
+});
+
+test("a track record counts the funnel, merges client spellings and covers requirements owned", () => {
+  const data = {
+    clients: [
+      { id: "c1", client_name: "Tech Mahindra" },
+      { id: "c2", client_name: "TECH  MAHINDRA" },
+    ],
+    reqs: [{ id: "r1", client_id: "c1", job_title: "SN Dev", account_manager_id: "u1", positions_count: 2, status: "Open", created_date: "2026-11-02T10:00:00" }],
+    apps: [
+      {
+        recruiter_id: "x",
+        requirement_id: "r1",
+        client_id: "c2",
+        status: "Onboarded",
+        status_history: [
+          { status: "Submitted to Client", changed_at: "2026-11-03T10:00:00Z" },
+          { status: "L1 Select", changed_at: "2026-11-05T10:00:00Z" },
+          { status: "Onboarded", changed_at: "2026-11-10T00:00:00Z" },
+        ],
+      },
+      {
+        recruiter_id: "x",
+        requirement_id: "r1",
+        client_id: "c1",
+        status: "L1 Reject",
+        status_history: [
+          { status: "Submitted to Client", changed_at: "2026-11-04T10:00:00Z" },
+          { status: "L1 Reject", changed_at: "2026-11-06T10:00:00Z" },
+        ],
+      },
+    ],
+  };
+  const text = describeTrackRecord(data, "x", "u1", "a@b.test", new Date("2026-11-19T00:00:00Z"));
+  assert.match(text, /Submitted to client: 2\. Reached L1: 2\. L1 selects: 1 \(50% of submissions\)\. Final select or offered: 1\. Joined: 1 \(50%\)\./);
+  assert.match(text, /Typical time from submission to L1 select: 2 days\./);
+  assert.match(text, /2026-11: 2\/1\/1\./);
+  assert.match(text, /Closed \(joined\) for: Tech Mahindra \(2 sub, 1 L1 sel 50%, 1 joined\)\./);
+  assert.match(text, /Requirements brought in: 1 \(2 spots\), 1 still open or in progress\./);
+  assert.match(text, /On their requirements: 2 submissions, 1 L1 selects, 1 joined \(50% of spots filled\)\./);
 });

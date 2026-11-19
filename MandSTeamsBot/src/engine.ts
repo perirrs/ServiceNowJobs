@@ -4,7 +4,7 @@ import { todayIn } from "./config.js";
 import type { Config } from "./config.js";
 import type { ChatMessage, Checkin, Group, Person, Store, WorkItem } from "./db.js";
 import { describeCounts, describeProgress } from "./ats.js";
-import type { Ats } from "./ats.js";
+import type { Ats, TeamFigures } from "./ats.js";
 
 /** Sends a chat message to a Teams conversation. Implemented by teams.ts, faked in tests. */
 export interface Messenger {
@@ -44,6 +44,8 @@ export interface DirectChannel {
   createTracker?(chatId: string, html: string): Promise<string>;
   /** Replace the tracker table in place. */
   updateTracker?(chatId: string, messageId: string, html: string): Promise<void>;
+  /** Post a formatted message (a table) in a chat. Returns its id. */
+  postHtml?(chatId: string, html: string): Promise<string>;
   /** Read every watched chat now, so a decision to chase is made on what has really been said. */
   sync?(): Promise<void>;
   /** The sender's named group chats whose name contains the query. */
@@ -267,6 +269,23 @@ function shown(out: Outgoing): string {
 const daysBetween = (from: string, to: string) => Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
 
 /** Dollars per million tokens, input and output. */
+/** The roles TalentFlow knows, as they appear at the start of a person's profile. */
+type Role = "Recruitment Director" | "Account Manager" | "Account Owner" | "Recruiter";
+
+/** A person's role, read from the start of their profile. */
+export function roleOf(profile: string | null | undefined): Role | null {
+  const m = /^(Recruitment Director|Account Manager|Account Owner|Recruiter)\b/i.exec((profile ?? "").trim());
+  if (!m) return null;
+  const word = m[1]!.toLowerCase();
+  return word === "recruitment director" ? "Recruitment Director" : word === "account manager" ? "Account Manager" : word === "account owner" ? "Account Owner" : "Recruiter";
+}
+
+/** Daily submissions and monthly joins expected of each role that does submissions. */
+const ROLE_TARGETS: Partial<Record<Role, { daySubmissions: number; monthJoins: number }>> = {
+  Recruiter: { daySubmissions: 6, monthJoins: 3 },
+  "Account Owner": { daySubmissions: 6, monthJoins: 3 },
+};
+
 const PRICES: Record<string, [number, number]> = {
   "claude-haiku-5-5": [0.1, 0.5],
   "claude-sonnet-5-5": [2, 10],
@@ -886,6 +905,211 @@ export class Engine {
     return new Intl.DateTimeFormat("en-CA", { timeZone: this.tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(iso));
   }
 
+  /** Today's TalentFlow figures for a check-in, with the private brief from their history. */
+  private factsFor(person: Person): string | undefined {
+    const today = this.store.get(`atsfacts:${person.id}`) || "";
+    const brief = this.store.get(`atsbrief:${person.id}`) || "";
+    const text = [
+      today,
+      brief
+        ? `Their track record in TalentFlow (private, for you only: use it to choose what to ask about, never quote it to them as a judgement):\n${brief}`
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+    return text || undefined;
+  }
+
+  private trackRunning = false;
+
+  /**
+   * Read each person's whole TalentFlow history and write a short brief from
+   * it, once a week (or now, when forced). Returns "Name + brief" per person.
+   */
+  async refreshTrackRecords(force = false): Promise<string[]> {
+    if (!this.ats?.trackRecord || this.trackRunning) return [];
+    const date = this.today();
+    const day = new Date(`${date}T12:00:00Z`);
+    const monday = new Date(day.getTime() - ((day.getUTCDay() + 6) % 7) * 86_400_000).toISOString().slice(0, 10);
+    if (!force && this.store.get("atsrecordweek") === monday) return [];
+    this.trackRunning = true;
+    try {
+      const out: string[] = [];
+      for (const p of this.store.nominees()) {
+        if (this.isAdmin(p)) continue;
+        const record = await this.ats.trackRecord(p.email);
+        if (!record) continue;
+        this.store.set(`atsrecord:${p.id}`, record);
+        let brief = "";
+        if (this.brain.trackBrief) {
+          try {
+            brief = await this.brain.trackBrief({ name: displayName(p), role: p.profile ?? "", record, today: date });
+          } catch (err) {
+            this.log(`Could not write the TalentFlow brief for ${p.email}`, err);
+          }
+        }
+        this.store.set(`atsbrief:${p.id}`, brief);
+        out.push(`**${displayName(p)}**\n${brief || record}`);
+      }
+      this.store.set("atsrecordweek", monday);
+      return out;
+    } finally {
+      this.trackRunning = false;
+    }
+  }
+
+  /** Whether the group's clock-out time has passed today. */
+  private pastClockout(group: Group): boolean {
+    const setting = this.store.get(`clockout:group:${group.id}`);
+    if (!setting) return false;
+    const [at, zone] = setting.split("@") as [string, string | undefined];
+    return this.localNow(zone || this.tz).minutes >= Number(at.slice(0, 2)) * 60 + Number(at.slice(3));
+  }
+
+  /** The hourly progress posts and the end-of-day summary, in each group that has them. */
+  private async runGroupReports(): Promise<void> {
+    if (this.paused || !this.ats?.team || !this.direct?.postHtml || this.holidayToday()) return;
+    for (const group of this.store.groups()) {
+      const clock = this.store.get(`clockout:group:${group.id}`);
+      if (clock) {
+        const [at, zone] = clock.split("@") as [string, string | undefined];
+        const { date, minutes, weekend } = this.localNow(zone || this.tz);
+        const due = Number(at.slice(0, 2)) * 60 + Number(at.slice(3));
+        if (!weekend && minutes >= due && minutes <= due + 10 && this.store.get(`raneod:${group.id}`) !== date) {
+          this.store.set(`raneod:${group.id}`, date);
+          await this.postGroupReport(group, true).catch((err) => this.log(`Could not post the end-of-day summary in ${group.name}`, err));
+          continue;
+        }
+      }
+      const hourly = this.store.get(`hourly:group:${group.id}`);
+      if (!hourly) continue;
+      const [range, zone] = hourly.split("@") as [string, string | undefined];
+      const [from, to] = range.split("-") as [string, string];
+      const { date, minutes, weekend } = this.localNow(zone || this.tz);
+      const hour = Math.floor(minutes / 60);
+      const start = Number(from.slice(0, 2)) * 60 + Number(from.slice(3));
+      const end = Number(to.slice(0, 2)) * 60 + Number(to.slice(3));
+      if (weekend || minutes % 60 > 10 || hour * 60 < start || hour * 60 > end) continue;
+      if (!this.inOfficeHours() || this.pastClockout(group)) continue;
+      const stamp = `${date} ${hour}`;
+      if (this.store.get(`ranhourly:${group.id}`) === stamp) continue;
+      this.store.set(`ranhourly:${group.id}`, stamp);
+      await this.postGroupReport(group, false).catch((err) => this.log(`Could not post the hourly progress in ${group.name}`, err));
+    }
+  }
+
+  /**
+   * The team's progress from TalentFlow as a table in the group: each person
+   * against today's target, the month so far, and when they last updated
+   * TalentFlow. At the end of the day, also a line per person and the team's
+   * target met, which is the recruitment director's own measure.
+   */
+  async postGroupReport(group: Group, final: boolean): Promise<string> {
+    if (!this.ats?.team || !this.direct?.postHtml) return "";
+    const members = this.store.groupMembers(group.id).filter((p) => !this.isAdmin(p));
+    if (!members.length) return "";
+    const date = this.today();
+    const now = this.now();
+    const figures = await this.ats.team(
+      members.map((p) => p.email),
+      this.localMidnightIso(date),
+      this.localMidnightIso(`${date.slice(0, 7)}-01`),
+      now.toISOString(),
+    );
+    const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const time = (iso: string | null) => (iso ? this.clock(iso.replace("T", " ").slice(0, 19)) : "-");
+    const n = (r: Record<string, number>, k: string) => r[k] ?? 0;
+
+    let teamSub = 0;
+    let teamSubTarget = 0;
+    let teamJoin = 0;
+    let teamJoinTarget = 0;
+    let teamL1 = 0;
+    let teamReqs = 0;
+    let teamSpots = 0;
+    let teamSpocs = 0;
+    const stale: string[] = [];
+    const director: Person[] = [];
+    const rows: string[] = [];
+    const forLines: { name: string; role: string; figures: string; note: string }[] = [];
+    const notes = new Map(this.store.notesOn(date).map((x) => [x.personId, x]));
+    for (const p of members) {
+      const role = roleOf(p.profile);
+      if (role === "Recruitment Director") {
+        director.push(p);
+        continue;
+      }
+      const f: TeamFigures | undefined = figures.get(p.email.toLowerCase());
+      const day = f?.day ?? {};
+      const month = f?.month ?? {};
+      const target = role ? ROLE_TARGETS[role] : undefined;
+      const sub = n(day, "submitted_to_client");
+      if (target) {
+        teamSub += sub;
+        teamSubTarget += target.daySubmissions;
+        teamJoin += n(month, "onboarded");
+        teamJoinTarget += target.monthJoins;
+      }
+      teamL1 += n(day, "l1_select");
+      teamReqs += n(day, "new_requirements");
+      teamSpots += n(day, "new_spots");
+      teamSpocs += n(day, "new_spocs");
+      const last = f?.lastToday ?? null;
+      if (!this.isAway(p) && (!last || now.getTime() - Date.parse(last) > 2 * 3_600_000)) stale.push(displayName(p));
+      const subCell = target ? `${sub >= target.daySubmissions ? "✅ " : ""}${sub} of ${target.daySubmissions}` : "-";
+      const monthCell = target
+        ? `${n(month, "submitted_to_client")} · ${n(month, "l1_select")} · ${n(month, "onboarded")} of ${target.monthJoins}`
+        : "-";
+      const ownerCell = role === "Recruiter" ? "-" : `${n(day, "new_requirements")} · ${n(day, "new_spots")} · ${n(day, "new_spocs")}`;
+      rows.push(
+        `<tr><td>${esc(displayName(p))}${this.isAway(p) ? " (on leave)" : ""}</td><td>${esc(role ?? "-")}</td><td>${subCell}</td><td>${n(day, "l1_select")}</td><td>${monthCell}</td><td>${ownerCell}</td><td>${f ? time(last) : "not in TalentFlow"}</td></tr>`,
+      );
+      const note = notes.get(p.id);
+      forLines.push({
+        name: displayName(p),
+        role: role ?? "",
+        figures: describeCounts(day),
+        note: note ? renderNote(note).slice(0, 600) : "",
+      });
+    }
+    const pctOf = (a: number, b: number) => (b ? `${Math.round((a / b) * 100)}%` : "-");
+    const day = new Date(`${date}T12:00:00Z`).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
+    const title = final ? `<b>End of day summary, ${day}</b>` : `<b>Team progress at ${this.clock(now.toISOString().replace("T", " ").slice(0, 19))}</b>`;
+    const table = `<table><tr><th>Who</th><th>Role</th><th>Submitted today</th><th>L1 select today</th><th>Month: submitted · L1 select · joined</th><th>Today: new reqs · spots · SPOCs</th><th>Last TalentFlow update</th></tr>${rows.join("")}</table>`;
+    const summary = [
+      `Team today: ${teamSub} of ${teamSubTarget} submissions (${pctOf(teamSub, teamSubTarget)}), ${teamL1} L1 selects, ${teamReqs} new requirements (${teamSpots} spots), ${teamSpocs} new SPOCs.`,
+      `Month so far: ${teamJoin} of ${teamJoinTarget} joins (${pctOf(teamJoin, teamJoinTarget)}).`,
+      stale.length ? `No TalentFlow update in the last 2 hours: ${stale.join(", ")}. Please update TalentFlow every hour.` : "",
+      final && director.length
+        ? `${director.map(displayName).join(", ")} (Recruitment Director): team target met today ${pctOf(teamSub, teamSubTarget)} on submissions; ${pctOf(teamJoin, teamJoinTarget)} of the month's joins so far.`
+        : "",
+    ].filter(Boolean);
+    let lines = "";
+    if (final && this.brain.groupDayLines) {
+      try {
+        lines = await this.brain.groupDayLines({ group: group.name, date, people: forLines });
+      } catch (err) {
+        this.log(`Could not write the end-of-day lines for ${group.name}`, err);
+      }
+    }
+    const html = [
+      `<p>${title}</p>`,
+      table,
+      ...summary.map((s) => `<p>${esc(s)}</p>`),
+      lines ? `<p>${lines.split("\n").map((l) => esc(l.trim())).filter(Boolean).join("<br>")}</p>` : "",
+    ]
+      .filter(Boolean)
+      .join("");
+    const id = await this.direct.postHtml(group.chatId, html);
+    this.store.set(`gpost:${id}`, "1");
+    return id;
+  }
+
+  /** Whether a message in a group is one of the progress posts. */
+  isGroupReport(messageId: string): boolean {
+    return !!this.store.get(`gpost:${messageId}`);
+  }
+
   /** A public holiday today, by name, or "". */
   private holidayToday(): string {
     return this.store.get(`holiday:${this.today()}`) || "";
@@ -1289,7 +1513,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       rapport: this.personal ? this.memoryFor(person) : undefined,
       topic: this.store.get(`topic:${checkin.id}`) || undefined,
       round: (this.store.get(`kind:${checkin.id}`) as Round | undefined) || undefined,
-      facts: this.ats ? this.store.get(`atsfacts:${person.id}`) || undefined : undefined,
+      facts: this.ats ? this.factsFor(person) : undefined,
       opening,
       greeting: this.personal ? this.store.get(`greeting:${person.id}`) || undefined : undefined,
     };
@@ -2242,7 +2466,8 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         !this.store.get(`gchased:${group.id}`) &&
         !this.isWaiting(`gchasewait:${group.id}`) &&
         minutes >= this.config.chaseAfterMinutes &&
-        this.inOfficeHours()
+        this.inOfficeHours() &&
+        !this.pastClockout(group)
       ) {
         const nudge = this.nudgeText();
         const mentions = silent
@@ -2517,7 +2742,16 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         .map(([slot, t]) => `${slot} ${t}`);
       if (times.length) lines.push(`- **${name}**: ${times.join(", ")}`);
     };
-    for (const g of this.store.groups()) add(g.name, `group:${g.id}`);
+    for (const g of this.store.groups()) {
+      add(g.name, `group:${g.id}`);
+      const hourly = this.store.get(`hourly:group:${g.id}`);
+      if (hourly) {
+        const [range, zone] = hourly.split("@") as [string, string | undefined];
+        lines.push(`- **${g.name}**: progress posted hourly ${range.replace("-", " to ")} ${zoneLabel(zone || this.tz)}`);
+      }
+      const clock = this.store.get(`clockout:group:${g.id}`);
+      if (clock) lines.push(`- **${g.name}**: clock-out and end-of-day summary ${this.showTime(clock)}`);
+    }
     for (const p of this.store.nominees()) add(displayName(p), `person:${p.id}`);
     return lines.length ? `Own times, Monday to Friday:\n${lines.join("\n")}` : "";
   }
@@ -2569,6 +2803,9 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     await this.refreshLeave();
     await this.meetingCycle();
     await this.runWeekly();
+    await this.runGroupReports();
+    // The weekly read of everyone's TalentFlow history: slow, and nothing waits for it.
+    void this.refreshTrackRecords().catch((err) => this.log("Could not read the TalentFlow history", err));
     this.backupDaily();
     await this.refreshBoards();
 
@@ -3094,7 +3331,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     // Short one-liners are commands. Anything longer or on several lines is
     // free-form and may hold several instructions, so it is interpreted.
     const short = !text.includes("\n") && text.split(/\s+/).length <= 6;
-    if (!short && !["profile", "greeting", "style", "schedule", "tracker", "draft"].includes(verb)) verb = "";
+    if (!short && !["profile", "greeting", "style", "schedule", "tracker", "draft", "hourly", "clockout"].includes(verb)) verb = "";
 
     try {
       switch (verb) {
@@ -3295,6 +3532,45 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           }
           this.store.set(`holiday:${m[2]}`, m[1] ? "" : m[3]!.trim() || "Holiday");
           return await reply(m[1] ? `${m[2]} is no longer a holiday.` : `${m[2]} is a holiday (${m[3]!.trim() || "Holiday"}): nobody is asked or chased that day.`);
+        }
+
+        case "hourly":
+        case "clockout": {
+          const { rest, zone } = takeZone(arg);
+          const off = /\boff$/i.test(rest);
+          const range = verb === "hourly" ? /^(.+?)\s+(\S+)\s*(?:-|to)\s*(\S+)$/i.exec(rest) : null;
+          const single = verb === "clockout" ? /^(.+?)\s+(\S+)$/i.exec(rest) : null;
+          const groupText = off ? rest.replace(/\s*\boff$/i, "") : (range?.[1] ?? single?.[1] ?? rest);
+          const group = this.resolveGroup(groupText.replace(/^group\s+/i, "").trim());
+          if (typeof group === "string") return await reply(group);
+          const key = `${verb}:group:${group.id}`;
+          if (off) {
+            this.store.set(key, "");
+            return await reply(verb === "hourly" ? `No more hourly progress posts in ${group.name}.` : `No clock-out time for ${group.name}: no end-of-day summary is posted there.`);
+          }
+          const z = zone || this.tz;
+          if (verb === "hourly") {
+            const from = range ? parseTime(range[2]!) : null;
+            const to = range ? parseTime(range[3]!) : null;
+            if (!from || !to) return await reply("Send it like **hourly Group Name 11:00-17:00 India**.");
+            this.store.set(key, `${from}-${to}@${z}`);
+            return await reply(
+              `Every hour from **${from} to ${to} ${zoneLabel(z)}**, Monday to Friday, I post the team's progress from TalentFlow in ${group.name}: each person against today's target, and who has not updated TalentFlow in the last two hours.`,
+            );
+          }
+          const at = single ? parseTime(single[2]!) : null;
+          if (!at) return await reply("Send it like **clockout Group Name 18:00 India**.");
+          this.store.set(key, `${at}@${z}`);
+          return await reply(
+            `Clock-out for ${group.name} is **${at} ${zoneLabel(z)}**. The end-of-day summary is posted there then, as the last message of the day, with each person's figures and the team's target met. Nothing more is asked in the group after it. Put the evening update about an hour before, for example **schedule ${group.name} evening ${String(Number(at.slice(0, 2)) - 1).padStart(2, "0")}${at.slice(2)} ${zoneLabel(z).replace(/ time$/, "")}**, so people have time to answer.`,
+          );
+        }
+
+        case "talentflow": {
+          if (!this.ats?.trackRecord) return await reply("TalentFlow is not connected.");
+          await reply("Reading everyone's whole history in TalentFlow. This takes a few minutes.");
+          const briefs = await this.refreshTrackRecords(true);
+          return await reply(briefs.length ? `**TalentFlow track record**\n\n${briefs.join("\n\n")}` : "Nobody I follow is in TalentFlow.");
         }
 
         case "weekly": {

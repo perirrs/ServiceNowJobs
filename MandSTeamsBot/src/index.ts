@@ -67,6 +67,7 @@ if (config.sendAsUser) {
       return id;
     },
     updateTracker: (chatId, messageId, html) => g.updateHtml(chatId, messageId, html),
+    postHtml: (chatId, html) => g.sendHtml(chatId, html),
     findGroups: (query) => g.findGroups(query),
     groupMembers: (chatId) => g.groupMembers(chatId),
     history: async (chatId, max, since) =>
@@ -163,6 +164,8 @@ async function pollGroups(g: GraphChat): Promise<void> {
         if (line.fromUserId !== senderId) continue;
         // The tracker table is the assistant's, not something the sender typed.
         if (line.id === store.get(`tracker:${group.id}`) || line.text.startsWith("Team tracker")) continue;
+        // Nor are the hourly progress posts and the end-of-day summary.
+        if (engine.isGroupReport(line.id)) continue;
         if (sentByAssistant.has(normalise(line.text)) || engine.isAssistantGroupText(group.id, line.text)) continue;
         engine.senderSpokeInGroup(group.id, line.addressedUserIds);
       }
