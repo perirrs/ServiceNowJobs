@@ -21,7 +21,6 @@
     "@azure/msal-node": "^7.2.3",
     "@microsoft/teams.api": "^2.2.1",
     "@microsoft/teams.apps": "^2.2.1",
-    "node-cron": "^4.6.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {

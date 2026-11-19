@@ -1,9 +1,8 @@
 import { App } from "@microsoft/teams.apps";
-import cron from "node-cron";
 import { ClaudeBrain } from "./ai.js";
 import { loadConfig } from "./config.js";
 import { Store } from "./db.js";
-import { Engine } from "./engine.js";
+import { cardToCommand, Engine } from "./engine.js";
 import type { DirectChannel, Identity } from "./engine.js";
 import { GraphChat, htmlToText, textToHtml } from "./graph.js";
 
@@ -13,16 +12,6 @@ if (!config.adminEmails.length) {
   console.error("ADMIN_EMAILS is empty. Set it to the CTO's and CEO's work emails, or nobody can manage the bot.");
   process.exit(1);
 }
-for (const [name, expr] of [
-  ["CHECKIN_CRON", config.checkinCron],
-  ["DIGEST_CRON", config.digestCron],
-] as const) {
-  if (!cron.validate(expr)) {
-    console.error(`${name} is not a valid cron expression: "${expr}"`);
-    process.exit(1);
-  }
-}
-
 // Reads CLIENT_ID, CLIENT_SECRET and TENANT_ID from the environment.
 // With SOCKET_MODE=true the bot dials out to Teams over a WebSocket, so it needs
 // no public URL: right for trials from a laptop, not for a published app.
@@ -69,7 +58,14 @@ const brain = new ClaudeBrain(config.model, config.companyName, undefined, direc
 const engine = new Engine(
   store,
   brain,
-  { send: async (conversationId, text) => void (await app.send(conversationId, text)) },
+  {
+    send: async (conversationId, text) => void (await app.send(conversationId, text)),
+    sendCard: async (conversationId, card) =>
+      void (await app.send(conversationId, {
+        type: "message",
+        attachments: [{ contentType: "application/vnd.microsoft.card.adaptive", content: card }],
+      })),
+  },
   config,
   undefined,
   undefined,
@@ -134,33 +130,18 @@ app.on("message", async ({ activity, api, send }) => {
   }
   await send({ type: "typing" });
   // Not awaited: Teams expects a quick acknowledgement, and a digest can take a minute.
-  engine.handleMessage(id, activity.text ?? "").catch((err) => console.error("Message handling failed", err));
+  // A button press on the menu card arrives as a message with a value and no text.
+  const pressed = (activity as { value?: unknown }).value;
+  const text = pressed && typeof pressed === "object" ? cardToCommand(pressed) : (activity.text ?? "");
+  engine.handleMessage(id, text).catch((err) => console.error("Message handling failed", err));
 });
 
-function schedule(name: string, expr: string, job: () => Promise<unknown>): void {
-  cron.schedule(
-    expr,
-    async () => {
-      console.log(`[${name}] starting`);
-      try {
-        await job();
-        console.log(`[${name}] finished`);
-      } catch (err) {
-        console.error(`[${name}] failed`, err);
-      }
-    },
-    { timezone: config.timezone, noOverlap: true },
-  );
-}
-
-schedule("check-ins", config.checkinCron, () => engine.runCheckins());
-// One chase to anyone who has not replied within CHASE_AFTER_MINUTES of being asked.
-// Also close and summarise conversations that have gone quiet.
+// Once a minute: the chase, closing quiet conversations, and anything on the
+// schedule. The schedule itself is set from the chat ("schedule 17:00") and
+// kept in the database, so there is nothing to configure here.
 setInterval(() => {
-  engine.runReminders(config.chaseAfterMinutes).catch((err) => console.error("[chase] failed", err));
-  engine.closeIdle(config.idleCloseMinutes).catch((err) => console.error("[idle close] failed", err));
+  engine.tick().catch((err) => console.error("[tick] failed", err));
 }, 60_000);
-schedule("digest", config.digestCron, () => engine.runDigest());
 
 if (graph) {
   const g = graph;
@@ -177,10 +158,7 @@ if (graph) {
 }
 
 await app.start(config.port);
-console.log(
-  `Check-in bot running on port ${config.port}. Admins: ${config.adminEmails.join(", ")}. ` +
-    `Check-ins "${config.checkinCron}", digest "${config.digestCron}" (${config.timezone}).`,
-);
+console.log(`Check-in bot running. Admins: ${config.adminEmails.join(", ")}. Timezone ${config.timezone}.`);
 
 // One-off manual trigger: `node dist/index.js --checkin-now` asks everyone
 // nominated for an update straight away, then carries on running as normal.

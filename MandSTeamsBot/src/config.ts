@@ -3,10 +3,8 @@ export interface Config {
   adminEmails: string[];
   companyName: string;
   timezone: string;
-  checkinCron: string;
   /** Minutes to wait for a reply before sending the one chase message. */
   chaseAfterMinutes: number;
-  digestCron: string;
   maxBotTurns: number;
   dataDir: string;
   model: string;
@@ -33,9 +31,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     adminEmails,
     companyName: env.COMPANY_NAME ?? "the company",
     timezone: env.TIMEZONE ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
-    checkinCron: env.CHECKIN_CRON ?? "0 17 * * 1-5",
     chaseAfterMinutes: Number(env.CHASE_AFTER_MINUTES ?? 45),
-    digestCron: env.DIGEST_CRON ?? "30 19 * * 1-5",
     maxBotTurns: Number(env.MAX_BOT_TURNS ?? 6),
     dataDir: env.DATA_DIR ?? "./data",
     model: env.CLAUDE_MODEL ?? "claude-opus-5-5",

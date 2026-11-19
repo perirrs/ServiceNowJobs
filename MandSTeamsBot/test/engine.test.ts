@@ -3,7 +3,7 @@ import { test } from "node:test";
 import type { Brain, CheckinContext, DigestPerson, NoteResult, Turn } from "../src/ai.js";
 import type { Config } from "../src/config.js";
 import { Store } from "../src/db.js";
-import { chunk, Engine } from "../src/engine.js";
+import { cardToCommand, chunk, Engine, parseTime } from "../src/engine.js";
 import type { Identity } from "../src/engine.js";
 
 const CTO = "cto@acme.test";
@@ -15,9 +15,7 @@ const config: Config = {
   adminEmails: [CTO, CEO],
   companyName: "Acme",
   timezone: "UTC",
-  checkinCron: "",
   chaseAfterMinutes: 45,
-  digestCron: "",
   maxBotTurns: 3,
   dataDir: ":memory:",
   model: "fake",
@@ -376,14 +374,14 @@ test("a command straight after a nomination is still a command, not a profile", 
 test("if the opening message cannot be delivered, nothing is recorded and a retry works", async () => {
   const store = new Store(":memory:");
   const brain = new FakeBrain();
-  let failing = true;
+  let failing = false;
   const sent: string[] = [];
   const engine = new Engine(
     store,
     brain,
     {
       send: async (_to, text) => {
-        if (failing && !text.includes("admin commands") && !text.includes("nominated") && !text.includes("check-in assistant")) throw new Error("429");
+        if (failing) throw new Error("429");
         sent.push(text);
       },
     },
@@ -397,6 +395,7 @@ test("if the opening message cannot be delivered, nothing is recorded and a retr
   await engine.handleInstall(id(PRIYA));
   const priya = store.personByEmail(PRIYA)!;
 
+  failing = true;
   assert.equal((await engine.runCheckins()).sent, 0);
   assert.equal(store.checkin(priya.id, "2026-11-16"), undefined);
 
@@ -522,4 +521,98 @@ test("direct mode: an admin can also be nominated; commands use the bot chat, ch
   await t.engine.handleDirectReply(ceo.id, "closed the Initech deal");
   assert.match(t.to(CEO).at(-1)!, /Update from/); // summary reaches both admins through the bot
   assert.match(t.to(CTO).at(-1)!, /Update from/);
+});
+
+// ---------- schedule set from the chat, and the manual controls ----------
+
+test("times are understood in the ways people type them", () => {
+  assert.equal(parseTime("17:00"), "17:00");
+  assert.equal(parseTime("5pm"), "17:00");
+  assert.equal(parseTime("5:30 PM"), "17:30");
+  assert.equal(parseTime("0930"), "09:30");
+  assert.equal(parseTime("12am"), "00:00");
+  assert.equal(parseTime("25:00"), null);
+  assert.equal(parseTime("soon"), null);
+});
+
+test("nothing is asked automatically until a schedule is set; then it runs once that day", async () => {
+  const t = setup();
+  await onboard(t);
+  await t.engine.tick(); // 17:00 on a Monday, but no schedule
+  assert.equal(t.brain.turns.length, 0);
+
+  await t.engine.handleMessage(t.id(CTO), "schedule 5pm");
+  assert.match(t.to(CTO).at(-1)!, /automatically at \*\*17:00\*\*/);
+  await t.engine.tick();
+  await t.engine.tick();
+  assert.equal(t.brain.turns.length, 1);
+
+  await t.engine.handleMessage(t.id(CTO), "schedule off");
+  assert.match(t.to(CTO).at(-1)!, /No automatic asking/);
+  t.setDate("2026-11-17T17:00:00Z");
+  await t.engine.tick();
+  assert.equal(t.brain.turns.length, 1);
+});
+
+test("the schedule does not fire outside its window or at the weekend", async () => {
+  const t = setup();
+  await onboard(t);
+  await t.engine.handleMessage(t.id(CTO), "schedule 17:00");
+  t.setDate("2026-11-16T18:00:00Z"); // an hour late
+  await t.engine.tick();
+  t.setDate("2026-11-21T17:00:00Z"); // Saturday
+  await t.engine.tick();
+  assert.equal(t.brain.turns.length, 0);
+});
+
+test("'ask' forces it: a silent person is asked again, 'ask all' covers everyone", async () => {
+  const t = setup();
+  await onboard(t);
+  await t.engine.handleMessage(t.id(CTO), "ask priya");
+  assert.match(t.to(CTO).at(-1)!, /Asked priya for an update/);
+  await t.engine.handleMessage(t.id(CTO), "ask priya");
+  assert.match(t.to(CTO).at(-1)!, /Asked priya again/);
+  assert.match(t.to(PRIYA).at(-1)!, /quick reminder/);
+
+  await t.engine.handleMessage(t.id(PRIYA), "done 3 submissions"); // finishes the conversation
+  await t.engine.handleMessage(t.id(CTO), "ask all");
+  assert.match(t.to(CTO).at(-1)!, /Asked priya for an update/);
+  assert.equal(t.store.checkin(t.store.personByEmail(PRIYA)!.id, "2026-11-16")!.status, "open");
+});
+
+test("'add' and 'delete' work as plain words for nominate and remove", async () => {
+  const t = setup();
+  await t.engine.handleInstall(t.id(CTO));
+  await t.engine.handleMessage(t.id(CTO), `add ${PRIYA}`);
+  assert.equal(t.store.nominees().length, 1);
+  await t.engine.handleMessage(t.id(CTO), "delete priya");
+  assert.equal(t.store.nominees().length, 0);
+});
+
+test("menu buttons turn into the right commands, and the menu card lists people with buttons", async () => {
+  assert.equal(cardToCommand({ cmd: "add", newEmail: " a@b.co " }), "add a@b.co");
+  assert.equal(cardToCommand({ cmd: "ask", who: "a@b.co" }), "ask a@b.co");
+  assert.equal(cardToCommand({ cmd: "remove", who: "a@b.co" }), "remove a@b.co");
+  assert.equal(cardToCommand({ cmd: "askAll" }), "ask all");
+  assert.equal(cardToCommand({ cmd: "schedule", time: "17:30" }), "schedule 17:30");
+  assert.equal(cardToCommand({ cmd: "scheduleOff" }), "schedule off");
+  assert.equal(cardToCommand({ something: "else" }), "menu");
+
+  const store = new Store(":memory:");
+  const cards: Record<string, unknown>[] = [];
+  const engine = new Engine(
+    store,
+    new FakeBrain(),
+    { send: async () => undefined, sendCard: async (_to, card) => void cards.push(card) },
+    config,
+    () => new Date("2026-11-16T17:00:00Z"),
+    () => undefined,
+  );
+  const cto: Identity = { teamsUserId: "t", conversationId: "c", lookupEmail: async () => CTO };
+  await engine.handleMessage(cto, `add ${PRIYA}`);
+  await engine.handleMessage(cto, "menu");
+  const json = JSON.stringify(cards.at(-1));
+  assert.match(json, /"cmd":"ask","who":"priya@acme\.test"/);
+  assert.match(json, /"cmd":"remove","who":"priya@acme\.test"/);
+  assert.match(json, /"id":"newEmail"/);
 });

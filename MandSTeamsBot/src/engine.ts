@@ -7,6 +7,8 @@ import type { Checkin, Person, Store } from "./db.js";
 /** Sends a chat message to a Teams conversation. Implemented by teams.ts, faked in tests. */
 export interface Messenger {
   send(conversationId: string, text: string): Promise<void>;
+  /** Send an Adaptive Card. Optional: without it the menu falls back to text. */
+  sendCard?(conversationId: string, card: Record<string, unknown>): Promise<void>;
 }
 
 /**
@@ -31,19 +33,61 @@ export interface Identity {
   lookupEmail: () => Promise<string | undefined>;
 }
 
-const ADMIN_HELP = `**Check-in bot: admin commands**
+const ADMIN_HELP = `**Daily Check-in: what you can type**
 
-- **nominate** name@company.com: start daily check-ins for someone
-- **profile** name@company.com: their role, responsibilities and targets. The daily questions are phrased from this, so be specific (numbers help).
-- **remove** name@company.com: stop their check-ins (notes are kept)
-- **list**: everyone nominated and where they stand today
-- **report** name@company.com: their recent notes and open items
-- **checkin** name@company.com (or **checkin all**): run a check-in right now
-- **digest**: produce today's digest right now
+- **menu**: buttons for everything below
+- **add** name@company.com: start asking someone for updates
+- **remove** name: stop asking them (their notes are kept)
+- **ask** name: ask them for an update right now. **ask all** asks everyone.
+- **profile** name: their role, responsibilities and targets, so the questions fit their job
+- **list**: everyone you have added and where they stand today
+- **report** name: their recent notes and open items
+- **digest**: today's summary of everyone, right now
+- **schedule 17:00**: ask everyone automatically at that time, Monday to Friday. **schedule off** stops it. **schedule** alone shows the current setting.
+- **schedule digest 19:30**: send the daily digest automatically at that time. **schedule digest off** stops it.
 
 Anything else you type is treated as a question about the team's notes, for example: _who has been blocked for more than two days?_
 
-A name or part of an email works wherever an email is shown, once the person is nominated.`;
+A first name or part of an email is enough once the person is added.`;
+
+/** "17:00", "1700", "5pm", "5:30 pm" -> "17:00". Null if it is not a time. */
+export function parseTime(input: string): string | null {
+  const m = /^(\d{1,2})(?:[:.]?(\d{2}))?\s*(am|pm)?$/i.exec(input.trim());
+  if (!m) return null;
+  let hour = Number(m[1]);
+  const minute = Number(m[2] ?? 0);
+  const half = m[3]?.toLowerCase();
+  if (half === "pm" && hour < 12) hour += 12;
+  if (half === "am" && hour === 12) hour = 0;
+  if (hour > 23 || minute > 59) return null;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+/** Turn a button press on the menu card into the command it stands for. */
+export function cardToCommand(value: unknown): string {
+  const v = (value ?? {}) as Record<string, unknown>;
+  const str = (k: string) => (typeof v[k] === "string" ? (v[k] as string).trim() : "");
+  switch (v.cmd) {
+    case "add":
+      return `add ${str("newEmail")}`;
+    case "ask":
+      return `ask ${str("who")}`;
+    case "remove":
+      return `remove ${str("who")}`;
+    case "askAll":
+      return "ask all";
+    case "digest":
+      return "digest";
+    case "list":
+      return "list";
+    case "schedule":
+      return `schedule ${str("time")}`;
+    case "scheduleOff":
+      return "schedule off";
+    default:
+      return "menu";
+  }
+}
 
 const MESSAGE_LIMIT = 12000;
 
@@ -391,6 +435,172 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     return closed;
   }
 
+  private nudgeText(): string {
+    return this.personal
+      ? "Any update? Please share when you can."
+      : "A quick reminder on today's check-in. A line or two is enough.";
+  }
+
+  /**
+   * Ask one person right now, whatever has happened today. Not asked yet, or
+   * finished earlier: a new question. Asked but silent: ask again.
+   */
+  private async askNow(target: Person): Promise<string> {
+    const name = displayName(target);
+    if (!this.address(target)) return `${name} is not connected yet.`;
+    return this.enqueue(target.id, async () => {
+      const checkin = this.store.checkin(target.id, this.today());
+      if (checkin?.status === "open") {
+        if (this.store.messages(checkin.id).some((m) => m.role === "user")) {
+          return `${name} is in the middle of replying. Their summary will appear here when the conversation finishes.`;
+        }
+        const nudge = this.nudgeText();
+        await this.say(target, nudge);
+        this.store.addMessage(checkin.id, "bot", nudge);
+        this.store.markReminded(checkin.id);
+        return `Asked ${name} again.`;
+      }
+      await this.startCheckin(target, true);
+      return `Asked ${name} for an update. Their summary will appear here when the conversation finishes.`;
+    });
+  }
+
+  // ---------- the schedule, kept in the database and set from the chat ----------
+
+  private localNow(): { date: string; minutes: number; weekend: boolean } {
+    const parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone: this.config.timezone,
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+      weekday: "short",
+    }).formatToParts(this.now());
+    const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+    return {
+      date: this.today(),
+      minutes: (Number(get("hour")) % 24) * 60 + Number(get("minute")),
+      weekend: ["Sat", "Sun"].includes(get("weekday")),
+    };
+  }
+
+  private scheduleStatus(): string {
+    const ask = this.store.get("schedule:checkin");
+    const digest = this.store.get("schedule:digest");
+    return [
+      ask
+        ? `Asking everyone automatically at **${ask}**, Monday to Friday (${this.config.timezone} time).`
+        : "No automatic asking: updates are only requested when you say **ask**.",
+      digest ? `Daily digest at **${digest}**.` : "No automatic digest: send **digest** when you want one.",
+    ].join("\n");
+  }
+
+  /** Runs once a minute: the chase, closing quiet conversations, and anything scheduled. */
+  async tick(): Promise<void> {
+    await this.runReminders(this.config.chaseAfterMinutes);
+    await this.closeIdle(this.config.idleCloseMinutes);
+
+    const { date, minutes, weekend } = this.localNow();
+    if (weekend) return;
+    const jobs: [string, () => Promise<unknown>][] = [
+      ["checkin", () => this.runCheckins()],
+      ["digest", () => this.runDigest()],
+    ];
+    for (const [kind, job] of jobs) {
+      const at = this.store.get(`schedule:${kind}`);
+      if (!at) continue;
+      const due = Number(at.slice(0, 2)) * 60 + Number(at.slice(3));
+      // A ten-minute window, so a restart just after the time still runs it, once.
+      if (minutes < due || minutes > due + 10 || this.store.get(`ran:${kind}`) === date) continue;
+      this.store.set(`ran:${kind}`, date);
+      this.log(`[schedule] running ${kind} for ${date}`);
+      await job();
+    }
+  }
+
+  // ---------- the button menu ----------
+
+  private menuCard(): Record<string, unknown> {
+    const date = this.today();
+    const nominees = this.store.nominees();
+    const submit = (title: string, data: Record<string, unknown>) => ({ type: "Action.Submit", title, data });
+    const rows = nominees.slice(0, 20).map((p) => {
+      const c = this.store.checkin(p.id, date);
+      const status = !this.address(p)
+        ? "not connected"
+        : !c
+          ? "not asked today"
+          : c.status === "completed"
+            ? "update received"
+            : c.status === "no_response"
+              ? "no reply"
+              : "asked, waiting";
+      return {
+        type: "ColumnSet",
+        separator: true,
+        columns: [
+          {
+            type: "Column",
+            width: "stretch",
+            verticalContentAlignment: "Center",
+            items: [
+              { type: "TextBlock", text: displayName(p), weight: "Bolder", wrap: true },
+              { type: "TextBlock", text: `${p.email} · ${status}`, isSubtle: true, spacing: "None", wrap: true, size: "Small" },
+            ],
+          },
+          {
+            type: "Column",
+            width: "auto",
+            items: [
+              {
+                type: "ActionSet",
+                actions: [submit("Ask now", { cmd: "ask", who: p.email }), submit("Remove", { cmd: "remove", who: p.email })],
+              },
+            ],
+          },
+        ],
+      };
+    });
+    return {
+      type: "AdaptiveCard",
+      $schema: "http://adaptivecards.io/schemas/adaptive-card.json",
+      version: "1.4",
+      body: [
+        { type: "TextBlock", text: "Daily Check-in", weight: "Bolder", size: "Medium" },
+        { type: "TextBlock", text: this.scheduleStatus().replace(/\*\*/g, ""), wrap: true, isSubtle: true },
+        {
+          type: "TextBlock",
+          text: nominees.length ? `People (${nominees.length})` : "Nobody added yet. Add someone below.",
+          weight: "Bolder",
+          spacing: "Medium",
+        },
+        ...rows,
+        { type: "Input.Text", id: "newEmail", placeholder: "name@company.com", label: "Add a person", spacing: "Medium" },
+      ],
+      actions: [
+        submit("Add person", { cmd: "add" }),
+        submit("Ask everyone now", { cmd: "askAll" }),
+        submit("Digest now", { cmd: "digest" }),
+        {
+          type: "Action.ShowCard",
+          title: "Schedule",
+          card: {
+            type: "AdaptiveCard",
+            body: [{ type: "Input.Time", id: "time", label: "Ask everyone at this time, Monday to Friday" }],
+            actions: [submit("Save time", { cmd: "schedule" }), submit("Turn off", { cmd: "scheduleOff" })],
+          },
+        },
+      ],
+    };
+  }
+
+  private async showMenu(admin: Person): Promise<void> {
+    if (admin.conversationId && this.messenger.sendCard) {
+      await this.messenger.sendCard(admin.conversationId, this.menuCard());
+    } else {
+      await this.sayAdmin(admin, ADMIN_HELP);
+    }
+  }
+
   // ---------- scheduled jobs ----------
 
   async runCheckins(): Promise<{ sent: number; unreachable: Person[] }> {
@@ -426,9 +636,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       const person = this.store.personById(checkin.personId);
       if (!person?.nominated) continue;
       try {
-        const nudge = this.personal
-          ? "Any update? Please share when you can."
-          : "A quick reminder on today's check-in. A line or two is enough.";
+        const nudge = this.nudgeText();
         await this.say(person, nudge);
         this.store.addMessage(checkin.id, "bot", nudge);
         this.store.markReminded(checkin.id);
@@ -513,14 +721,35 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     const arg = rest.trim();
     let verb = verbRaw.toLowerCase().replace(/[:,]$/, "");
     // "list" alone is a command; "list who is blocked" is a question.
-    if (["help", "hi", "hello", "list", "digest"].includes(verb) && arg) verb = "";
+    if (["help", "hi", "hello", "menu", "list", "digest"].includes(verb) && arg) verb = "";
+    if (verb === "add") verb = "nominate";
+    if (verb === "delete") verb = "remove";
+    if (verb === "checkin") verb = "ask";
 
     try {
       switch (verb) {
         case "help":
+          return await reply(ADMIN_HELP);
+
         case "hi":
         case "hello":
-          return await reply(ADMIN_HELP);
+        case "menu":
+          return await this.showMenu(admin);
+
+        case "schedule": {
+          const digest = /^digest\b/i.test(arg);
+          const key = digest ? "schedule:digest" : "schedule:checkin";
+          const value = arg.replace(/^digest\s*/i, "").trim();
+          if (!value) return await reply(this.scheduleStatus());
+          if (/^(off|none|stop|no|remove)$/i.test(value)) {
+            this.store.set(key, "");
+            return await reply(this.scheduleStatus());
+          }
+          const time = parseTime(value);
+          if (!time) return await reply("I did not understand that time. Try **schedule 17:00** or **schedule off**.");
+          this.store.set(key, time);
+          return await reply(this.scheduleStatus());
+        }
 
         case "nominate": {
           const email = arg.split(/\s+/)[0]?.toLowerCase() ?? "";
@@ -622,45 +851,38 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         }
 
         case "ask": {
-          // "ask mahanth for an update": a check-in now for whoever is named.
+          // "ask all", "ask priya", "ask mahanth for an update": ask now, even if already asked today.
+          const nominees = this.store.nominees();
           const words = arg.toLowerCase().split(/[^a-z0-9@.]+/).filter((w) => w.length > 2);
-          const named = this.store
-            .nominees()
-            .filter((p) => words.some((w) => p.email === w || p.email.split("@")[0]!.split(".").includes(w) || (p.name ?? "").toLowerCase().split(/\s+/).includes(w)));
+          if (!arg || words.some((w) => ["all", "everyone", "everybody", "team"].includes(w))) {
+            if (!nominees.length) return await reply("Nobody is added yet. Send **add name@company.com** first.");
+            const results: string[] = [];
+            for (const p of nominees) {
+              try {
+                results.push(`- ${await this.askNow(p)}`);
+              } catch (err) {
+                this.log(`Could not ask ${p.email}`, err);
+                results.push(`- Could not reach ${displayName(p)}.`);
+              }
+            }
+            return await reply(results.join("\n"));
+          }
+          const named = nominees.filter((p) =>
+            words.some(
+              (w) =>
+                p.email === w ||
+                p.email.split("@")[0]!.split(".").includes(w) ||
+                (p.name ?? "").toLowerCase().split(/\s+/).includes(w),
+            ),
+          );
           if (named.length !== 1) {
             return await reply(
               named.length
-                ? `That matches several people: ${named.map((p) => p.email).join(", ")}. Use **checkin** with the full email.`
-                : "I could not tell who you mean. Use **checkin name@company.com**, or **list** to see who is nominated.",
+                ? `That matches several people: ${named.map((p) => p.email).join(", ")}. Use the full email.`
+                : "I could not tell who you mean. Send **list** to see who is added, or **menu** for buttons.",
             );
           }
-          const target = named[0]!;
-          if (!this.address(target)) return await reply(`${displayName(target)} is not connected yet.`);
-          const started = await this.enqueue(target.id, () => this.startCheckin(target, true));
-          return await reply(
-            started
-              ? `Asked ${displayName(target)} for an update. Their summary will appear here when the conversation finishes.`
-              : `${displayName(target)} has already been asked today and has not finished replying. Their summary will appear here when they do.`,
-          );
-        }
-
-        case "checkin": {
-          if (!arg || arg.toLowerCase() === "all") {
-            const { sent, unreachable } = await this.runCheckins();
-            const note = unreachable.length
-              ? ` Not connected yet: ${unreachable.map((p) => p.email).join(", ")}.`
-              : "";
-            return await reply(`Started ${sent} check-in${sent === 1 ? "" : "s"}.${note}`);
-          }
-          const target = this.resolveOne(arg);
-          if (typeof target === "string") return await reply(target);
-          if (!this.address(target)) return await reply(`${displayName(target)} is not connected to me in Teams yet.`);
-          const started = await this.enqueue(target.id, () => this.startCheckin(target, true));
-          return await reply(
-            started
-              ? `Check-in sent to ${displayName(target)}.`
-              : `${displayName(target)} already has a check-in in progress.`,
-          );
+          return await reply(await this.askNow(named[0]!));
         }
 
         case "digest":

@@ -5,28 +5,34 @@ A Microsoft Teams bot that talks to each person you nominate at the end of every
 ## What it does
 
 1. **You nominate people and describe their job.** In a private chat with the bot, an admin sends `nominate priya@company.com`, then `profile priya@company.com: Senior recruiter on the ServiceNow desk. Targets: 10 submissions and 3 first interviews a week...`. Only the emails in `ADMIN_EMAILS` can do this.
-2. **Every working day the bot messages each person** (5 pm by default). Questions are phrased from their role and targets, and from what is still open: if Priya said yesterday she was working on three submissions, today's opening asks what happened with those three submissions as well as what she did today.
+2. **The bot messages each person** when you ask it to, or every working day at a time you set. Questions are phrased from their role and targets, and from what is still open: if Priya said yesterday she was working on three submissions, today's opening asks what happened with those three submissions as well as what she did today.
 3. **It follows up like a person would**, where an answer is vague or a blocker has no owner, and stops after a few exchanges (hard cap: `MAX_BOT_TURNS`).
 4. **It writes a note for each person**: summary, progress against targets, blockers, pain points, help needed, and a list of tracked work items that stay open until the person says they are done.
-5. **It sends leadership a digest** (7:30 pm by default): what needs attention first, a few lines per person, the exact questions to ask each person, and who gave no update.
+5. **It sends leadership a digest**, on demand or at a time you set: what needs attention first, a few lines per person, the exact questions to ask each person, and who gave no update.
 6. **You can ask it things** at any time: "who has been blocked for more than two days?", "how is Ravi doing against his targets this fortnight?"
 
 People who have not replied get one chase message after `CHASE_AFTER_MINUTES` (default 45). When a person's conversation finishes, or goes quiet for `IDLE_CLOSE_MINUTES` (default 30) after they have replied, their summary is posted to the admins straight away, ahead of the evening digest.
 
 Messages to staff are kept to one short line in very simple English, with no names and no "thanks", so they read naturally for people whose first language is not English.
 
-### Admin commands
+### Controlling it from the bot chat
 
-| Command | Effect |
+Send **menu** (or just "hi") to the Daily Check-in bot for a card with buttons: add a person, **Ask now** and **Remove** beside each person, **Ask everyone now**, **Digest now**, and **Schedule**. The same things can be typed:
+
+| Type | Effect |
 |---|---|
-| `nominate name@company.com` | Start daily check-ins for someone |
-| `profile name@company.com: ...` | Set role, responsibilities and targets (omit the text to view it) |
-| `remove name@company.com` | Stop their check-ins; notes are kept |
-| `list` | Everyone nominated and today's status |
-| `report name@company.com` | Their last five notes and open items |
-| `checkin name@company.com` / `checkin all` | Run a check-in now |
-| `digest` | Produce today's digest now |
+| `add name@company.com` | Start asking someone for updates |
+| `remove name` | Stop asking them; notes are kept |
+| `ask name` / `ask all` | Ask for an update right now, even if already asked today |
+| `profile name: ...` | Set role, responsibilities and targets (omit the text to view it) |
+| `list` | Everyone added and today's status |
+| `report name` | Their last five notes and open items |
+| `digest` | Today's summary of everyone, now |
+| `schedule 17:00` / `schedule off` | Ask everyone automatically at that time, Monday to Friday, or stop |
+| `schedule digest 19:30` / `schedule digest off` | Send the digest automatically, or stop |
 | anything else | A question answered from the last 14 days of notes |
+
+Nothing is asked automatically until a schedule is set. There is no schedule in `.env`: it is set from the chat and kept in the database. Times are read in `TIMEZONE`.
 
 ## Try it before any Teams setup
 
