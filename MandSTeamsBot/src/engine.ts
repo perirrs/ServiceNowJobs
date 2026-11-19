@@ -760,9 +760,22 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       // chased or followed up: the summaries are for them.
       if (this.isAdmin(p)) return false;
       const c = this.store.checkin(p.id, date);
-      return !c || (force && c.status !== "open");
+      if (!c) return true;
+      if (!force) return false;
+      // Asked by hand: also anyone who finished earlier, and anyone asked today
+      // who has said nothing. Only people in the middle of replying are left alone.
+      return c.status !== "open" || !this.store.messages(c.id).some((m) => m.role === "user");
     });
-    if (!due.length) return { asked: 0, message: `Everyone in ${group.name} has already been asked today.` };
+    if (!due.length) {
+      return {
+        asked: 0,
+        message: force
+          ? `Everyone in ${group.name} is already replying, so I have not posted again.`
+          : `Everyone in ${group.name} has already been asked today.`,
+      };
+    }
+    // People being asked a second time today: they get tagged, so it reads as a chase.
+    const again = due.filter((p) => this.store.checkin(p.id, date)?.status === "open");
 
     // Read before asking: the group's chat, and (for a small group) each member's own chat with the sender.
     await this.refreshGroupMemory(group);
@@ -812,14 +825,25 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       }
     }
 
+    // Anyone being asked again who has no question of their own is tagged together on a last line.
+    const alsoTag = again
+      .filter((p) => !tagged.some((t) => t.person.id === p.id))
+      .map((p) => ({ person: p, userId: this.store.get(`aadOf:${p.id}`) ?? "" }))
+      .filter((t) => t.userId);
+    const mentioned = [...tagged, ...alsoTag];
+
     // {@0}, {@1}... mark where each person's tag goes when the message is sent.
     const lines = (name: (i: number) => string) =>
-      [opening, ...tagged.map((t, i) => `${name(i)} ${t.question}`)].join("\n");
-    const text = lines((i) => `@${displayName(tagged[i]!.person)}`); // as it reads, for our record
+      [
+        opening,
+        ...tagged.map((t, i) => `${name(i)} ${t.question}`),
+        ...(alsoTag.length ? [`${alsoTag.map((_, i) => name(tagged.length + i)).join(" ")} please share your update.`] : []),
+      ].join("\n");
+    const text = lines((i) => `@${displayName(mentioned[i]!.person)}`); // as it reads, for our record
     await this.direct!.send(
       group.chatId,
       lines((i) => `{@${i}}`),
-      tagged.map((t) => ({ userId: t.userId, name: displayName(t.person) })),
+      mentioned.map((t) => ({ userId: t.userId, name: displayName(t.person) })),
     );
     for (const person of due) {
       const checkin = this.store.openCheckin(person.id, date);
@@ -1791,6 +1815,9 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         `# ${displayName(p)} (${p.email})`,
         `Role and targets: ${p.profile ?? "(not provided)"}`,
         `Open items:\n${renderItems(this.store.activeItems(p.id))}`,
+        this.store.get(`rapport:${p.id}`)
+          ? `## Learned from the chat history with them (work, commitments and dates)\n${this.store.get(`rapport:${p.id}`)}`
+          : "",
         live
           ? `## Today's conversation, still in progress (not yet summarised)\n${live}`
           : today?.status === "no_response"
@@ -1805,6 +1832,14 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         .filter(Boolean)
         .join("\n\n");
     });
-    return `Today is ${this.today()}. Notes cover the last 14 days.\n\n${sections.join("\n\n")}`;
+    const groupSections = this.store
+      .groups()
+      .map((g) => ({ g, memory: this.store.get(`gmemory:${g.id}`) }))
+      .filter((x) => x.memory)
+      .map(
+        (x) =>
+          `# Group chat: ${x.g.name}\nMembers: ${this.store.groupMembers(x.g.id).map(displayName).join(", ")}\n\n## Learned from the group's chat history (work, commitments and dates, by person)\n${x.memory}`,
+      );
+    return `Today is ${this.today()}. Check-in notes cover the last 14 days; what was learned from chat history goes back further.\n\n${[...sections, ...groupSections].join("\n\n")}`;
   }
 }

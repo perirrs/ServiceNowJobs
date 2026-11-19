@@ -1222,3 +1222,31 @@ test("after a long gap the admins are told it was offline; a quick restart says 
   await t.engine.announceStart();
   assert.match(t.to(CTO).at(-1)!, /I was offline from Mon,? 16 Nov,? 17:03 to Tue,? 17 Nov,? 09:00/);
 });
+
+// ---------- asking a group again ----------
+
+test("asking a group again re-asks those who said nothing, tagged; someone mid-reply is left alone", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  g.brain.doneAfterUserMessages = 99;
+  await g.engine.handleGroupReply("u-priya", "sent 3 submissions"); // Priya is now mid-conversation
+
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  const post = g.sent.at(-1)!;
+  assert.equal(post.to, "g-rec");
+  assert.equal(post.text, "Hi team, please share today's update.\n{@0} please share your update.");
+  assert.deepEqual(post.mentions, [{ userId: "u-ravi", name: "Ravi Kumar" }]);
+  assert.match(g.admin.at(-1)!, /\(1 people\)/);
+});
+
+test("questions to the bot can draw on what was learned from the chat history", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  g.store.set(`gmemory:${g.store.groups()[0]!.id}`, "Ravi: TalentFlow app due 2026-11-20");
+  g.store.set(`rapport:${g.store.personByEmail(PRIYA)!.id}`, "Owes the landing page copy, overdue");
+  await g.engine.handleMessage(g.cto, "what is outstanding for each person in the group right now please?");
+  const material = g.brain.questions.at(-1)!.material;
+  assert.match(material, /Group chat: Recruitment Team[\s\S]*TalentFlow app due 2026-11-20/);
+  assert.match(material, /Owes the landing page copy, overdue/);
+});
