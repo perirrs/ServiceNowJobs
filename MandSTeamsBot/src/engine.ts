@@ -406,6 +406,13 @@ So you know how it's used: your answers are summarised each day for the CTO and 
 
   private async handleAdmin(admin: Person, text: string): Promise<void> {
     const reply = (msg: string) => this.say(admin, msg);
+    // Right after a nomination, the admin's next plain message is taken as that
+    // person's role profile. Any message uses the opportunity up.
+    const awaitingKey = `awaitingProfile:${admin.id}`;
+    const awaiting = Number(this.store.get(awaitingKey) || 0);
+    this.store.set(awaitingKey, "");
+    const nextSteps = (p: Person) =>
+      `To ask ${displayName(p)} for an update right now, send **checkin ${p.email}**. Otherwise the first check-in goes out at the next scheduled time.`;
     const [, verbRaw = "", rest = ""] = /^(\S+)\s*([\s\S]*)$/.exec(text) ?? [];
     const arg = rest.trim();
     let verb = verbRaw.toLowerCase().replace(/[:,]$/, "");
@@ -444,12 +451,18 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           this.store.setNominated(person.id, true);
           if (person.conversationId) {
             await this.say(person, this.welcomeText(person));
+            this.store.set(awaitingKey, String(person.id));
             return await reply(
-              `${displayName(person)} is nominated and has been told how the check-ins work. Next, describe their role: **profile ${email}: ...**`,
+              `${displayName(person)} is nominated. ${
+                this.direct
+                  ? "A heads-up explaining the automated check-ins has gone to them from your account. No update has been asked for yet."
+                  : "I've told them how the check-ins work."
+              }\n\nNow tell me about their role: reply with their role, responsibilities and targets in your own words, and I'll phrase the daily questions around it.`,
             );
           }
+          this.store.set(awaitingKey, String(person.id));
           return await reply(
-            `${email} is nominated. They are not connected to me yet: once the app is installed for them in Teams (or they open it and say hello) I'll introduce myself and start the daily check-ins. Next, describe their role: **profile ${email}: ...**`,
+            `${email} is nominated. They are not connected to me yet: once the app is installed for them in Teams (or they open it and say hello) I'll introduce myself and start the daily check-ins.\n\nNow tell me about their role: reply with their role, responsibilities and targets in your own words.`,
           );
         }
 
@@ -466,7 +479,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           }
           this.store.setProfile(target.id, split[2]!.trim());
           return await reply(
-            `Saved. From the next check-in, questions for ${displayName(target)} will be phrased around this role and these targets.`,
+            `Saved. Questions for ${displayName(target)} will be phrased around this role and these targets.\n\n${nextSteps(target)}`,
           );
         }
 
@@ -535,6 +548,13 @@ So you know how it's used: your answers are summarised each day for the CTO and 
 
         default: {
           if (!text) return;
+          const pending = awaiting ? this.store.personById(awaiting) : undefined;
+          if (pending?.nominated) {
+            this.store.setProfile(pending.id, text);
+            return await reply(
+              `Saved as the role profile for ${displayName(pending)}. To change it, send **profile ${pending.email}: ...**\n\n${nextSteps(pending)}`,
+            );
+          }
           if (!this.store.nominees().length) {
             return await reply(
               "There are no check-in notes yet because nobody is nominated. Start with **nominate name@company.com**, or send **help** for the full list of commands.",

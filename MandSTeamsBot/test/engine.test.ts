@@ -341,3 +341,27 @@ test("a question with nobody nominated gets a pointer to nominate, not an AI ans
   assert.equal(t.brain.questions.length, 0);
   assert.match(t.to(CTO).at(-1)!, /nobody is nominated/);
 });
+
+test("the message straight after a nomination becomes that person's role profile", async () => {
+  const t = setup();
+  await t.engine.handleInstall(t.id(CTO));
+  await t.engine.handleMessage(t.id(CTO), `nominate ${PRIYA}`);
+  await t.engine.handleMessage(t.id(CTO), "Senior recruiter, 10 submissions a week");
+  assert.equal(t.store.personByEmail(PRIYA)!.profile, "Senior recruiter, 10 submissions a week");
+  assert.match(t.to(CTO).at(-1)!, /checkin priya@acme\.test/);
+  assert.equal(t.brain.questions.length, 0);
+
+  // Only the very next message counts: after that, free text is a question again.
+  await t.engine.handleMessage(t.id(CTO), "who is blocked?");
+  assert.equal(t.brain.questions.length, 1);
+  assert.equal(t.store.personByEmail(PRIYA)!.profile, "Senior recruiter, 10 submissions a week");
+});
+
+test("a command straight after a nomination is still a command, not a profile", async () => {
+  const t = setup();
+  await t.engine.handleInstall(t.id(CTO));
+  await t.engine.handleMessage(t.id(CTO), `nominate ${PRIYA}`);
+  await t.engine.handleMessage(t.id(CTO), "list");
+  await t.engine.handleMessage(t.id(CTO), "some later remark");
+  assert.equal(t.store.personByEmail(PRIYA)!.profile, null);
+});
