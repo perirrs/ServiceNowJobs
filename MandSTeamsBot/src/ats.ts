@@ -9,7 +9,8 @@
  * come from TeamMemberTarget, by the team member's email and "YYYY-MM".
  */
 import type { Base44 } from "./base44.js";
-import { describeTrackRecord, utc } from "./trackrecord.js";
+import { describeOverview, describeTrackRecord, utc } from "./trackrecord.js";
+import type { HistoryPerson } from "./trackrecord.js";
 
 /** TalentFlow status -> the figure it counts towards. Statuses not listed are not counted. */
 const STATUS_BUCKET: Record<string, string> = {
@@ -76,6 +77,8 @@ export interface Ats {
   team?(emails: string[], dayFromIso: string, monthFromIso: string, toIso: string): Promise<Map<string, TeamFigures>>;
   /** A person's whole history in the ATS, as plain text, or null if they are not in it. */
   trackRecord?(email: string): Promise<string | null>;
+  /** The whole ATS on one page: team trend, every client, one line for every person. */
+  overview?(): Promise<string>;
 }
 
 /** One person's figures for a team report. */
@@ -282,6 +285,33 @@ export class Base44TalentFlow implements Ats {
       this.everything = { at: this.now().getTime(), apps, reqs, clients };
     }
     return this.everything;
+  }
+
+  async overview(): Promise<string> {
+    const app = await this.app();
+    const recruiters = await this.b44.list<{ id: string; full_name?: string; email?: string; status?: string }>(app, "Recruiter", {
+      fields: ["full_name", "email", "status"],
+    });
+    const users = await this.b44.users<{ id: string; full_name?: string; email?: string; app_role?: string; is_disabled?: boolean }>(app);
+    const people = new Map<string, HistoryPerson>();
+    for (const u of users) {
+      const email = (u.email ?? "").trim().toLowerCase();
+      if (!email || !u.app_role || !/Recruit|Account/.test(u.app_role)) continue;
+      people.set(email, { name: u.full_name || email, email, role: u.app_role, userId: u.id, active: !u.is_disabled });
+    }
+    for (const r of recruiters) {
+      const email = (r.email ?? "").trim().toLowerCase();
+      if (!email) continue;
+      const known = people.get(email);
+      if (known) {
+        known.recruiterId = r.id;
+        known.name = r.full_name || known.name;
+        known.active = known.active && r.status !== "Inactive";
+      } else {
+        people.set(email, { name: r.full_name || email, email, role: "Recruiter", recruiterId: r.id, active: r.status !== "Inactive" });
+      }
+    }
+    return describeOverview(await this.all(), [...people.values()], this.now());
   }
 
   async trackRecord(email: string): Promise<string | null> {

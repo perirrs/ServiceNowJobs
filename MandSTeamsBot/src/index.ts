@@ -89,6 +89,7 @@ let outbox: { conversationId: string; lines: string[] } | null = null;
 
 const brain = new ClaudeBrain(config.model, config.companyName, undefined, direct?.senderName, config.discloseAutomation);
 brain.smartModel = config.smartModel;
+brain.analysisModel = config.analysisModel;
 const engine = new Engine(
   store,
   brain,

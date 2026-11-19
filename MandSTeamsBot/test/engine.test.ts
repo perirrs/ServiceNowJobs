@@ -2581,7 +2581,7 @@ test("hourly progress and the end-of-day summary are posted in the group from Ta
   await g.engine.tick(); // once an hour
   assert.equal(posts.length, 1);
   assert.match(posts[0]!, /^g-rec\|<p><b>Team progress at 11:02<\/b><\/p>/);
-  assert.match(posts[0]!, /Priya Rao<\/td><td>Recruiter<\/td><td>2 of 6<\/td><td>1<\/td><td>9 · 0 · 1 of 3<\/td><td>-<\/td><td>10:30<\/td>/);
+  assert.match(posts[0]!, /Priya Rao<\/td><td>Recruiter<\/td><td>2 of 6<\/td><td>1<\/td><td>9 · 0 \(0% of 20%\) · 1 of 3<\/td><td>-<\/td><td>10:30<\/td>/);
   assert.match(posts[0]!, /Ravi Kumar<\/td><td>Account Manager<\/td><td>-<\/td><td>0<\/td><td>-<\/td><td>1 · 3 · 0<\/td>/);
   assert.match(posts[0]!, /Team today: 2 of 6 submissions \(33%\), 1 L1 selects, 1 new requirements \(3 spots\)/);
   assert.match(posts[0]!, /No TalentFlow update in the last 2 hours: Ravi Kumar\./);
@@ -2659,6 +2659,56 @@ test("a question reads what was said in the groups since they were last read, th
 
   await g.engine.handleMessage(g.cto, "and what else?");
   assert.equal(g.brain.revisions.length, before + 1); // nothing new: no second read
+});
+
+test("a new blocker in the group goes to the director, tagged, with someone else tagged for information, once", async () => {
+  const g = groupSetup();
+  g.members.push({ userId: "u-madan", email: "madan@acme.test", name: "Madan Mani" });
+  g.members.push({ userId: "u-ceo", email: "ceo@acme.test", name: "Mahanth M" });
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "blockers Recruitment Team to madan fyi mahanth");
+  assert.match(g.admin.at(-1)!, /I tag Madan Mani in the group to look into it, with Mahanth M tagged for information/);
+
+  const priya = g.store.personByEmail(PRIYA)!;
+  const old = g.store.addItem(priya.id, "Old issue from April", "blocked", "x", "2026-04-10");
+  g.store.setItemFlow(old, "blocked", "", "2026-04-10");
+  const item = g.store.addItem(priya.id, "No SAP requirements to work on", "blocked", "no reqs", "2026-11-16");
+  g.store.setItemFlow(item, "blocked", "Madan", "2026-11-16");
+  const before = g.sent.length;
+  await g.engine.tick();
+  assert.equal(g.sent.length, before + 1);
+  const post = g.sent.at(-1)!;
+  assert.equal(post.to, "g-rec");
+  assert.equal(post.text, "{@0} please look into these blockers today: {@1}: No SAP requirements to work on (waiting on Madan). {@2} for your information.");
+  assert.deepEqual(post.mentions!.map((m) => m.name), ["Madan Mani", "Priya Rao", "Mahanth M"]);
+
+  await g.engine.tick(); // once only
+  assert.equal(g.sent.length, before + 1);
+});
+
+test("the whole of TalentFlow is analysed and fed to answers and each person's brief", async () => {
+  const t = setup();
+  await onboard(t);
+  t.engine.ats = {
+    stats: async () => ({}),
+    overview: async () => "Whole team, all time: 3000 submitted to client.",
+    trackRecord: async (email) => (email === PRIYA ? "Submitted to client: 140." : null),
+  };
+  const briefsFor: (string | undefined)[] = [];
+  (t.brain as unknown as Record<string, unknown>).talentflowOverview = async (i: { stats: string; targets: string }) =>
+    `Overall: ${i.stats} Targets seen: ${/20% of submissions/.test(i.targets)}`;
+  (t.brain as unknown as Record<string, unknown>).trackBrief = async (i: { record: string; team?: string }) => {
+    briefsFor.push(i.team);
+    return `Strengths: ${i.record}`;
+  };
+  await t.engine.handleMessage(t.id(CTO), "talentflow");
+  assert.match(t.to(CTO).at(-1)!, /\*\*The whole of TalentFlow\*\*\nOverall: Whole team, all time: 3000 submitted to client\. Targets seen: true/);
+  assert.deepEqual(briefsFor, ["Whole team, all time: 3000 submitted to client."]);
+
+  await t.engine.handleMessage(t.id(CTO), "who is behind on submissions?");
+  const material = t.brain.questions.at(-1)!.material;
+  assert.match(material, /# TalentFlow, the whole team[\s\S]*## Analysis\nOverall: Whole team/);
+  assert.match(material, /## Their track record in TalentFlow\nStrengths: Submitted to client: 140\./);
 });
 
 test("after clock-out the group is not chased", async () => {

@@ -234,3 +234,128 @@ export function describeTrackRecord(
   }
   return lines.length ? lines.join("\n") : "No work recorded in TalentFlow.";
 }
+
+/** A TalentFlow person, for the overview. */
+export interface HistoryPerson {
+  name: string;
+  email: string;
+  role: string;
+  recruiterId?: string;
+  userId?: string;
+  active: boolean;
+}
+
+/**
+ * The whole of TalentFlow on one page: the team's monthly trend, every client's
+ * funnel and fill rate, and one line for every person in it.
+ */
+export function describeOverview(
+  data: { apps: HistoryApplication[]; reqs: HistoryRequirement[]; clients: HistoryClient[] },
+  people: HistoryPerson[],
+  now: Date,
+): string {
+  const spelling = new Map<string, string>();
+  const clientName = new Map(
+    data.clients.map((c) => {
+      const name = (c.client_name || c.account_name || "").trim().replace(/\s+/g, " ");
+      const key = name.toLowerCase();
+      if (name && !spelling.has(key)) spelling.set(key, name);
+      return [c.id, name ? spelling.get(key)! : "unknown client"] as const;
+    }),
+  );
+  const reqById = new Map(data.reqs.map((r) => [r.id, r]));
+  const month = (ms: number) => (Number.isFinite(ms) ? new Date(ms).toISOString().slice(0, 7) : "");
+  const months: string[] = [];
+  for (let i = 5; i >= 0; i--) months.push(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1)).toISOString().slice(0, 7));
+  const lines: string[] = [];
+
+  // The team, month by month, by month of submission.
+  const total = emptyFunnel();
+  const byMonth = new Map<string, Funnel>();
+  const byClient = new Map<string, Funnel>();
+  const lastByRecruiter = new Map<string, number>();
+  for (const a of data.apps) {
+    const statuses = statusesOf(a);
+    addToFunnel(total, statuses);
+    for (const h of a.status_history ?? []) {
+      const at = Date.parse(h.changed_at ?? "");
+      if (Number.isFinite(at) && a.recruiter_id) lastByRecruiter.set(a.recruiter_id, Math.max(lastByRecruiter.get(a.recruiter_id) ?? 0, at));
+    }
+    const submittedAt = Date.parse((a.status_history ?? []).find((h) => AFTER_SUBMISSION.has(h.status ?? ""))?.changed_at ?? "");
+    if (Number.isFinite(submittedAt)) {
+      const f = byMonth.get(month(submittedAt)) ?? emptyFunnel();
+      addToFunnel(f, statuses);
+      byMonth.set(month(submittedAt), f);
+    }
+    const c = clientName.get(a.client_id ?? "") ?? clientName.get(reqById.get(a.requirement_id ?? "")?.client_id ?? "") ?? "unknown client";
+    const f = byClient.get(c) ?? emptyFunnel();
+    addToFunnel(f, statuses);
+    byClient.set(c, f);
+  }
+  lines.push(
+    `Whole team, all time: ${total.submitted} submitted to client, ${total.l1Select} L1 selects (${pct(total.l1Select, total.submitted)}), ${total.final} final select or offered, ${total.joined} joined (${pct(total.joined, total.submitted)} of submissions), ${total.backedOut} backed out.`,
+  );
+  lines.push(
+    `Whole team, last 6 months (submitted / L1 select / joined / backed out): ${months
+      .map((m) => {
+        const f = byMonth.get(m) ?? emptyFunnel();
+        return `${m}: ${f.submitted}/${f.l1Select}/${f.joined}/${f.backedOut}`;
+      })
+      .join(", ")}.`,
+  );
+
+  // Clients: requirements and spots against what was submitted and filled.
+  const reqsByClient = new Map<string, { reqs: number; spots: number; open: number; recent: number }>();
+  const sixMonthsAgo = Date.parse(`${months[0]}-01T00:00:00Z`);
+  for (const r of data.reqs) {
+    const c = clientName.get(r.client_id ?? "") ?? "unknown client";
+    const x = reqsByClient.get(c) ?? { reqs: 0, spots: 0, open: 0, recent: 0 };
+    x.reqs++;
+    x.spots += Math.max(1, Number(r.positions_count) || 1);
+    if (r.status === "Open" || r.status === "In Progress") x.open++;
+    if (utc(r.created_date) >= sixMonthsAgo) x.recent++;
+    reqsByClient.set(c, x);
+  }
+  const clients = [...new Set([...byClient.keys(), ...reqsByClient.keys()])]
+    .map((c) => ({ c, f: byClient.get(c) ?? emptyFunnel(), r: reqsByClient.get(c) ?? { reqs: 0, spots: 0, open: 0, recent: 0 } }))
+    .sort((a, b) => b.f.submitted - a.f.submitted)
+    .slice(0, 25);
+  lines.push(
+    `Clients (requirements, spots, still open, new in last 6 months; submitted, L1 select rate, joined, backed out, spots filled):\n${clients
+      .map(({ c, f, r }) => `- ${c}: ${r.reqs} reqs, ${r.spots} spots, ${r.open} open, ${r.recent} new; ${f.submitted} sub, ${pct(f.l1Select, f.submitted)} L1, ${f.joined} joined, ${f.backedOut} backed out, ${pct(f.joined, r.spots)} filled`)
+      .join("\n")}`,
+  );
+
+  // Everyone in TalentFlow, one line each.
+  const rows = people.map((p) => {
+    const parts: string[] = [];
+    if (p.recruiterId) {
+      const mine = data.apps.filter((a) => a.recruiter_id === p.recruiterId);
+      const f = emptyFunnel();
+      const recent = emptyFunnel();
+      for (const a of mine) {
+        const statuses = statusesOf(a);
+        addToFunnel(f, statuses);
+        const submittedAt = Date.parse((a.status_history ?? []).find((h) => AFTER_SUBMISSION.has(h.status ?? ""))?.changed_at ?? "");
+        if (submittedAt >= sixMonthsAgo) addToFunnel(recent, statuses);
+      }
+      const last = lastByRecruiter.get(p.recruiterId);
+      parts.push(
+        `${f.submitted} sub, ${pct(f.l1Select, f.submitted)} L1, ${f.joined} joined (${pct(f.joined, f.submitted)}), ${f.backedOut} backed out; last 6 months ${recent.submitted} sub, ${recent.joined} joined; last active ${last ? new Date(last).toISOString().slice(0, 10) : "never"}`,
+      );
+    }
+    if (p.userId) {
+      const owned = data.reqs.filter((r) => r.account_manager_id === p.userId);
+      if (owned.length) {
+        const spots = owned.reduce((n, r) => n + Math.max(1, Number(r.positions_count) || 1), 0);
+        const recent = owned.filter((r) => utc(r.created_date) >= sixMonthsAgo).length;
+        parts.push(`${owned.length} reqs brought in (${spots} spots), ${recent} in last 6 months`);
+      }
+      const spocs = data.clients.filter((c) => (c.created_by ?? "").trim().toLowerCase() === p.email).length;
+      if (spocs) parts.push(`${spocs} SPOCs added`);
+    }
+    return parts.length ? `- ${p.name} (${p.role}${p.active ? "" : ", inactive"}): ${parts.join("; ")}` : "";
+  });
+  lines.push(`Everyone in TalentFlow:\n${rows.filter(Boolean).join("\n")}`);
+  return lines.join("\n\n");
+}

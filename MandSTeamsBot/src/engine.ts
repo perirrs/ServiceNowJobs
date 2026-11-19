@@ -280,11 +280,18 @@ export function roleOf(profile: string | null | undefined): Role | null {
   return word === "recruitment director" ? "Recruitment Director" : word === "hr manager" ? "HR Manager" : word === "account manager" ? "Account Manager" : word === "account owner" ? "Account Owner" : "Recruiter";
 }
 
-/** Daily submissions and monthly joins expected of each role that does submissions. */
-const ROLE_TARGETS: Partial<Record<Role, { daySubmissions: number; monthJoins: number }>> = {
-  Recruiter: { daySubmissions: 6, monthJoins: 3 },
-  "Account Owner": { daySubmissions: 6, monthJoins: 3 },
+/** Daily submissions, monthly joins and (where set) the L1 select rate expected of each role that does submissions. */
+const ROLE_TARGETS: Partial<Record<Role, { daySubmissions: number; monthJoins: number; l1Rate?: number }>> = {
+  Recruiter: { daySubmissions: 6, monthJoins: 3, l1Rate: 0.2 },
+  "Account Owner": { daySubmissions: 4, monthJoins: 3 },
 };
+
+/** The targets in words, for the analysis of the whole ATS. */
+const TARGETS_TEXT =
+  "Recruiters: at least 6 quality submissions a day, at least 20% of submissions reaching L1 select, and 3 onboards (joins) every month, without fail. " +
+  "Account owners: 4 submissions a day and 3 onboards a month, plus net new requirements and new SPOCs on their accounts. " +
+  "Account managers: net new requirements and new SPOCs at their clients every month; no submissions. " +
+  "Recruitment director: overall performance; successful only when every individual reaches at least 75% of target.";
 
 const PRICES: Record<string, [number, number]> = {
   "claude-haiku-5-5": [0.1, 0.5],
@@ -935,6 +942,21 @@ export class Engine {
     this.trackRunning = true;
     try {
       const out: string[] = [];
+      // First the whole of TalentFlow: every client and every person in it, analysed with the strongest model.
+      let team = "";
+      if (this.ats.overview) {
+        try {
+          team = await this.ats.overview();
+          this.store.set("atsoverviewstats", team);
+          if (this.brain.talentflowOverview) {
+            const overview = await this.brain.talentflowOverview({ stats: team, today: date, targets: TARGETS_TEXT });
+            this.store.set("atsoverview", overview);
+            out.push(`**The whole of TalentFlow**\n${overview}`);
+          }
+        } catch (err) {
+          this.log("Could not analyse the whole of TalentFlow", err);
+        }
+      }
       for (const p of this.store.nominees()) {
         if (this.isAdmin(p)) continue;
         const record = await this.ats.trackRecord(p.email);
@@ -943,7 +965,7 @@ export class Engine {
         let brief = "";
         if (this.brain.trackBrief) {
           try {
-            brief = await this.brain.trackBrief({ name: displayName(p), role: p.profile ?? "", record, today: date });
+            brief = await this.brain.trackBrief({ name: displayName(p), role: p.profile ?? "", record, today: date, team });
           } catch (err) {
             this.log(`Could not write the TalentFlow brief for ${p.email}`, err);
           }
@@ -955,6 +977,54 @@ export class Engine {
       return out;
     } finally {
       this.trackRunning = false;
+    }
+  }
+
+  /**
+   * New blockers raised by people in a group go to the person set to clear
+   * them (the recruitment director), tagged in the group, with someone tagged
+   * for information. Each blocker is passed on once.
+   */
+  private async routeBlockers(): Promise<void> {
+    if (this.paused || !this.direct || !this.inOfficeHours()) return;
+    const since = daysBefore(this.today(), 1);
+    for (const group of this.store.groups()) {
+      const setting = this.store.get(`blockers:group:${group.id}`);
+      if (!setting || this.pastClockout(group) || this.isWaiting(`blockwait:${group.id}`)) continue;
+      const [ownerId, fyiId] = setting.split("|").map(Number);
+      const owner = this.store.personById(ownerId!);
+      if (!owner) continue;
+      const fyi = fyiId ? this.store.personById(fyiId) : undefined;
+      const fresh: { person: Person; item: WorkItem }[] = [];
+      for (const p of this.store.groupMembers(group.id)) {
+        if (p.id === owner.id || this.isAdmin(p)) continue;
+        for (const item of this.store.activeItems(p.id)) {
+          if (item.status !== "blocked" || !item.blockedSince || item.blockedSince < since) continue;
+          if (this.store.get(`blockrouted:${item.id}`)) continue;
+          fresh.push({ person: p, item });
+        }
+      }
+      if (!fresh.length) continue;
+      const mentions: { userId: string; name: string }[] = [];
+      const tag = (p: Person) => {
+        const userId = this.store.get(`aadOf:${p.id}`);
+        if (!userId) return displayName(p);
+        let i = mentions.findIndex((m) => m.userId === userId);
+        if (i < 0) i = mentions.push({ userId, name: displayName(p) }) - 1;
+        return `{@${i}}`;
+      };
+      const head = tag(owner);
+      const list = fresh
+        .slice(0, 6)
+        .map(({ person, item }) => `${tag(person)}: ${item.title}${item.waitingOn ? ` (waiting on ${item.waitingOn})` : ""}`)
+        .join("; ");
+      const text = `${head} please look into these blockers today: ${list}.${fyi ? ` ${tag(fyi)} for your information.` : ""}`;
+      const marks: Effect[] = fresh.slice(0, 6).map(({ item }) => ({ kind: "kv", key: `blockrouted:${item.id}`, value: "1" }));
+      try {
+        await this.sendAsSender({ chatId: group.chatId, text, mentions, label: group.name, effects: marks, onSkip: marks, waitKey: `blockwait:${group.id}` });
+      } catch (err) {
+        this.log(`Could not pass blockers on in ${group.name}`, err);
+      }
     }
   }
 
@@ -1062,9 +1132,10 @@ export class Engine {
       const last = f?.lastToday ?? null;
       if (!this.isAway(p) && (!last || now.getTime() - Date.parse(last) > 2 * 3_600_000)) stale.push(displayName(p));
       const subCell = target ? `${sub >= target.daySubmissions ? "✅ " : ""}${sub} of ${target.daySubmissions}` : "-";
-      const monthCell = target
-        ? `${n(month, "submitted_to_client")} · ${n(month, "l1_select")} · ${n(month, "onboarded")} of ${target.monthJoins}`
-        : "-";
+      const monthSub = n(month, "submitted_to_client");
+      const monthL1 = n(month, "l1_select");
+      const rate = target?.l1Rate && monthSub ? ` (${Math.round((monthL1 / monthSub) * 100)}% of ${Math.round(target.l1Rate * 100)}%)` : "";
+      const monthCell = target ? `${monthSub} · ${monthL1}${rate} · ${n(month, "onboarded")} of ${target.monthJoins}` : "-";
       const ownerCell = role === "Recruiter" ? "-" : `${n(day, "new_requirements")} · ${n(day, "new_spots")} · ${n(day, "new_spocs")}`;
       rows.push(
         `<tr><td>${esc(displayName(p))}${this.isAway(p) ? " (on leave)" : ""}</td><td>${esc(role ?? "-")}</td><td>${subCell}</td><td>${n(day, "l1_select")}</td><td>${monthCell}</td><td>${ownerCell}</td><td>${f ? time(last) : "not in TalentFlow"}</td></tr>`,
@@ -2835,6 +2906,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     await this.meetingCycle();
     await this.runWeekly();
     await this.runGroupReports();
+    await this.routeBlockers();
     // The weekly read of everyone's TalentFlow history: slow, and nothing waits for it.
     void this.refreshTrackRecords().catch((err) => this.log("Could not read the TalentFlow history", err));
     this.backupDaily();
@@ -3373,7 +3445,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     // Short one-liners are commands. Anything longer or on several lines is
     // free-form and may hold several instructions, so it is interpreted.
     const short = !text.includes("\n") && text.split(/\s+/).length <= 6;
-    if (!short && !["profile", "greeting", "style", "schedule", "tracker", "draft", "hourly", "clockout"].includes(verb)) verb = "";
+    if (!short && !["profile", "greeting", "style", "schedule", "tracker", "draft", "hourly", "clockout", "blockers"].includes(verb)) verb = "";
 
     try {
       switch (verb) {
@@ -3605,6 +3677,32 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           this.store.set(key, `${at}@${z}`);
           return await reply(
             `Clock-out for ${group.name} is **${at} ${zoneLabel(z)}**. The end-of-day summary is posted there then, as the last message of the day, with each person's figures and the team's target met. Nothing more is asked in the group after it. Put the evening update about an hour before, for example **schedule ${group.name} evening ${String(Number(at.slice(0, 2)) - 1).padStart(2, "0")}${at.slice(2)} ${zoneLabel(z).replace(/ time$/, "")}**, so people have time to answer.`,
+          );
+        }
+
+        case "blockers": {
+          // blockers Group Name to madan fyi mahanth  /  blockers Group Name off
+          const off = /\boff$/i.test(arg);
+          const m = /^(.+?)\s+to\s+(\S+)(?:\s+fyi\s+(\S+))?$/i.exec(arg);
+          const group = this.resolveGroup((off ? arg.replace(/\s*\boff$/i, "") : (m?.[1] ?? arg)).replace(/^group\s+/i, "").trim());
+          if (typeof group === "string") return await reply(group);
+          if (off) {
+            this.store.set(`blockers:group:${group.id}`, "");
+            return await reply(`Blockers raised in ${group.name} are no longer passed on.`);
+          }
+          if (!m) return await reply("Send it like **blockers Group Name to madan fyi mahanth**.");
+          const members = this.store.groupMembers(group.id);
+          const find = (q: string) => {
+            const hits = members.filter((p) => `${p.name ?? ""} ${p.email}`.toLowerCase().includes(q.toLowerCase()));
+            return hits.length === 1 ? hits[0]! : null;
+          };
+          const owner = find(m[2]!);
+          const fyi = m[3] ? find(m[3]) : null;
+          if (!owner) return await reply(`I can't find exactly one "${m[2]}" in ${group.name}.`);
+          if (m[3] && !fyi) return await reply(`I can't find exactly one "${m[3]}" in ${group.name}.`);
+          this.store.set(`blockers:group:${group.id}`, `${owner.id}|${fyi?.id ?? ""}`);
+          return await reply(
+            `When someone in ${group.name} raises a new blocker, I tag ${displayName(owner)} in the group to look into it${fyi ? `, with ${displayName(fyi)} tagged for information` : ""}. Each blocker is passed on once, in office hours.`,
           );
         }
 
@@ -4087,6 +4185,10 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         this.store.get(`rapport:${p.id}`)
           ? `## Learned from the chat history with them (work, commitments and dates)\n${this.store.get(`rapport:${p.id}`)}`
           : "",
+        this.store.get(`atsbrief:${p.id}`) || this.store.get(`atsrecord:${p.id}`)
+          ? `## Their track record in TalentFlow\n${this.store.get(`atsbrief:${p.id}`) || this.store.get(`atsrecord:${p.id}`)}`
+          : "",
+        this.store.get(`atsfacts:${p.id}`) ? `## TalentFlow today\n${this.store.get(`atsfacts:${p.id}`)}` : "",
         live
           ? `## Today's conversation, still in progress (not yet summarised)\n${live}`
           : today?.status === "no_response"
@@ -4109,6 +4211,13 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         (x) =>
           `# Group chat: ${x.g.name}\nMembers: ${this.store.groupMembers(x.g.id).map(displayName).join(", ")}\n\n## Learned from the group's chat history (work, commitments and dates, by person)\n${x.memory}`,
       );
-    return `Today is ${this.today()}. Check-in notes cover the last 14 days; what was learned from chat history goes back further.\n\n${[...sections, ...groupSections].join("\n\n")}`;
+    const overview = this.store.get("atsoverview");
+    const stats = this.store.get("atsoverviewstats");
+    const talentflow = overview || stats
+      ? [`# TalentFlow, the whole team (targets: ${TARGETS_TEXT})`, overview ? `## Analysis\n${overview}` : "", stats ? `## Figures\n${stats}` : ""]
+          .filter(Boolean)
+          .join("\n\n")
+      : "";
+    return `Today is ${this.today()}. Check-in notes cover the last 14 days; what was learned from chat history goes back further.\n\n${[talentflow, ...sections, ...groupSections].filter(Boolean).join("\n\n")}`;
   }
 }

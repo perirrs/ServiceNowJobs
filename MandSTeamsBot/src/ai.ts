@@ -122,7 +122,9 @@ export interface Brain {
   /** The Friday report: plan against done, by person, and what keeps coming up. */
   weeklyReport(input: { from: string; to: string; material: string }): Promise<string>;
   /** A short private brief from someone's whole ATS history. */
-  trackBrief?(input: { name: string; role: string; record: string; today: string }): Promise<string>;
+  trackBrief?(input: { name: string; role: string; record: string; today: string; team?: string }): Promise<string>;
+  /** A briefing on the whole ATS: team, clients, people, leaks. */
+  talentflowOverview?(input: { stats: string; today: string; targets: string }): Promise<string>;
   /** One line per person for the end-of-day summary posted in a group. */
   groupDayLines?(input: { group: string; date: string; people: { name: string; role: string; figures: string; note: string }[] }): Promise<string>;
   answer(question: string, material: string): Promise<string>;
@@ -507,6 +509,8 @@ export class ClaudeBrain implements Brain {
 
   /** The stronger model for the digest, weekly report, tracker building and questions. Defaults to the main one. */
   smartModel?: string;
+  /** The strongest model, for the weekly analysis of the whole ATS. Defaults to the smart one. */
+  analysisModel?: string;
   /** Told the tokens used by every call, for the running total on the board. */
   onUsage?: (model: string, input: number, output: number) => void;
 
@@ -819,7 +823,7 @@ Write it as plain notes, no preamble.`,
     );
   }
 
-  async trackBrief(input: { name: string; role: string; record: string; today: string }): Promise<string> {
+  async trackBrief(input: { name: string; role: string; record: string; today: string; team?: string }): Promise<string> {
     return this.text(
       `You read one person's whole history in TalentFlow, the recruitment system of ${this.company}, and write a private brief for leadership and for the assistant that runs their daily check-ins. Today is ${input.today}.
 
@@ -831,9 +835,29 @@ Against role: how this record compares with what their role asks of them.
 Push on: the one or two things to press them on in daily check-ins.
 
 Use only the figures given. Do not guess at reasons or attitude.`,
-      `Name: ${input.name}\nRole and targets: ${input.role || "(not given)"}\n\nTalentFlow history:\n${input.record}`,
-      "medium",
-      true,
+      `Name: ${input.name}\nRole and targets: ${input.role || "(not given)"}\n\nTalentFlow history:\n${input.record}${input.team ? `\n\nThe whole team in TalentFlow, for comparison:\n${input.team}` : ""}`,
+      "high",
+      "analysis",
+    );
+  }
+
+  async talentflowOverview(input: { stats: string; today: string; targets: string }): Promise<string> {
+    return this.text(
+      `You analyse the whole of TalentFlow, the recruitment system of ${this.company}, for its CTO and CEO and for the assistant that runs the team's daily check-ins. Today is ${input.today}.
+
+Targets: ${input.targets}
+
+Write a briefing of about 500 words, plain text with short labelled sections, no tables:
+Overall: where the team stands and how the last six months moved.
+Clients: which clients convert (submissions to L1 selects to joins, spots filled), which take effort without joins, and where requirements sit unfilled.
+People: who is performing against target and who is not, by name, with figures; who has gone quiet in TalentFlow.
+Leaks: where the funnel loses most (no L1, back-outs, unworked requirements).
+Act on: the five things that would move results most this month.
+
+Use only the figures given. Name people and clients. Do not guess at reasons or attitude.`,
+      input.stats,
+      "high",
+      "analysis",
     );
   }
 
@@ -903,8 +927,9 @@ Use only the figures and notes given. Do not rate people or guess at reasons or 
     return response.parsed_output;
   }
 
-  private async text(system: string, content: string, effort: Effort, smart = false): Promise<string> {
-    const model = smart ? (this.smartModel ?? this.model) : this.model;
+  private async text(system: string, content: string, effort: Effort, smart: boolean | "analysis" = false): Promise<string> {
+    const model =
+      smart === "analysis" ? (this.analysisModel ?? this.smartModel ?? this.model) : smart ? (this.smartModel ?? this.model) : this.model;
     const response = await this.client.beta.messages.create({
       model,
       max_tokens: 16000,
