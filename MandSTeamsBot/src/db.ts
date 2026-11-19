@@ -65,6 +65,10 @@ export interface WorkItem {
   due: string | null;
   /** How far along it is, 0 to 100, when known. */
   progress: number | null;
+  /** When blocked: the colleague it is waiting on, as named in the chat. */
+  waitingOn: string | null;
+  /** The date it became blocked; null when it is not blocked. */
+  blockedSince: string | null;
 }
 
 /** The structured note the AI writes at the end of each person's check-in. */
@@ -199,6 +203,8 @@ function toItem(r: Row): WorkItem {
     lastSeen: r.last_seen as string,
     due: (r.due as string | null) || null,
     progress: typeof r.progress === "number" ? (r.progress as number) : null,
+    waitingOn: (r.waiting_on as string | null) || null,
+    blockedSince: (r.blocked_since as string | null) || null,
   };
 }
 
@@ -229,6 +235,8 @@ export class Store {
     const itemColumns = this.db.prepare("PRAGMA table_info(items)").all();
     if (!itemColumns.some((c) => c.name === "due")) this.db.exec("ALTER TABLE items ADD COLUMN due TEXT");
     if (!itemColumns.some((c) => c.name === "progress")) this.db.exec("ALTER TABLE items ADD COLUMN progress INTEGER");
+    if (!itemColumns.some((c) => c.name === "waiting_on")) this.db.exec("ALTER TABLE items ADD COLUMN waiting_on TEXT");
+    if (!itemColumns.some((c) => c.name === "blocked_since")) this.db.exec("ALTER TABLE items ADD COLUMN blocked_since TEXT");
   }
 
   close(): void {
@@ -450,13 +458,34 @@ export class Store {
     date: string,
     due = "",
     progress: number | null = null,
-  ): void {
-    this.db
+  ): number {
+    const res = this.db
       .prepare(
         `INSERT INTO items (person_id, title, status, last_update, first_seen, last_seen, due, progress)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(personId, title, status, update, date, date, due || null, progress);
+    return Number(res.lastInsertRowid);
+  }
+
+  /**
+   * Record who a blocked item is waiting on, and since when it has been
+   * blocked. Leaving blocked clears both.
+   */
+  setItemFlow(itemId: number, status: ItemStatus, waitingOn: string, date: string): void {
+    this.db
+      .prepare(
+        `UPDATE items SET
+           waiting_on = CASE WHEN ? = 'blocked' THEN COALESCE(NULLIF(?, ''), waiting_on) ELSE NULL END,
+           blocked_since = CASE WHEN ? = 'blocked' THEN COALESCE(blocked_since, ?) ELSE NULL END
+         WHERE id = ?`,
+      )
+      .run(status, waitingOn, status, date, itemId);
+  }
+
+  /** Every open or blocked item, for everyone. */
+  allActiveItems(): WorkItem[] {
+    return this.db.prepare("SELECT * FROM items WHERE status IN ('open', 'blocked') ORDER BY id").all().map(toItem);
   }
 
   /** An item of this person's with this title, ignoring case and spacing. */

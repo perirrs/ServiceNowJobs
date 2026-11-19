@@ -2082,3 +2082,53 @@ test("approve-first is on for the rest of the day a group is added, then off by 
   await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
   assert.equal(g.sent.length, 1);
 });
+
+// ---------- work blocked on a colleague, and escalation ----------
+
+test("work blocked on a colleague: shown on the tracker, and the colleague is asked in the group the next day", async () => {
+  const t = trackerSetup();
+  await t.engine.handleMessage(t.cto, "add group Recruitment Team");
+  const ravi = t.store.personByEmail("ravi@acme.test")!;
+  const id = t.store.addItem(ravi.id, "Website content", "blocked", "waiting for copy", "2026-11-16");
+  t.store.setItemFlow(id, "blocked", "Priya", "2026-11-16");
+
+  assert.equal(await t.engine.chaseDependencies(), 0); // not on the day it was raised
+  await t.engine.refreshTrackers();
+  assert.match(t.created.at(-1)!.html, /🟠 Blocked · waiting on Priya/);
+
+  t.setDate("2026-11-17T10:00:00Z");
+  assert.equal(await t.engine.chaseDependencies(), 1);
+  const ask = t.sent.at(-1)!;
+  assert.equal(ask.to, "g-rec");
+  assert.deepEqual(ask.mentions, [{ userId: "u-priya", name: "Priya Rao" }]);
+  assert.match(ask.text, /Website content/);
+  assert.equal(await t.engine.chaseDependencies(), 0); // once a day
+
+  // Priya's answer in the group is a check-in about that work.
+  const priya = t.store.personByEmail(PRIYA)!;
+  const checkin = t.store.checkin(priya.id, "2026-11-17")!;
+  assert.equal(checkin.status, "open");
+  t.brain.doneAfterUserMessages = 99;
+  await t.engine.handleGroupReply("u-priya", "will send tomorrow");
+  assert.match(t.brain.turns.at(-1)!.topic!, /Ravi is waiting on them for "Website content"/);
+});
+
+test("blocked two days or overdue three days goes to the admins once, with a suggestion", async () => {
+  const t = setup();
+  await onboard(t);
+  const priya = t.store.personByEmail(PRIYA)!;
+  const a = t.store.addItem(priya.id, "Client deck", "blocked", "waiting", "2026-11-12");
+  t.store.setItemFlow(a, "blocked", "Ravi", "2026-11-12");
+  t.store.addItem(priya.id, "Landing page", "open", "half", "2026-11-01", "2026-11-10");
+  t.store.addItem(priya.id, "Fresh task", "open", "", "2026-11-16", "2026-11-15"); // one day late: not yet
+
+  t.setDate("2026-11-16T11:00:00Z");
+  assert.equal(await t.engine.escalate(), 2);
+  const msg = t.to(CTO).at(-1)!;
+  assert.match(msg, /Needs a decision\*\* \(2\)/);
+  assert.match(msg, /"Client deck" blocked 4 days, waiting on Ravi\. Suggest: ask Ravi for a firm date/);
+  assert.match(msg, /"Landing page" 6 days overdue/);
+  assert.equal(await t.engine.escalate(), 0); // once a day
+  t.setDate("2026-11-17T11:00:00Z");
+  assert.equal(await t.engine.escalate(), 0); // and each item once per reason
+});

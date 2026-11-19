@@ -222,6 +222,9 @@ function shown(out: Outgoing): string {
   return text;
 }
 
+/** Whole days from one YYYY-MM-DD date to another. */
+const daysBetween = (from: string, to: string) => Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
+
 const clamp = (n: number, low: number, high: number) => Math.min(high, Math.max(low, n));
 /** Plus or minus a quarter, so replies do not arrive like clockwork. */
 const jitter = (ms: number) => Math.round(ms * (0.75 + Math.random() * 0.5));
@@ -516,6 +519,109 @@ export class Engine {
         { type: "Action.Submit", title: "Skip", data: { cmd: "draftSkip", id } },
       ],
     });
+  }
+
+  /** A colleague named in a "waiting on", if they are one of the people followed. */
+  private resolveColleague(name: string): Person | undefined {
+    const want = name.trim().toLowerCase();
+    if (!want) return undefined;
+    const people = this.store.nominees();
+    return (
+      people.find((p) => displayName(p).toLowerCase() === want) ??
+      people.find((p) => displayName(p).toLowerCase().split(/\s+/)[0] === want.split(/\s+/)[0]) ??
+      people.find((p) => p.email.split("@")[0]!.split(".")[0] === want.split(/\s+/)[0])
+    );
+  }
+
+  /**
+   * Work blocked on a colleague: ask that colleague, once a day, in a group
+   * both are in (or one to one if there is none). Their answer is then
+   * followed up like any other check-in.
+   */
+  async chaseDependencies(): Promise<number> {
+    if (this.paused || !this.direct || !this.inOfficeHours()) return 0;
+    const date = this.today();
+    let chased = 0;
+    for (const item of this.store.allActiveItems()) {
+      if (item.status !== "blocked" || !item.waitingOn) continue;
+      if (!item.blockedSince || item.blockedSince >= date) continue; // from the day after it was raised
+      if (this.store.get(`depchase:${item.id}`) === date) continue;
+      const owner = this.store.personById(item.personId);
+      const helper = this.resolveColleague(item.waitingOn);
+      if (!owner?.nominated || !helper || helper.id === owner.id || this.isAdmin(helper)) continue;
+
+      const ownerName = displayName(owner).split(" ")[0]!;
+      const pool = [
+        `{@0} ${item.title}: ${ownerName} is waiting on you for this. When can you send it?`,
+        `{@0} any update on ${item.title}? ${ownerName} needs it to move ahead`,
+        `{@0} ${ownerName} is blocked on ${item.title} from your side. pls share by when`,
+      ];
+      const text = pool[Math.floor(Math.random() * pool.length)]!;
+      const shared = this.store.groupsOf(owner.id).find((g) => this.store.groupsOf(helper.id).includes(g));
+      const group = this.store.groups().find((g) => g.id === shared);
+      const userId = this.store.get(`aadOf:${helper.id}`);
+      this.store.set(`depchase:${item.id}`, date);
+      try {
+        if (group && userId) {
+          await this.sendAsSender({ chatId: group.chatId, text, mentions: [{ userId, name: displayName(helper) }], label: `${displayName(helper)} in ${group.name}` });
+        } else if (helper.chatId) {
+          await this.sendAsSender({ chatId: helper.chatId, text: text.replace("{@0} ", ""), label: displayName(helper) });
+        } else {
+          continue;
+        }
+      } catch (err) {
+        this.log(`Could not ask ${helper.email} about ${item.title}`, err);
+        continue;
+      }
+      // Their answer is a check-in like any other, about this piece of work.
+      const existing = this.store.checkin(helper.id, date);
+      if (!existing || existing.status !== "open") {
+        const checkin = this.store.openCheckin(helper.id, date);
+        this.beginAsk(checkin);
+        this.store.set(`via:${checkin.id}`, group ? String(group.id) : "");
+        this.store.set(`kind:${checkin.id}`, "update");
+        this.store.set(`topic:${checkin.id}`, `${ownerName} is waiting on them for "${item.title}". Find out when it will be ready.`);
+        this.store.addMessage(checkin.id, "bot", shown({ chatId: "", text, mentions: [{ userId: userId ?? "", name: displayName(helper) }], label: "" }));
+      }
+      chased++;
+    }
+    return chased;
+  }
+
+  /**
+   * Once a day: anything blocked two days or more, or overdue three days or
+   * more, goes to the admins with a suggested next step. Each item at most
+   * once for each reason.
+   */
+  async escalate(): Promise<number> {
+    const date = this.today();
+    if (this.store.get("escday") === date) return 0;
+    const hours = this.officeHours();
+    const { minutes, weekend } = this.localNow(hours?.zone ?? this.tz);
+    if (weekend || minutes < (hours ? hours.start + 60 : 10 * 60)) return 0;
+    this.store.set("escday", date);
+
+    const lines: string[] = [];
+    for (const item of this.store.allActiveItems()) {
+      const owner = this.store.personById(item.personId);
+      if (!owner?.nominated) continue;
+      const who = displayName(owner);
+      if (item.status === "blocked" && item.blockedSince && daysBetween(item.blockedSince, date) >= 2 && !this.store.get(`esc:${item.id}:blocked`)) {
+        this.store.set(`esc:${item.id}:blocked`, date);
+        const days = daysBetween(item.blockedSince, date);
+        lines.push(
+          item.waitingOn
+            ? `- **${who}**: "${item.title}" blocked ${days} days, waiting on ${item.waitingOn}. Suggest: ask ${item.waitingOn.split(" ")[0]} for a firm date, or decide whether ${who.split(" ")[0]} can go ahead without it.`
+            : `- **${who}**: "${item.title}" blocked ${days} days. Suggest: find out what exactly is stopping it, and who can remove it.`,
+        );
+      }
+      if (item.due && daysBetween(item.due, date) >= 3 && !this.store.get(`esc:${item.id}:overdue`)) {
+        this.store.set(`esc:${item.id}:overdue`, date);
+        lines.push(`- **${who}**: "${item.title}" ${daysBetween(item.due, date)} days overdue (was due ${item.due}). Suggest: agree a new date with ${who.split(" ")[0]}, or drop it.`);
+      }
+    }
+    if (lines.length) await this.notifyAdmins(`**Needs a decision** (${lines.length})\n\n${lines.join("\n")}`);
+    return lines.length;
   }
 
   /** A card listing what was sent in the sender's name today, each with a Delete button. */
@@ -1132,9 +1238,10 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       const updated =
         change.itemId != null &&
         this.store.updateItem(person.id, change.itemId, change.status, change.update, checkin.date, validDate(change.due), validProgress(change.progress, change.status));
-      if (!updated) {
-        this.store.addItem(person.id, change.title, change.status, change.update, checkin.date, validDate(change.due), validProgress(change.progress, change.status));
-      }
+      const id = updated
+        ? change.itemId!
+        : this.store.addItem(person.id, change.title, change.status, change.update, checkin.date, validDate(change.due), validProgress(change.progress, change.status));
+      this.store.setItemFlow(id, change.status, change.waitingOn ?? "", checkin.date);
     }
     this.store.set(`noted:${checkin.id}`, String(this.store.messages(checkin.id).filter((m) => m.role === "user").length));
     return note;
@@ -1657,7 +1764,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
               i.status === "done"
                 ? "✅ Done"
                 : i.status === "blocked"
-                  ? "🟠 Blocked"
+                  ? `🟠 Blocked${i.waitingOn ? ` · waiting on ${esc(i.waitingOn.split(" ")[0]!)}` : ""}`
                   : i.due && i.due < date
                     ? "🔴 Overdue"
                     : i.due === date
@@ -1694,8 +1801,10 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       const due = validDate(entry.due);
       const progress = validProgress(entry.progress, entry.status);
       const existing = this.store.itemByTitle(person.id, entry.title);
+      let id = existing?.id;
       if (existing) this.store.updateItem(person.id, existing.id, entry.status, entry.doneSoFar, date, due, progress);
-      else this.store.addItem(person.id, entry.title.trim(), entry.status, entry.doneSoFar, date, due, progress);
+      else id = this.store.addItem(person.id, entry.title.trim(), entry.status, entry.doneSoFar, date, due, progress);
+      this.store.setItemFlow(id!, entry.status, entry.waitingOn ?? "", date);
       counts.set(person.id, (counts.get(person.id) ?? 0) + 1);
     }
     return counts;
@@ -1899,6 +2008,8 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     await this.noteProgress();
     await this.refreshTrackers();
     await this.pushSentLog();
+    await this.chaseDependencies();
+    await this.escalate();
     await this.refreshBoards();
 
     type Job = [string, () => Promise<unknown>];
