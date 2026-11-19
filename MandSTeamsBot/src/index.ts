@@ -51,6 +51,7 @@ if (config.sendAsUser) {
       sentByAssistant.add(normalise(shown));
       await g.send(chatId, text, mentions, quote);
     },
+    sync: () => pollNow(),
     findGroups: (query) => g.findGroups(query),
     groupMembers: (chatId) => g.groupMembers(chatId),
     history: async (chatId, max, since) =>
@@ -102,43 +103,78 @@ async function pollChats(g: GraphChat): Promise<void> {
       store.get(key) ??
       new Date((opened ? Date.parse(`${opened.replace(" ", "T")}Z`) : Date.now()) - 5000).toISOString();
     try {
-      for (const line of await g.messagesSince(person.chatId!, since)) {
-        store.set(key, line.createdAt);
-        if (line.fromUserId !== senderId) {
-          await engine.handleDirectReply(person.id, line.text);
-          continue;
-        }
-        // From the sender's account: the assistant's own message, or the person typing?
-        // The recorded check-in messages cover the case where the bot was restarted.
-        const text = normalise(line.text);
-        const recorded = store.messages(checkin.id).some((m) => m.role === "bot" && normalise(m.text) === text);
-        if (!recorded && !sentByAssistant.has(text)) engine.manualTakeover(person.id);
-      }
+      const lines = await g.messagesSince(person.chatId!, since);
+      if (!lines.length) continue;
+      // Move on before acting: reading a message twice would answer it twice.
+      store.set(key, lines.at(-1)!.createdAt);
+
+      // From the sender's account: the assistant's own message, or the person typing?
+      // The recorded check-in messages cover the case where the bot was restarted.
+      const recorded = store.messages(checkin.id).filter((m) => m.role === "bot").map((m) => normalise(m.text));
+      const typedBySender = lines.some(
+        (l) => l.fromUserId === senderId && !recorded.includes(normalise(l.text)) && !sentByAssistant.has(normalise(l.text)),
+      );
+      // Looked at first, so that nothing else in this batch is answered over the sender.
+      if (typedBySender) engine.manualTakeover(person.id);
+
+      // Several quick messages are one thing said, and get one answer.
+      const theirs = lines.filter((l) => l.fromUserId !== senderId).map((l) => l.text).join("\n");
+      if (theirs) await engine.handleDirectReply(person.id, theirs);
     } catch (err) {
       console.error(`Could not read the chat with ${person.email}`, err);
     }
   }
 }
 
-/** Read new messages in each group chat that was asked for updates and is still within its window. */
+/** Read new messages in each group chat that was asked for updates and is still being followed. */
 async function pollGroups(g: GraphChat): Promise<void> {
   for (const { group, askedAt } of engine.listeningGroups()) {
     const key = `gcursor:${group.id}`;
     const since = store.get(key) || new Date(Date.parse(askedAt) - 5000).toISOString();
     try {
-      for (const line of await g.messagesSince(group.chatId, since)) {
-        store.set(key, line.createdAt);
-        if (line.fromUserId !== senderId) {
-          await engine.handleGroupReply(line.fromUserId, line.text, line.id);
-        } else if (!sentByAssistant.has(normalise(line.text)) && !engine.isAssistantGroupText(group.id, line.text)) {
-          // The sender wrote this themselves: the assistant steps back for whoever it was aimed at.
-          engine.senderSpokeInGroup(group.id, line.addressedUserIds);
-        }
+      const lines = await g.messagesSince(group.chatId, since);
+      if (!lines.length) continue;
+      store.set(key, lines.at(-1)!.createdAt);
+
+      // What the sender wrote himself comes first: the assistant steps back for whoever it was aimed at.
+      for (const line of lines) {
+        if (line.fromUserId !== senderId) continue;
+        if (sentByAssistant.has(normalise(line.text)) || engine.isAssistantGroupText(group.id, line.text)) continue;
+        engine.senderSpokeInGroup(group.id, line.addressedUserIds);
+      }
+
+      // Then each person's messages, taken together, in the order people first spoke.
+      const byPerson = new Map<string, { text: string[]; lastId: string }>();
+      for (const line of lines) {
+        if (line.fromUserId === senderId) continue;
+        const entry = byPerson.get(line.fromUserId) ?? { text: [], lastId: "" };
+        entry.text.push(line.text);
+        entry.lastId = line.id;
+        byPerson.set(line.fromUserId, entry);
+      }
+      for (const [userId, said] of byPerson) {
+        await engine.handleGroupReply(userId, said.text.join("\n"), said.lastId, group.id);
       }
     } catch (err) {
       console.error(`Could not read the group chat ${group.name}`, err);
     }
   }
+}
+
+/** One pass over every watched chat. Calls made while a pass is running share it. */
+let polling: Promise<void> | null = null;
+function pollNow(): Promise<void> {
+  if (!graph) return Promise.resolve();
+  const g = graph;
+  polling ??= (async () => {
+    try {
+      await pollGroups(g);
+      await pollChats(g);
+    } finally {
+      polling = null;
+    }
+  })();
+  return polling;
 }
 
 /** Build an Identity from an inbound activity. Only one-to-one chats count. */
@@ -180,22 +216,23 @@ app.on("message", async ({ activity, api, send }) => {
 // Once a minute: the chase, closing quiet conversations, and anything on the
 // schedule. The schedule itself is set from the chat ("schedule 17:00") and
 // kept in the database, so there is nothing to configure here.
-setInterval(() => {
-  engine.tick().catch((err) => console.error("[tick] failed", err));
+let ticking = false;
+setInterval(async () => {
+  // Never two at once: a slow send must not let the next tick repeat a chase.
+  if (ticking) return;
+  ticking = true;
+  try {
+    await engine.tick();
+  } catch (err) {
+    console.error("[tick] failed", err);
+  } finally {
+    ticking = false;
+  }
 }, 60_000);
 
 if (graph) {
-  const g = graph;
-  let busy = false;
-  setInterval(async () => {
-    if (busy) return;
-    busy = true;
-    try {
-      await pollGroups(g);
-      await pollChats(g);
-    } finally {
-      busy = false;
-    }
+  setInterval(() => {
+    pollNow().catch((err) => console.error("[poll] failed", err));
   }, config.pollSeconds * 1000);
 }
 

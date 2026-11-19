@@ -2,7 +2,7 @@ import { displayName, renderItems, renderNote } from "./ai.js";
 import type { AdminAction, Brain, CheckinContext, DigestPerson } from "./ai.js";
 import { todayIn } from "./config.js";
 import type { Config } from "./config.js";
-import type { Checkin, Group, Person, Store } from "./db.js";
+import type { ChatMessage, Checkin, Group, Person, Store } from "./db.js";
 
 /** Sends a chat message to a Teams conversation. Implemented by teams.ts, faked in tests. */
 export interface Messenger {
@@ -30,6 +30,8 @@ export interface DirectChannel {
     /** The message being answered, shown quoted above the reply. */
     quote?: { messageId: string; preview: string; userId: string; name: string },
   ): Promise<void>;
+  /** Read every watched chat now, so a decision to chase is made on what has really been said. */
+  sync?(): Promise<void>;
   /** The sender's named group chats whose name contains the query. */
   findGroups?(query: string): Promise<{ chatId: string; name: string }[]>;
   /** Everyone in a group chat except the sender. */
@@ -162,6 +164,28 @@ function daysBefore(date: string, days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+const clamp = (n: number, low: number, high: number) => Math.min(high, Math.max(low, n));
+/** Plus or minus a quarter, so replies do not arrive like clockwork. */
+const jitter = (ms: number) => Math.round(ms * (0.75 + Math.random() * 0.5));
+
+/** What a person wrote that is waiting for an answer. Several quick messages are taken together. */
+interface Incoming {
+  text: string;
+  fromGroup: boolean;
+  /** Teams id of their (last) message, for quoting in a group reply. */
+  messageId: string;
+  /** Our own record ids of these messages. */
+  ids: number[];
+}
+
+/** A reply that has been written but not yet sent. */
+interface Draft {
+  turn: { reply: string; done: boolean; private?: boolean };
+  incoming: Incoming;
+  /** How many messages the person had sent when this was written. */
+  userCount: number;
+}
+
 export class Engine {
   /** One queue per person, so two quick messages are handled in order. */
   private queues = new Map<number, Promise<unknown>>();
@@ -219,7 +243,7 @@ export class Engine {
   private async say(person: Person, text: string): Promise<void> {
     if (this.paused) throw new Error("Paused: nothing is sent to staff");
     const to = this.address(person);
-    if (!to) return;
+    if (!to) throw new Error(`No chat to reach ${person.email} in`);
     const channel = this.direct ?? this.messenger;
     for (const part of chunk(text)) await channel.send(to, part);
   }
@@ -479,6 +503,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
 
     await this.refreshMemory(person);
     const checkin = this.store.openCheckin(person.id, date);
+    this.beginAsk(checkin);
     this.store.set(`via:${checkin.id}`, "");
     this.store.set(`topic:${checkin.id}`, topic);
     try {
@@ -571,9 +596,9 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     let closed = 0;
     for (const checkin of this.store.openCheckinsBefore(this.today())) {
       const person = this.store.personById(checkin.personId);
-      const replied = this.store.messages(checkin.id).some((m) => m.role === "user");
+      const replied = this.sinceAsk(checkin.id).some((m) => m.role === "user");
       if (!person || !replied) {
-        this.store.setCheckinStatus(checkin.id, "no_response");
+        this.closeUnanswered(checkin);
         closed++;
         continue;
       }
@@ -591,6 +616,19 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     return closed;
   }
 
+  /**
+   * How long a person would take to read what was written, and to type a
+   * reply, in milliseconds. A short "Ok, noted." goes out in about ten
+   * seconds; a long reply takes a minute or more.
+   */
+  pace = {
+    read: (text: string) => jitter(clamp(4000 + text.length * 40, 5000, 25_000)),
+    type: (reply: string) => jitter(clamp(reply.length * 220, 4000, 100_000)),
+  };
+
+  /** Messages received and waiting to be "read", per check-in. A new message restarts the wait. */
+  private pending = new Map<number, { timer: ReturnType<typeof setTimeout>; ids: number[]; text: string }>();
+
   private async handleUpdate(person: Person, text: string, fromGroup = false, messageId = ""): Promise<void> {
     if (!text) return;
     const date = this.today();
@@ -604,49 +642,162 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     // Paused: what they said is kept, and nothing is sent back.
     if (this.paused) return;
 
+    if (!this.config.humanDelay) {
+      const draft = await this.draftReply(person, checkin, { text, fromGroup, messageId, ids: [recordId] });
+      if (draft) await this.deliverReply(person, checkin, draft);
+      return;
+    }
+
+    // At a human pace: wait as long as it takes to read this, then answer. If
+    // they write again in the meantime, start the wait again and answer it all at once.
+    const waiting = this.pending.get(checkin.id);
+    if (waiting) clearTimeout(waiting.timer);
+    const incoming: Incoming = {
+      text: waiting ? `${waiting.text}\n${text}` : text,
+      fromGroup,
+      messageId,
+      ids: [...(waiting?.ids ?? []), recordId],
+    };
+    const checkinId = checkin.id;
+    const timer = setTimeout(() => {
+      this.pending.delete(checkinId);
+      void this.answerAtHumanPace(person.id, checkinId, incoming);
+    }, this.pace.read(incoming.text));
+    this.pending.set(checkinId, { timer, ids: incoming.ids, text: incoming.text });
+  }
+
+  /** The check-in, if it is still one the assistant should be speaking in. */
+  private liveCheckin(personId: number, checkinId: number): { person: Person; checkin: Checkin } | null {
+    const person = this.store.personById(personId);
+    const checkin = this.store.checkin(personId, this.today());
+    if (!person || !checkin || checkin.id !== checkinId || checkin.status !== "open") return null;
+    if (this.store.get(`takeover:${checkin.id}`) || this.paused) return null;
+    return { person, checkin };
+  }
+
+  /** Write the reply, "type" it for a believable time, then send it if nothing has changed meanwhile. */
+  private async answerAtHumanPace(personId: number, checkinId: number, incoming: Incoming): Promise<void> {
     try {
-      // The cap is on follow-ups: what the assistant has said since the person first replied.
-      // The opening question and any chase before that do not use it up.
-      const soFar = this.store.messages(checkin.id);
+      const draft = await this.enqueue(personId, async () => {
+        const live = this.liveCheckin(personId, checkinId);
+        return live ? this.draftReply(live.person, live.checkin, incoming) : null;
+      });
+      if (!draft) return;
+      // The typing time is spent outside the queue, so a message arriving now is not held up.
+      await new Promise((resolve) => setTimeout(resolve, this.pace.type(draft.turn.reply)));
+      await this.enqueue(personId, async () => {
+        const live = this.liveCheckin(personId, checkinId);
+        if (live) await this.deliverReply(live.person, live.checkin, draft);
+      });
+    } catch (err) {
+      this.log(`Could not answer person ${personId}`, err);
+    } finally {
+      await this.refreshBoards().catch(() => undefined);
+    }
+  }
+
+  /** Decide what to say back. Null when nothing should be sent (chatter, a handover, or a failure). */
+  private async draftReply(person: Person, checkin: Checkin, incoming: Incoming): Promise<Draft | null> {
+    try {
+      // The cap is on follow-ups: what the assistant has said since the person first replied
+      // to the latest ask. The opening question and any chase before that do not use it up.
+      const soFar = this.sinceAsk(checkin.id);
       const firstReply = soFar.findIndex((m) => m.role === "user");
       const followUps = soFar.slice(firstReply).filter((m) => m.role === "bot").length;
       const finalTurn = followUps >= this.config.maxBotTurns - 1;
-      const turn = await this.brain.nextTurn(this.context(person, checkin, finalTurn, fromGroup));
+      const turn = await this.brain.nextTurn(this.context(person, checkin, finalTurn, incoming.fromGroup));
       if (turn.ignore) {
         // Group chatter, not an update: as if it was never said.
-        this.store.removeMessage(recordId);
-        return;
+        for (const id of incoming.ids) this.store.removeMessage(id);
+        return null;
       }
       if (turn.handover || !turn.reply) {
         // Something only a person should answer: go quiet here and tell the admins.
         this.store.set(`takeover:${checkin.id}`, "handover");
         await this.notifyAdmins(
-          `**${displayName(person)} needs a personal reply.** They wrote: "${text}"\n\nI have stopped replying in that chat for today. Anything else they say is still recorded for the note.`,
+          `**${displayName(person)} needs a personal reply.** They wrote: "${incoming.text}"\n\nI have stopped replying in that chat for today. Anything else they say is still recorded for the note.`,
         );
-        return;
+        return null;
       }
+      const userCount = this.store.messages(checkin.id).filter((m) => m.role === "user").length;
+      return { turn, incoming, userCount };
+    } catch (err) {
+      this.log(`Check-in reply failed for ${person.email}`, err);
+      await this.replyFailed(person);
+      return null;
+    }
+  }
+
+  /** Send a drafted reply, unless the conversation moved on while it was being written. */
+  private async deliverReply(person: Person, checkin: Checkin, draft: Draft): Promise<void> {
+    const { turn, incoming } = draft;
+    // They wrote again while this was being "typed": the newer round will answer everything.
+    if (this.store.messages(checkin.id).filter((m) => m.role === "user").length !== draft.userCount) return;
+    try {
       // Answer where they wrote. In a group that means in the group, tagged,
       // unless this reply has to stay out of it.
       const inGroup =
-        fromGroup && !turn.private && (await this.sayInGroup(person, checkin, turn.reply, { id: messageId, text }));
+        incoming.fromGroup &&
+        !turn.private &&
+        (await this.sayInGroup(person, checkin, turn.reply, { id: incoming.messageId, text: incoming.text }));
       if (!inGroup) await this.say(person, turn.reply);
       this.store.set(`lastwhere:${checkin.id}`, inGroup ? "group" : "direct");
-      if (fromGroup && !inGroup) {
+      if (incoming.fromGroup && !inGroup) {
         // Their one-to-one chat is watched only from this private message on, so
         // nothing said there earlier is mistaken for part of the check-in.
         this.store.set(`cursor:${checkin.id}`, new Date(this.now().getTime() - 3000).toISOString());
       }
       this.store.addMessage(checkin.id, "bot", turn.reply);
-      if (turn.done) await this.finish(person, checkin);
     } catch (err) {
       this.log(`Check-in reply failed for ${person.email}`, err);
-      // The message is already stored, so it still reaches tonight's note.
+      await this.replyFailed(person);
+      return;
+    }
+    if (!turn.done) return;
+    try {
+      await this.finish(person, checkin);
+    } catch (err) {
+      // The closing line did go out. It needs no chase; the note is tried again when the chat is next closed.
+      this.log(`Could not write the note for ${person.email}`, err);
+      this.store.set(`midchase:${checkin.id}`, "1");
+    }
+  }
+
+  private async replyFailed(person: Person): Promise<void> {
+    // What they wrote is already stored, so it still reaches the note.
+    try {
       if (this.personal) {
         await this.notifyAdmins(`I could not reply to ${displayName(person)} just now (their message is saved). The server log has the details.`);
       } else {
         await this.say(person, "Noted. I had trouble replying just now, so if there is more to add, send it and I will pick it up.");
       }
+    } catch (err) {
+      this.log(`Could not report the failed reply for ${person.email}`, err);
     }
+  }
+
+  /**
+   * A new ask on a check-in that may have been used earlier today. Everything
+   * that follows (chases, idle close, the follow-up cap) looks only at what is
+   * said from here on, and flags left by the earlier round are cleared.
+   */
+  private beginAsk(checkin: Checkin): void {
+    this.store.set(`askmark:${checkin.id}`, String(this.store.messages(checkin.id).length));
+    for (const flag of ["takeover", "midchase", "lastwhere"]) this.store.set(`${flag}:${checkin.id}`, "");
+    this.store.resetReminded(checkin.id);
+    const waiting = this.pending.get(checkin.id);
+    if (waiting) clearTimeout(waiting.timer);
+    this.pending.delete(checkin.id);
+  }
+
+  /** The messages of a check-in since it was last asked. */
+  private sinceAsk(checkinId: number): ChatMessage[] {
+    return this.store.messages(checkinId).slice(Number(this.store.get(`askmark:${checkinId}`) || 0));
+  }
+
+  /** Close a check-in nobody answered: back to "completed" if an earlier round today already produced a note. */
+  private closeUnanswered(checkin: Checkin): void {
+    this.store.setCheckinStatus(checkin.id, this.store.hasNote(checkin.id) ? "completed" : "no_response");
   }
 
   /** Turn the day's conversation into a note and update the person's open items. */
@@ -713,7 +864,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     if (this.paused) return 0;
     for (const checkin of this.store.checkinsOn(this.today())) {
       if (checkin.status !== "open") continue;
-      const messages = this.store.messages(checkin.id);
+      const messages = this.sinceAsk(checkin.id);
       if (!this.awaitingFollowUp(checkin, messages)) continue;
       const lastAt = Date.parse(`${messages.at(-1)!.at.replace(" ", "T")}Z`);
       if (minMinutes > 0 && this.now().getTime() - lastAt < minMinutes * 60_000) continue;
@@ -743,7 +894,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     let closed = 0;
     for (const checkin of this.store.checkinsOn(this.today())) {
       if (checkin.status !== "open") continue;
-      const messages = this.store.messages(checkin.id);
+      const messages = this.sinceAsk(checkin.id);
       if (!messages.some((m) => m.role === "user")) continue;
       // A follow-up question still waiting for its one chase is not "quiet" yet.
       if (this.awaitingFollowUp(checkin, messages)) continue;
@@ -781,7 +932,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       const checkin = this.store.checkin(target.id, this.today());
       if (checkin?.status === "open") {
         if (topic) this.store.set(`topic:${checkin.id}`, topic);
-        if (this.store.messages(checkin.id).some((m) => m.role === "user")) {
+        if (this.sinceAsk(checkin.id).some((m) => m.role === "user")) {
           return `${name} is in the middle of replying. Their summary will appear here when the conversation finishes.`;
         }
         const nudge = this.nudgeText();
@@ -832,7 +983,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     const members: Person[] = [];
     for (const m of await this.direct!.groupMembers!(group.chatId)) {
       const person = this.store.upsertPerson(m.email, { name: m.name });
-      if (!person.nominated) this.store.setNominated(person.id, true);
+      if (!person.nominated && !this.isAdmin(person)) this.store.setNominated(person.id, true);
       this.store.set(`aad:${m.userId}`, String(person.id));
       this.store.set(`aadOf:${person.id}`, m.userId);
       members.push(this.store.personById(person.id)!);
@@ -852,12 +1003,14 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       // Admins in the group see the question like everyone else, but are not
       // chased or followed up: the summaries are for them.
       if (this.isAdmin(p)) return false;
+      // On the group's schedule, someone with a time of their own waits for it.
+      if (!force && this.store.get(`schedule:person:${p.id}`)) return false;
       const c = this.store.checkin(p.id, date);
       if (!c) return true;
       if (!force) return false;
       // Asked by hand: also anyone who finished earlier, and anyone asked today
       // who has said nothing. Only people in the middle of replying are left alone.
-      return c.status !== "open" || !this.store.messages(c.id).some((m) => m.role === "user");
+      return c.status !== "open" || !this.sinceAsk(c.id).some((m) => m.role === "user");
     });
     if (!due.length) {
       return {
@@ -940,6 +1093,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     );
     for (const person of due) {
       const checkin = this.store.openCheckin(person.id, date);
+      this.beginAsk(checkin);
       this.store.addMessage(checkin.id, "bot", text);
       this.store.set(`via:${checkin.id}`, String(group.id));
       const own = tagged.find((t) => t.person.id === person.id)?.question;
@@ -948,9 +1102,11 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         [topic, own ? `In the group they were asked directly: "${own}"` : ""].filter(Boolean).join("\n"),
       );
     }
+    // Start reading from this ask, unless the group is already being read:
+    // then carry on from where the reading had got to, so nothing is skipped.
+    if (!this.store.get(`gasked:${group.id}`)) this.store.set(`gcursor:${group.id}`, "");
     this.store.set(`gasked:${group.id}`, this.now().toISOString());
     this.store.set(`gchased:${group.id}`, "");
-    this.store.set(`gcursor:${group.id}`, "");
     return {
       asked: due.length,
       message: `Posted in **${group.name}** (${due.length} people): "${text}"\n\nSummaries will appear here as each person finishes.`,
@@ -966,12 +1122,16 @@ So you know how it's used: your answers are summarised each day for the CTO and 
   }
 
   /** Someone wrote in a group chat that is being watched. `userId` is their directory id. */
-  async handleGroupReply(userId: string, text: string, messageId = ""): Promise<void> {
+  async handleGroupReply(userId: string, text: string, messageId = "", groupId?: number): Promise<void> {
     const person = this.store.personById(Number(this.store.get(`aad:${userId}`) || 0));
     if (!person?.nominated) return;
     await this.enqueue(person.id, async () => {
       const checkin = this.store.checkin(person.id, this.today());
       if (checkin?.status !== "open") return;
+      // Only when they were asked in this very group. Someone asked one to one, or in
+      // another group, is just talking here: it is not an answer to the assistant.
+      const via = this.store.get(`via:${checkin.id}`);
+      if (!via || (groupId !== undefined && via !== String(groupId))) return;
       // Follow-ups go to them one to one, so that chat has to exist.
       let current = person;
       if (!current.chatId && this.direct) {
@@ -995,7 +1155,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         return (
           c?.status === "open" &&
           this.store.get(`via:${c.id}`) === String(group.id) &&
-          !this.store.messages(c.id).some((m) => m.role === "user")
+          !this.sinceAsk(c.id).some((m) => m.role === "user")
         );
       });
 
@@ -1019,7 +1179,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
 
       if (minutes >= this.config.groupWindowMinutes) {
         // Stop reading the group. Whoever said nothing is marked as not having replied.
-        for (const p of silent) this.store.setCheckinStatus(this.store.checkin(p.id, date)!.id, "no_response");
+        for (const p of silent) this.closeUnanswered(this.store.checkin(p.id, date)!);
         // Follow-ups happen in the group, so keep reading it until every conversation from this ask is closed.
         const stillTalking = this.store.groupMembers(group.id).some((p) => {
           const c = this.store.checkin(p.id, date);
@@ -1087,6 +1247,11 @@ So you know how it's used: your answers are summarised each day for the CTO and 
   /** Runs once a minute: the chase, closing quiet conversations, and anything scheduled. */
   async tick(): Promise<void> {
     this.store.set("heartbeat", this.now().toISOString());
+    try {
+      await this.direct?.sync?.();
+    } catch (err) {
+      this.log("Could not read the chats before this tick", err);
+    }
     await this.closePastDays();
     await this.runReminders(this.config.chaseAfterMinutes);
     await this.runGroupTimers();
@@ -1117,7 +1282,21 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       if (minutes < due || minutes > due + 10 || this.store.get(`ran:${kind}`) === date) continue;
       this.store.set(`ran:${kind}`, date);
       this.log(`[schedule] running ${kind} for ${date}`);
-      await job();
+      try {
+        await job();
+      } catch (err) {
+        this.log(`[schedule] ${kind} failed`, err);
+        const failKey = `ranfail:${kind}:${date}`;
+        const fails = Number(this.store.get(failKey) || 0) + 1;
+        this.store.set(failKey, String(fails));
+        if (fails < 3) {
+          this.store.set(`ran:${kind}`, ""); // try again on the next tick, inside the window
+        } else {
+          await this.notifyAdmins(
+            `A scheduled action failed three times and has been skipped for today (${kind}). Send **ask all** to do it by hand; the server log has the details.`,
+          );
+        }
+      }
     }
   }
 
@@ -1172,7 +1351,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
 
     const placed = nominees.slice(0, 30).map((person) => {
       const checkin = this.store.checkin(person.id, date);
-      const messages = checkin ? this.store.messages(checkin.id) : [];
+      const messages = checkin ? this.sinceAsk(checkin.id) : [];
       const lastFromThem = messages.filter((m) => m.role === "user").at(-1);
       const note = todaysNotes.get(person.id);
       const blockedItem = this.store.activeItems(person.id).find((i) => i.status === "blocked");
@@ -1389,12 +1568,14 @@ So you know how it's used: your answers are summarised each day for the CTO and 
   async runCheckins(): Promise<{ sent: number; unreachable: Person[] }> {
     let sent = 0;
     const unreachable: Person[] = [];
+    const failed: string[] = [];
     for (const group of this.store.groups()) {
       if (this.store.get(`schedule:group:${group.id}`)) continue; // has a time of its own
       try {
         sent += (await this.askGroup(group)).asked;
       } catch (err) {
         this.log(`Could not ask group ${group.name}`, err);
+        failed.push(group.name);
       }
     }
     for (const person of this.store.nominees()) {
@@ -1408,7 +1589,11 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         if (await this.enqueue(person.id, () => this.startCheckin(person))) sent++;
       } catch (err) {
         this.log(`Could not start check-in for ${person.email}`, err);
+        failed.push(displayName(person));
       }
+    }
+    if (failed.length) {
+      await this.notifyAdmins(`I could not ask: ${failed.join(", ")}. Send **ask** with their name to try again; the server log has the details.`);
     }
     return { sent, unreachable };
   }
@@ -1424,7 +1609,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       if (checkin.status !== "open" || checkin.reminded) continue;
       if (this.store.get(`takeover:${checkin.id}`)) continue;
       if (this.store.get(`via:${checkin.id}`)) continue; // asked in a group: chased there, together
-      const messages = this.store.messages(checkin.id);
+      const messages = this.sinceAsk(checkin.id);
       if (!messages.length || messages.some((m) => m.role === "user")) continue;
       const sentAt = Date.parse(`${messages[0]!.at.replace(" ", "T")}Z`);
       if (minMinutes > 0 && this.now().getTime() - sentAt < minMinutes * 60_000) continue;
@@ -1451,9 +1636,9 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       if (checkin.status !== "open") continue;
       const person = this.store.personById(checkin.personId);
       if (!person) continue;
-      const replied = this.store.messages(checkin.id).some((m) => m.role === "user");
+      const replied = this.sinceAsk(checkin.id).some((m) => m.role === "user");
       if (!replied) {
-        this.store.setCheckinStatus(checkin.id, "no_response");
+        this.closeUnanswered(checkin);
         continue;
       }
       try {
@@ -1585,6 +1770,10 @@ So you know how it's used: your answers are summarised each day for the CTO and 
             return await reply("I did not understand that time. Try **schedule 17:00**, **schedule priya 10:30** or **schedule off**.");
           }
           this.store.set(key, time);
+          // A time that has already passed today starts tomorrow, rather than firing at once.
+          if (time && this.localNow().minutes > Number(time.slice(0, 2)) * 60 + Number(time.slice(3))) {
+            this.store.set(`ran:${key.slice("schedule:".length)}`, this.today());
+          }
           if (label) {
             return await reply(
               time

@@ -22,6 +22,8 @@ export interface Config {
    * false writes as the sender in the first person and never mentions automation.
    */
   discloseAutomation: boolean;
+  /** Wait as long as a person would take to read and type before each reply. */
+  humanDelay: boolean;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -42,6 +44,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     sendAsUser: env.SEND_AS_USER === "true",
     pollSeconds: Math.max(10, Number(env.POLL_SECONDS ?? 20)),
     discloseAutomation: env.DISCLOSE_AUTOMATION !== "false",
+    humanDelay: env.HUMAN_DELAY !== "false",
     idleCloseMinutes: Number(env.IDLE_CLOSE_MINUTES ?? 30),
     groupWindowMinutes: Number(env.GROUP_WINDOW_MINUTES ?? 120),
     historyMessages: Number(env.HISTORY_MESSAGES ?? 500),

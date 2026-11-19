@@ -292,6 +292,14 @@ export class Store {
     this.db.prepare("UPDATE checkins SET status = ? WHERE id = ?").run(status, checkinId);
   }
 
+  resetReminded(checkinId: number): void {
+    this.db.prepare("UPDATE checkins SET reminded = 0 WHERE id = ?").run(checkinId);
+  }
+
+  hasNote(checkinId: number): boolean {
+    return !!this.db.prepare("SELECT 1 AS x FROM notes WHERE checkin_id = ?").get(checkinId);
+  }
+
   markReminded(checkinId: number): void {
     this.db.prepare("UPDATE checkins SET reminded = 1 WHERE id = ?").run(checkinId);
   }

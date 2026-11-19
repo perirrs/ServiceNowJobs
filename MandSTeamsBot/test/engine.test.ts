@@ -24,6 +24,7 @@ const config: Config = {
   discloseAutomation: true,
   idleCloseMinutes: 30,
   groupWindowMinutes: 120,
+  humanDelay: false,
 };
 
 /** Scripted stand-in for Claude that records what it was shown. */
@@ -38,6 +39,7 @@ class FakeBrain implements Brain {
   };
   doneAfterUserMessages = 1;
   failNextTurn = false;
+  failNextNote = false;
   handoverNext = false;
   /** The next reply to a group message is marked as one that must stay out of the group. */
   privateNext = false;
@@ -64,6 +66,10 @@ class FakeBrain implements Brain {
     return { reply: done ? "Thanks, that's all." : `Question ${ctx.history.length}`, done };
   }
   async writeNote(ctx: CheckinContext): Promise<NoteResult> {
+    if (this.failNextNote) {
+      this.failNextNote = false;
+      throw new Error("note boom");
+    }
     this.noteCalls.push(ctx);
     return this.nextNote;
   }
@@ -1359,4 +1365,196 @@ test("pause stops everything going out; replies are still recorded; resume start
   await g.engine.handleMessage(g.cto, "resume");
   await g.engine.handleGroupReply("u-priya", "and 1 interview");
   assert.equal(g.sent.length, before + 1);
+});
+
+// ---------- defects found by review ----------
+
+test("someone asked one to one who then chats in a followed group is not treated as answering", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "ask priya"); // asked one to one, not through the group
+  const groupId = g.store.groups()[0]!.id;
+  const before = g.sent.length;
+  await g.engine.handleGroupReply("u-priya", "good morning all", "m1", groupId);
+  assert.equal(g.sent.length, before);
+  assert.equal(g.brain.turns.filter((t) => t.fromGroup).length, 0);
+});
+
+test("a message read in one group is not taken as an answer to an ask made in another", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  const before = g.sent.length;
+  await g.engine.handleGroupReply("u-priya", "sent 3 submissions", "m1", 999); // read in some other group
+  assert.equal(g.sent.length, before);
+});
+
+test("asking someone again the same day starts clean: no stale takeover, and the chase applies afresh", async () => {
+  const t = setup({ personal: true });
+  await t.engine.handleInstall(t.id(CTO));
+  await t.engine.handleMessage(t.id(CTO), `add ${PRIYA}`);
+  const priya = t.store.personByEmail(PRIYA)!;
+  const toPriya = () => t.sent.filter((s) => s.to === `chat-${PRIYA}`).length;
+
+  await t.engine.handleMessage(t.id(CTO), "ask priya");
+  t.engine.manualTakeover(priya.id); // you stepped in this morning
+  await t.engine.handleDirectReply(priya.id, "morning update"); // recorded, not answered
+  await t.engine.closeIdle(0);
+  assert.equal(t.store.checkin(priya.id, "2026-11-16")!.status, "completed");
+
+  await t.engine.handleMessage(t.id(CTO), "ask priya"); // asked again in the afternoon
+  const afterAsk = toPriya();
+  assert.equal(await t.engine.closeIdle(0), 0); // the morning's reply does not make this one "answered"
+  assert.equal(await t.engine.runReminders(0), 1); // and she can be chased for it
+  assert.equal(toPriya(), afterAsk + 1);
+
+  t.brain.doneAfterUserMessages = 99;
+  await t.engine.handleDirectReply(priya.id, "afternoon update");
+  assert.equal(toPriya(), afterAsk + 2); // the assistant answers: the old takeover is gone
+});
+
+test("a group member with a time of their own is left out of the group's scheduled ask", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "schedule ravi 10:30");
+  await g.engine.handleMessage(g.cto, "schedule 17:00");
+  await g.engine.tick(); // 17:00, the general time
+  assert.match(g.sent.at(-1)!.to, /g-rec/);
+  const ravi = g.store.personByEmail("ravi@acme.test")!;
+  assert.equal(g.store.checkin(ravi.id, "2026-11-16"), undefined);
+});
+
+test("setting a time that has already passed today does not fire at once", async () => {
+  const t = setup();
+  await onboard(t);
+  t.setDate("2026-11-16T17:05:00Z");
+  await t.engine.handleMessage(t.id(CTO), "schedule 17:00"); // five minutes ago: inside the old window
+  await t.engine.tick();
+  assert.equal(t.brain.turns.length, 0);
+  t.setDate("2026-11-17T17:00:00Z");
+  await t.engine.tick();
+  assert.equal(t.brain.turns.length, 1);
+});
+
+test("if the note fails after a closing line, the person is not chased about 'Ok, noted.'", async () => {
+  const t = setup();
+  await onboard(t);
+  await t.engine.runCheckins();
+  t.brain.failNextNote = true;
+  await t.engine.handleMessage(t.id(PRIYA), "all done"); // closing line goes out, the note fails
+  const priya = t.store.personByEmail(PRIYA)!;
+  assert.equal(t.store.checkin(priya.id, "2026-11-16")!.status, "open");
+  assert.equal(await t.engine.chaseFollowUps(0), 0);
+  assert.equal(await t.engine.closeIdle(0), 1); // and the note is written on the next close
+  assert.equal(t.store.checkin(priya.id, "2026-11-16")!.status, "completed");
+});
+
+test("a scheduled ask that fails is retried, then reported, not silently lost", async () => {
+  const store = new Store(":memory:");
+  const brain = new FakeBrain();
+  const admin: string[] = [];
+  let failing = true;
+  const engine = new Engine(
+    store,
+    brain,
+    { send: async (_to, text) => void admin.push(text) },
+    { ...config, discloseAutomation: false },
+    () => new Date("2026-11-16T17:00:00Z"),
+    () => undefined,
+    {
+      senderName: "Sujith",
+      connect: async (email) => ({ conversationId: `chat-${email}`, name: email }),
+      send: async () => {
+        if (failing) throw new Error("graph down");
+      },
+      findGroups: async () => [{ chatId: "g-rec", name: "Recruitment Team" }],
+      groupMembers: async () => [{ userId: "u-priya", email: PRIYA, name: "Priya Rao" }],
+    },
+  );
+  const cto: Identity = { teamsUserId: "t", conversationId: "c", lookupEmail: async () => CTO };
+  await engine.handleMessage(cto, "add group Recruitment Team");
+  await engine.handleMessage(cto, "schedule Recruitment Team 17:00");
+  await engine.tick();
+  await engine.tick();
+  assert.ok(!admin.some((m) => /failed three times/.test(m)));
+  await engine.tick();
+  assert.match(admin.at(-1)!, /failed three times/);
+  failing = false;
+  await engine.tick(); // skipped for today now, even though sending works again
+  assert.equal(store.checkin(store.personByEmail(PRIYA)!.id, "2026-11-16"), undefined);
+});
+
+// ---------- replying at a human pace ----------
+
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function pacedSetup() {
+  const store = new Store(":memory:");
+  const brain = new FakeBrain();
+  const sent: string[] = [];
+  const engine = new Engine(
+    store,
+    brain,
+    { send: async () => undefined },
+    { ...config, discloseAutomation: false, humanDelay: true },
+    () => new Date("2026-11-16T17:00:00Z"),
+    () => undefined,
+    {
+      senderName: "Sujith",
+      connect: async (email) => ({ conversationId: `chat-${email}`, name: "Priya Rao" }),
+      send: async (_to, text) => void sent.push(text),
+    },
+  );
+  engine.pace = { read: () => 30, type: () => 60 };
+  const cto: Identity = { teamsUserId: "t", conversationId: "c", lookupEmail: async () => CTO };
+  return { store, brain, engine, cto, sent };
+}
+
+test("a reply is not instant: it comes after time to read and time to type", async () => {
+  const p = pacedSetup();
+  await p.engine.handleMessage(p.cto, `add ${PRIYA}`);
+  await p.engine.handleMessage(p.cto, "ask priya");
+  const priya = p.store.personByEmail(PRIYA)!;
+  p.brain.doneAfterUserMessages = 99;
+  await p.engine.handleDirectReply(priya.id, "sent 3 submissions");
+  assert.equal(p.sent.length, 1); // only the question so far
+  await pause(50);
+  assert.equal(p.sent.length, 1); // read, now "typing"
+  await pause(120);
+  assert.equal(p.sent.length, 2);
+});
+
+test("several quick messages get one answer, written after the last of them", async () => {
+  const p = pacedSetup();
+  await p.engine.handleMessage(p.cto, `add ${PRIYA}`);
+  await p.engine.handleMessage(p.cto, "ask priya");
+  const priya = p.store.personByEmail(PRIYA)!;
+  p.brain.doneAfterUserMessages = 99;
+  await p.engine.handleDirectReply(priya.id, "sent 3 submissions");
+  await pause(10);
+  await p.engine.handleDirectReply(priya.id, "and 1 interview");
+  await pause(200);
+  assert.equal(p.sent.length, 2); // the question, and one reply
+  assert.equal(p.brain.turns.at(-1)!.history.filter((m) => m.role === "user").length, 2);
+});
+
+test("if they write again, or you step in, while a reply is being typed, that reply is dropped", async () => {
+  const p = pacedSetup();
+  await p.engine.handleMessage(p.cto, `add ${PRIYA}`);
+  await p.engine.handleMessage(p.cto, "ask priya");
+  const priya = p.store.personByEmail(PRIYA)!;
+  p.brain.doneAfterUserMessages = 99;
+
+  await p.engine.handleDirectReply(priya.id, "sent 3 submissions");
+  await pause(50); // read, reply drafted, now typing
+  await p.engine.handleDirectReply(priya.id, "wait, it was 4");
+  await pause(250);
+  assert.equal(p.sent.length, 2); // one reply only, to both messages
+  assert.equal(p.brain.turns.at(-1)!.history.filter((m) => m.role === "user").length, 2);
+
+  await p.engine.handleDirectReply(priya.id, "one more thing");
+  await pause(50);
+  p.engine.manualTakeover(priya.id); // you start typing yourself
+  await pause(200);
+  assert.equal(p.sent.length, 2); // the drafted reply never goes out
 });

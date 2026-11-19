@@ -41,6 +41,9 @@ export function htmlToText(html: string): string {
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, n: string) => String.fromCodePoint(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n: string) => String.fromCodePoint(parseInt(n, 16)))
     .replace(/&amp;/g, "&")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -120,7 +123,10 @@ export class GraphChat {
         body: body ? JSON.stringify(body) : undefined,
       });
       // Graph throttles chat sends; it says how long to wait in Retry-After.
-      if (![429, 503, 504].includes(res.status) || attempt >= 4) break;
+      // A request that sends a message is only retried when Graph says it was refused for
+      // rate (429). After a 503 or 504 the message may have been delivered, and a retry would send it twice.
+      const retryable = method === "GET" ? [429, 503, 504] : [429];
+      if (!retryable.includes(res.status) || attempt >= 4) break;
       const wait = Math.min(Number(res.headers.get("retry-after")) || 5 * attempt, 60);
       console.warn(`Graph asked us to slow down (${res.status}); retrying in ${wait}s`);
       await new Promise((r) => setTimeout(r, wait * 1000));
@@ -337,22 +343,21 @@ export class GraphChat {
     return lines.slice(0, max).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
 
-  /** Messages in a chat created after `since`, oldest first. */
+  /** Messages in a chat created after `since`, oldest first. Pages back as far as needed. */
   async messagesSince(chatId: string, since: string): Promise<ChatLine[]> {
-    const r = await this.call<{
-      value: {
-        id: string;
-        messageType: string;
-        createdDateTime: string;
-        deletedDateTime?: string | null;
-        from?: { user?: { id?: string } | null } | null;
-        body?: { content?: string };
-        mentions?: { mentioned?: { user?: { id?: string } | null } | null }[] | null;
-        attachments?: { contentType?: string | null; content?: string | null }[] | null;
-      }[];
-    }>("GET", `/chats/${encodeURIComponent(chatId)}/messages?$top=30`);
+    type Raw = {
+      id: string;
+      messageType: string;
+      createdDateTime: string;
+      deletedDateTime?: string | null;
+      from?: { user?: { id?: string } | null } | null;
+      body?: { content?: string };
+      mentions?: { mentioned?: { user?: { id?: string } | null } | null }[] | null;
+      attachments?: { contentType?: string | null; content?: string | null }[] | null;
+    };
+    type Page = { value: Raw[]; "@odata.nextLink"?: string };
     // Who a message is aimed at: anyone it tags, and the author of a message it quotes.
-    const addressed = (m: (typeof r.value)[number]): string[] => {
+    const addressed = (m: Raw): string[] => {
       const ids = (m.mentions ?? []).map((x) => x.mentioned?.user?.id ?? "");
       for (const a of m.attachments ?? []) {
         if (a.contentType !== "messageReference" || !a.content) continue;
@@ -364,16 +369,30 @@ export class GraphChat {
       }
       return [...new Set(ids.filter(Boolean))];
     };
-    return r.value
-      .filter((m) => m.messageType === "message" && !m.deletedDateTime && m.createdDateTime > since && m.from?.user?.id)
-      .map((m) => ({
-        id: m.id,
-        createdAt: m.createdDateTime,
-        fromUserId: m.from!.user!.id!,
-        fromName: "",
-        text: htmlToText(m.body?.content ?? ""),
-        addressedUserIds: addressed(m),
-      }))
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
+    const lines: ChatLine[] = [];
+    let url: string | undefined = `/chats/${encodeURIComponent(chatId)}/messages?$top=50`;
+    let reachedOlder = false;
+    // Newest first: keep going until we pass `since`, so a busy chat after an outage loses nothing.
+    for (let page = 0; url && !reachedOlder && page < 10; page++) {
+      const r: Page = await this.call<Page>("GET", url);
+      for (const m of r.value) {
+        if (m.createdDateTime <= since) {
+          reachedOlder = true;
+          break;
+        }
+        if (m.messageType !== "message" || m.deletedDateTime || !m.from?.user?.id) continue;
+        lines.push({
+          id: m.id,
+          createdAt: m.createdDateTime,
+          fromUserId: m.from.user.id,
+          fromName: "",
+          text: htmlToText(m.body?.content ?? ""),
+          addressedUserIds: addressed(m),
+        });
+      }
+      url = r["@odata.nextLink"];
+    }
+    return lines.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
 }
