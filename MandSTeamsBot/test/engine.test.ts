@@ -311,3 +311,33 @@ test("direct mode: the digest still reaches admins through the bot", async () =>
   await t.engine.runDigest();
   assert.match(t.to(CTO).at(-1)!, /Nobody is nominated/);
 });
+
+test("direct mode: an unknown address is not nominated and likely matches are offered", async () => {
+  const store = new Store(":memory:");
+  const sent: { to: string; text: string }[] = [];
+  const engine = new Engine(
+    store,
+    new FakeBrain(),
+    { send: async (to, text) => void sent.push({ to, text }) },
+    config,
+    () => new Date("2026-11-16T17:00:00Z"),
+    () => undefined,
+    {
+      senderName: "Sujith",
+      connect: async () => ({ notFound: true, suggestions: ["Mahanth K (mahanth.k@acme.test)"] }),
+      send: async () => undefined,
+    },
+  );
+  const cto: Identity = { teamsUserId: "t", conversationId: "c", lookupEmail: async () => CTO };
+  await engine.handleMessage(cto, "nominate mahanth@acme.test");
+  assert.equal(store.nominees().length, 0);
+  assert.equal(store.personByEmail("mahanth@acme.test"), undefined);
+  assert.match(sent.at(-1)!.text, /Did you mean[\s\S]*mahanth\.k@acme\.test/);
+});
+
+test("a question with nobody nominated gets a pointer to nominate, not an AI answer", async () => {
+  const t = setup();
+  await t.engine.handleMessage(t.id(CTO), "Can I please have a daily update");
+  assert.equal(t.brain.questions.length, 0);
+  assert.match(t.to(CTO).at(-1)!, /nobody is nominated/);
+});

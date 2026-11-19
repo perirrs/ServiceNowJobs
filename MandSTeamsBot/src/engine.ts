@@ -16,7 +16,9 @@ export interface Messenger {
 export interface DirectChannel {
   senderName: string;
   /** Find or create the one-to-one chat with a colleague. */
-  connect(email: string): Promise<{ conversationId: string; name: string }>;
+  connect(
+    email: string,
+  ): Promise<{ conversationId: string; name: string } | { notFound: true; suggestions: string[] }>;
   send(conversationId: string, text: string): Promise<void>;
 }
 
@@ -425,11 +427,20 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           if (this.config.adminEmails.includes(email)) {
             return await reply("That's an admin account. Admins receive the digest rather than check-ins.");
           }
-          let person = this.store.upsertPerson(email);
+          let chat: { conversationId: string; name: string } | undefined;
           if (this.direct) {
-            const chat = await this.direct.connect(email);
-            person = this.store.upsertPerson(email, chat);
+            const found = await this.direct.connect(email);
+            if ("notFound" in found) {
+              return await reply(
+                `There is nobody in the organisation with the address ${email}, so nothing was sent.` +
+                  (found.suggestions.length
+                    ? ` Did you mean:\n\n${found.suggestions.map((s) => `- ${s}`).join("\n")}`
+                    : " Check the spelling against their Teams profile."),
+              );
+            }
+            chat = found;
           }
+          const person = this.store.upsertPerson(email, chat);
           this.store.setNominated(person.id, true);
           if (person.conversationId) {
             await this.say(person, this.welcomeText(person));
@@ -524,6 +535,11 @@ So you know how it's used: your answers are summarised each day for the CTO and 
 
         default: {
           if (!text) return;
+          if (!this.store.nominees().length) {
+            return await reply(
+              "There are no check-in notes yet because nobody is nominated. Start with **nominate name@company.com**, or send **help** for the full list of commands.",
+            );
+          }
           return await reply(await this.brain.answer(text, this.material()));
         }
       }

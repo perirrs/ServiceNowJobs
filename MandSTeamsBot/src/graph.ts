@@ -57,6 +57,18 @@ function tokenCache(dataDir: string): ICachePlugin {
   };
 }
 
+class GraphError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
+type GraphUser = { id: string; displayName: string; mail?: string | null; userPrincipalName: string };
+const USER_FIELDS = "$select=id,displayName,mail,userPrincipalName";
+
 export class GraphChat {
   private pca: PublicClientApplication;
   private me?: { id: string; email: string; name: string };
@@ -95,7 +107,10 @@ export class GraphChat {
       body: body ? JSON.stringify(body) : undefined,
     });
     if (!res.ok) {
-      throw new Error(`Graph ${method} ${url.split("?")[0]} failed: ${res.status} ${(await res.text()).slice(0, 300)}`);
+      throw new GraphError(
+        `Graph ${method} ${url.split("?")[0]} failed: ${res.status} ${(await res.text()).slice(0, 300)}`,
+        res.status,
+      );
     }
     return (await res.json()) as T;
   }
@@ -112,13 +127,43 @@ export class GraphChat {
     return this.me;
   }
 
-  /** Find (or create) the one-to-one chat with a colleague. */
-  async connect(email: string): Promise<{ conversationId: string; name: string }> {
-    const me = await this.whoAmI();
-    const user = await this.call<{ id: string; displayName: string }>(
+  /** Look a colleague up by sign-in name first, then by mail address. */
+  private async findUser(email: string): Promise<GraphUser | undefined> {
+    try {
+      return await this.call<GraphUser>("GET", `/users/${encodeURIComponent(email)}?${USER_FIELDS}`);
+    } catch (err) {
+      if (!(err instanceof GraphError) || err.status !== 404) throw err;
+    }
+    const quoted = email.replace(/'/g, "''");
+    const byMail = await this.call<{ value: GraphUser[] }>(
       "GET",
-      `/users/${encodeURIComponent(email)}?$select=id,displayName`,
+      `/users?$filter=${encodeURIComponent(`mail eq '${quoted}'`)}&${USER_FIELDS}`,
     );
+    return byMail.value[0];
+  }
+
+  /** People whose name or address starts like the one that was not found. */
+  private async suggest(email: string): Promise<string[]> {
+    const stem = email.split("@")[0]!.replace(/'/g, "''").slice(0, 5);
+    if (stem.length < 3) return [];
+    const filter = `startswith(displayName,'${stem}') or startswith(mail,'${stem}') or startswith(userPrincipalName,'${stem}')`;
+    const r = await this.call<{ value: GraphUser[] }>(
+      "GET",
+      `/users?$filter=${encodeURIComponent(filter)}&$top=5&${USER_FIELDS}`,
+    );
+    return r.value.map((u) => `${u.displayName} (${(u.mail ?? u.userPrincipalName).toLowerCase()})`);
+  }
+
+  /**
+   * Find (or create) the one-to-one chat with a colleague. If nobody has that
+   * address, returns likely matches instead.
+   */
+  async connect(
+    email: string,
+  ): Promise<{ conversationId: string; name: string } | { notFound: true; suggestions: string[] }> {
+    const me = await this.whoAmI();
+    const user = await this.findUser(email);
+    if (!user) return { notFound: true, suggestions: await this.suggest(email).catch(() => []) };
     const member = (id: string) => ({
       "@odata.type": "#microsoft.graph.aadUserConversationMember",
       roles: ["owner"],
