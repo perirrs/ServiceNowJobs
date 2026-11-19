@@ -2260,3 +2260,37 @@ test("a daily backup is made and only the last two weeks are kept", async () => 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---------- TalentFlow figures ----------
+
+test("with TalentFlow connected, a recruiter's real figures go into the check-in and the weekly report", async () => {
+  const t = setup();
+  await onboard(t);
+  const calls: string[] = [];
+  t.engine.ats = {
+    stats: async (email, from) => {
+      calls.push(`${email} ${from}`);
+      return { submitted_to_client: 3, l1_interview: 1 };
+    },
+  };
+  await t.engine.handleMessage(t.id(CTO), "ask priya");
+  assert.equal(t.brain.turns.at(-1)!.facts, "Today so far: 3 submitted to client, 1 L1 interview.");
+  assert.match(calls[0]!, /^priya@acme\.test 2026-11-16T00:00:00\.000Z$/);
+
+  t.brain.doneAfterUserMessages = 99;
+  await t.engine.handleMessage(t.id(PRIYA), "sent 5 today");
+  assert.equal(calls.length, 1); // fetched at most every 15 minutes
+
+  t.setDate("2026-11-20T18:30:00Z");
+  await t.engine.runWeekly(true);
+  assert.match(t.brain.weeklyInputs.at(-1)!.material, /In TalentFlow this week: 3 submitted to client, 1 L1 interview\./);
+});
+
+test("if TalentFlow cannot be reached the check-in goes ahead without figures", async () => {
+  const t = setup();
+  await onboard(t);
+  t.engine.ats = { stats: async () => { throw new Error("down"); } };
+  await t.engine.handleMessage(t.id(CTO), "ask priya");
+  assert.equal(t.brain.turns.at(-1)!.facts, undefined);
+  assert.equal(t.to(PRIYA).length > 0, true);
+});

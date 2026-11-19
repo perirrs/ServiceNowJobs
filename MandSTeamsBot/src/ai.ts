@@ -32,6 +32,8 @@ export interface CheckinContext {
   topic?: string;
   /** What this conversation is for. */
   round?: Round;
+  /** Their real figures from the ATS, when connected: taken as given, not asked for. */
+  facts?: string;
   /** True when this turn starts a new round (a new ask), possibly later on a day already talked on. */
   opening?: boolean;
 }
@@ -190,7 +192,7 @@ const ROUND_BRIEF: Record<Round, string> = {
 };
 
 function renderPersonBrief(ctx: CheckinContext): string {
-  const { person, activeItems, recentNotes, date, rapport, greeting, topic } = ctx;
+  const { person, activeItems, recentNotes, date, rapport, greeting, topic, facts } = ctx;
   const notes = recentNotes.length
     ? recentNotes.map((n) => `### ${n.date}\n${renderNote(n)}`).join("\n\n")
     : "(no earlier check-ins: this is their first)";
@@ -202,6 +204,9 @@ function renderPersonBrief(ctx: CheckinContext): string {
     `## This conversation\n${ROUND_BRIEF[ctx.round ?? "update"]}`,
     `## Notes from their recent check-ins\n${notes}`,
     rapport ? `## How you normally write to this person, and what is going on between you (from your past chat)\n${rapport}` : "",
+    facts
+      ? `## Their figures in TalentFlow, the recruitment system (these are facts)\n${facts}\nDo not ask for these numbers. Ask about what they do not show: outcomes, feedback, next steps. If what the person says does not match them, ask about the difference plainly and without accusing.`
+      : "",
     `## Greeting for this person\nOpen your first message with exactly: "${greeting || "Hi"},"`,
     topic
       ? `## What to find out today (asked for specifically)\n${topic}\nMake sure the conversation covers each part of this, one question at a time, before anything else.`

@@ -86,7 +86,32 @@ How it behaves:
 - If you type in a chat yourself during an open check-in, the assistant stays quiet there for the rest of the day. What the colleague says is still recorded for the note.
 - Replies are picked up by polling (`POLL_SECONDS`, default 20), so expect a short delay.
 
-With `DISCLOSE_AUTOMATION=false` the assistant instead writes as you in the first person and never mentions automation: no heads-up is sent on nomination. It does not claim to be human either. If a colleague asks whether the messages are automated, asks for a decision only you can give, or raises something personal, it stops replying in that chat and alerts you in the bot chat so that you answer yourself. ### Memory
+With `DISCLOSE_AUTOMATION=false` the assistant instead writes as you in the first person and never mentions automation: no heads-up is sent on nomination. It does not claim to be human either. If a colleague asks whether the messages are automated, asks for a decision only you can give, or raises something personal, it stops replying in that chat and alerts you in the bot chat so that you answer yourself. ### Safety: what goes out in your name
+
+- Every message sent from your account is logged. **sent** shows today's list, each with a **Delete** button that removes it from Teams, and you get the list once a day after office hours.
+- **approve Name** holds every message to that person or group as a draft: edit it, then **Send** or **Skip**. A skipped draft is taken out of the record. On the day a person or group is added this is on by default (`APPROVE_FIRST_DAY`).
+- **pause** stops everything at once; **resume** starts again.
+
+### Keeping work moving
+
+- **Blocked on a colleague.** When someone is blocked waiting on another person, the tracker shows "waiting on NAME" and, from the next day, that colleague is asked once a day in a group they share (or one to one). Their answer is followed up like any check-in.
+- **Needs a decision.** Once a day you get anything blocked two days or more, or overdue three days or more, with a suggested next step. Each item is raised once for each reason.
+- **Leave and holidays.** People out of office in Outlook (read with `Calendars.Read`), marked with **leave priya until 2026-11-25**, or on a **holiday 2026-12-25 Christmas** are not asked or chased. External accounts whose calendar cannot be read count as available.
+- **Meetings.** Before a meeting with people the bot follows, you get a short brief on each of them. After an online meeting with a chat, action items agreed in that chat go on the tracker.
+
+### Reports and running costs
+
+- **Weekly report** on Fridays after office hours, or **weekly** any time: per person, days replied out of days asked, things planned and finished, overdue and blocked now, what keeps coming up, and what needs a decision.
+- The daily digest flags a problem raised by several people or on several days as something to fix once.
+- The digest, weekly report, tracker building and your questions use a stronger model (`CLAUDE_SMART_MODEL`, default Claude Sonnet 5.5); day-to-day chat uses `CLAUDE_MODEL`.
+- The board shows today's AI cost; **usage** shows the last seven days.
+- A copy of the database is made daily in `data/backups`, keeping 14 days.
+
+### TalentFlow figures (optional)
+
+With `ATS_URL` and `ATS_TOKEN` set, each recruiter's real figures for the day (submitted to client, interviews, offers, joined) come from TalentFlow into their check-in, so the bot asks about outcomes rather than numbers, and the weekly report shows the week's figures. It expects `GET ATS_URL?email=&from=&to=` with a bearer token, answering `{ "counts": { "submitted_to_client": 3, ... } }` using TalentFlow's metric buckets. TalentFlow does not have this endpoint yet.
+
+### Memory
 
 In this mode the assistant builds a memory before it asks anyone anything, and keeps it current:
 

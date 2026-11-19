@@ -3,6 +3,8 @@ import type { AdminAction, Brain, CheckinContext, DigestPerson, Round, TrackerEn
 import { todayIn } from "./config.js";
 import type { Config } from "./config.js";
 import type { ChatMessage, Checkin, Group, Person, Store, WorkItem } from "./db.js";
+import { describeCounts } from "./ats.js";
+import type { Ats } from "./ats.js";
 
 /** Sends a chat message to a Teams conversation. Implemented by teams.ts, faked in tests. */
 export interface Messenger {
@@ -565,6 +567,17 @@ export class Engine {
     const people = this.store.nominees().filter((p) => !this.isAdmin(p));
     if (!people.length) return "";
 
+    // Real figures for the week from TalentFlow, when connected.
+    const weekFacts = new Map<number, string>();
+    if (this.ats) {
+      for (const p of people) {
+        try {
+          weekFacts.set(p.id, describeCounts(await this.ats.stats(p.email, `${from}T00:00:00Z`, this.now().toISOString())));
+        } catch (err) {
+          this.log(`Could not read TalentFlow for ${p.email}`, err);
+        }
+      }
+    }
     const rows = people.map((p) => {
       const checkins = this.store.checkinsBetween(p.id, from, date);
       const notes = this.store.notesSince(from).filter((n) => n.personId === p.id);
@@ -573,10 +586,13 @@ export class Engine {
       return [
         `# ${displayName(p)}${p.profile ? ` (${p.profile})` : ""}`,
         `Replied on ${new Set(checkins.filter((c) => c.replied).map((c) => c.date)).size} of ${new Set(checkins.map((c) => c.date)).size} days asked.`,
+        weekFacts.get(p.id) ? `In TalentFlow this week: ${weekFacts.get(p.id)}.` : "",
         `Planned in the mornings: ${planned} things. Finished this week: ${this.store.doneSince(p.id, from).map((i) => i.title).join("; ") || "none recorded"}.`,
         `Overdue now: ${active.filter((i) => i.due && i.due < date).map((i) => i.title).join("; ") || "none"}. Blocked now: ${active.filter((i) => i.status === "blocked").map((i) => `${i.title}${i.waitingOn ? ` (waiting on ${i.waitingOn})` : ""}`).join("; ") || "none"}.`,
         notes.length ? `Notes:\n${notes.map((n) => `## ${n.date}\n${renderNote(n)}`).join("\n")}` : "No notes this week.",
-      ].join("\n");
+      ]
+        .filter(Boolean)
+        .join("\n");
     });
     try {
       const report = await this.brain.weeklyReport({ from, to: date, material: rows.join("\n\n") });
@@ -619,6 +635,28 @@ export class Engine {
     const k = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
     const total = rows.reduce((sum, r) => sum + r.cost, 0);
     return `≈ $${total.toFixed(2)} (${rows.map((r) => `${r.model.replace("claude-", "")} ${k(r.i)} in, ${k(r.o)} out`).join(" · ")})`;
+  }
+
+  /** TalentFlow, when connected. */
+  ats?: Ats;
+
+  /** Today's figures from TalentFlow for this person, fetched at most every 15 minutes. */
+  private async refreshAtsFacts(person: Person): Promise<void> {
+    if (!this.ats || this.isAdmin(person)) return;
+    const stamp = this.store.get(`atsat:${person.id}`);
+    if (stamp && this.now().getTime() - Date.parse(stamp) < 15 * 60_000) return;
+    this.store.set(`atsat:${person.id}`, this.now().toISOString());
+    try {
+      // From midnight today in the bot's timezone, as UTC.
+      const midnight = new Date(this.now().getTime() - this.localNow().minutes * 60_000);
+      midnight.setUTCSeconds(0, 0);
+      const counts = await this.ats.stats(person.email, midnight.toISOString(), this.now().toISOString());
+      const text = describeCounts(counts);
+      this.store.set(`atsfacts:${person.id}`, text ? `Today so far: ${text}.` : "Today so far: nothing recorded.");
+    } catch (err) {
+      this.log(`Could not read TalentFlow for ${person.email}`, err);
+      this.store.set(`atsfacts:${person.id}`, "");
+    }
   }
 
   /** A public holiday today, by name, or "". */
@@ -1019,6 +1057,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       rapport: this.personal ? this.memoryFor(person) : undefined,
       topic: this.store.get(`topic:${checkin.id}`) || undefined,
       round: (this.store.get(`kind:${checkin.id}`) as Round | undefined) || undefined,
+      facts: this.ats ? this.store.get(`atsfacts:${person.id}`) || undefined : undefined,
       opening,
       greeting: this.personal ? this.store.get(`greeting:${person.id}`) || undefined : undefined,
     };
@@ -1150,6 +1189,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     if (!this.dueFor(person, date, round, force)) return false;
 
     await this.refreshMemory(person);
+    await this.refreshAtsFacts(person);
     const checkin = this.store.openCheckin(person.id, date);
     this.beginAsk(checkin);
     this.store.set(`via:${checkin.id}`, "");
@@ -1348,6 +1388,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
 
   /** Decide what to say back. Null when nothing should be sent (chatter, a handover, or a failure). */
   private async draftReply(person: Person, checkin: Checkin, incoming: Incoming): Promise<Draft | null> {
+    await this.refreshAtsFacts(person);
     try {
       // The cap is on follow-ups: what the assistant has said since the person first replied
       // to the latest ask. The opening question and any chase before that do not use it up.
