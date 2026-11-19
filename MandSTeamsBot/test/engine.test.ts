@@ -1022,3 +1022,54 @@ test("an admin who is in the group is not chased or followed up there", async ()
   assert.equal(g.store.checkin(g.store.personByEmail(CEO)!.id, "2026-11-16"), undefined);
   assert.match(g.admin.at(-1)!, /\(2 people\)/);
 });
+
+// ---------- a time of their own for one person or one group ----------
+
+test("a person with a time of their own is asked then, and left out of the general time", async () => {
+  const t = setup();
+  await onboard(t);
+  await t.engine.handleMessage(t.id(CTO), "add ravi@acme.test");
+  await t.engine.handleInstall(t.id("ravi@acme.test"));
+  await t.engine.handleMessage(t.id(CTO), "schedule 17:00");
+  await t.engine.handleMessage(t.id(CTO), "schedule priya 10:30");
+  assert.match(t.to(CTO).at(-1)!, /priya will be asked automatically at \*\*10:30\*\*/);
+
+  await t.engine.tick(); // 17:00: the general time
+  assert.deepEqual(t.brain.turns.map((x) => x.person.email), ["ravi@acme.test"]);
+
+  t.setDate("2026-11-17T10:30:00Z");
+  await t.engine.tick();
+  await t.engine.tick();
+  assert.deepEqual(t.brain.turns.map((x) => x.person.email), ["ravi@acme.test", PRIYA]);
+
+  await t.engine.handleMessage(t.id(CTO), "schedule priya off");
+  assert.match(t.to(CTO).at(-1)!, /no longer has a time of their own/);
+});
+
+test("a group can have a time of its own, and '5 pm' with a space is understood", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "schedule Recruitment Team 5 pm");
+  assert.match(g.admin.at(-1)!, /Recruitment Team will be asked automatically at \*\*17:00\*\*/);
+  await g.engine.tick();
+  assert.deepEqual(g.sent.map((s) => s.to), ["g-rec"]);
+});
+
+test("the board shows what is switched on in green, and each person has a time picker", async () => {
+  const b = boardSetup();
+  await b.engine.handleMessage(b.id(CTO), `add ${PRIYA}`);
+  await b.engine.handleMessage(b.id(CTO), "board");
+  let json = JSON.stringify(b.sentCards.at(-1));
+  assert.match(json, /OFF · No automatic asking/);
+  assert.doesNotMatch(json, /"color":"Good"/);
+  assert.match(json, /"cmd":"scheduleFor","who":"priya@acme\.test","field":"p\d+"/);
+  assert.equal(cardToCommand({ cmd: "scheduleFor", who: PRIYA, field: "p2", p2: "10:30" }), `schedule ${PRIYA} 10:30`);
+  assert.equal(cardToCommand({ cmd: "scheduleOffFor", who: PRIYA }), `schedule ${PRIYA} off`);
+
+  await b.engine.handleMessage(b.id(CTO), "schedule 17:00");
+  await b.engine.handleMessage(b.id(CTO), `schedule ${PRIYA} 10:30`);
+  json = b.edits.at(-1)!.json;
+  assert.match(json, /"text":"ON · Everyone is asked at 17:00, Monday to Friday"[^}]*"color":"Good"/);
+  assert.match(json, /"text":"ON · Asked at 10:30, Monday to Friday","color":"Good"/);
+  assert.match(json, /"title":"Time: 10:30"/);
+});

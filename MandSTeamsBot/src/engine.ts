@@ -63,6 +63,7 @@ const ADMIN_HELP = `**Daily Check-in: what you can type**
 - **digest**: today's summary of everyone, right now
 - **schedule 17:00**: ask everyone automatically at that time, Monday to Friday. **schedule off** stops it. **schedule** alone shows the current setting.
 - **schedule digest 19:30**: send the daily digest automatically at that time. **schedule digest off** stops it.
+- **schedule priya 10:30**: give one person, or one group, a time of their own instead of the general one. **schedule priya off** removes it.
 
 Anything else you type is treated as a question about the team's notes, for example: _who has been blocked for more than two days?_
 
@@ -112,6 +113,10 @@ export function cardToCommand(value: unknown): string {
       return `schedule ${str("time")}`;
     case "scheduleOff":
       return "schedule off";
+    case "scheduleFor":
+      return `schedule ${str("who")} ${str(str("field"))}`;
+    case "scheduleOffFor":
+      return `schedule ${str("who")} off`;
     default:
       return "board";
   }
@@ -834,6 +839,15 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     const jobs: [string, () => Promise<unknown>][] = [
       ["checkin", () => this.runCheckins()],
       ["digest", () => this.runDigest()],
+      ...this.store
+        .groups()
+        .map((g): [string, () => Promise<unknown>] => [`group:${g.id}`, () => this.askGroup(g)]),
+      ...this.store
+        .nominees()
+        .map((p): [string, () => Promise<unknown>] => [
+          `person:${p.id}`,
+          () => this.enqueue(p.id, () => this.startCheckin(p)),
+        ]),
     ];
     for (const [kind, job] of jobs) {
       const at = this.store.get(`schedule:${kind}`);
@@ -870,6 +884,22 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     const todaysNotes = new Map(this.store.notesOn(date).map((n) => [n.personId, n]));
     const clip = (text: string, max = 120) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text);
     const submit = (title: string, data: Record<string, unknown>) => ({ type: "Action.Submit", title, data });
+
+    // A time of their own, in green, for a person or group that has one.
+    const scheduleLine = (at: string | undefined) =>
+      at
+        ? [{ type: "TextBlock", text: `ON · Asked at ${at}, Monday to Friday`, color: "Good", weight: "Bolder", size: "Small", spacing: "None", wrap: true }]
+        : [];
+    // A button that opens a time picker for one person or group. Its label shows the time when one is set.
+    const timePicker = (field: string, who: string, at: string | undefined) => ({
+      type: "Action.ShowCard",
+      title: at ? `Time: ${at}` : "Set time",
+      card: {
+        type: "AdaptiveCard",
+        body: [{ type: "Input.Time", id: field, label: "Ask at this time, Monday to Friday", ...(at ? { value: at } : {}) }],
+        actions: [submit("Save", { cmd: "scheduleFor", who, field }), submit("Turn off", { cmd: "scheduleOffFor", who })],
+      },
+    });
 
     const groups = [
       { title: "Needs you personally", color: "Attention" },
@@ -942,6 +972,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           items: [
             { type: "TextBlock", text: displayName(person), weight: "Bolder", wrap: true },
             { type: "TextBlock", text: line, wrap: true, maxLines: 2, spacing: "None", isSubtle: true },
+            ...scheduleLine(this.store.get(`schedule:person:${person.id}`)),
             {
               type: "ActionSet",
               spacing: "Small",
@@ -953,6 +984,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
                 },
                 submit("Ask now", { cmd: "ask", who: person.email }),
                 submit("Details", { cmd: "details", who: person.email }),
+                timePicker(`p${person.id}`, person.email, this.store.get(`schedule:person:${person.id}`)),
                 submit("Remove", { cmd: "remove", who: person.email }),
               ],
             },
@@ -977,25 +1009,43 @@ So you know how it's used: your answers are summarised each day for the CTO and 
               spacing: "None",
               isSubtle: true,
             },
+            ...scheduleLine(this.store.get(`schedule:group:${g.id}`)),
             {
               type: "ActionSet",
               spacing: "Small",
-              actions: [submit("Ask group now", { cmd: "askGroup", who: g.name }), submit("Remove group", { cmd: "removeGroup", who: g.name })],
+              actions: [
+                submit("Ask group now", { cmd: "askGroup", who: g.name }),
+                timePicker(`g${g.id}`, g.name, this.store.get(`schedule:group:${g.id}`)),
+                submit("Remove group", { cmd: "removeGroup", who: g.name }),
+              ],
             },
           ],
         });
       }
     }
 
-    body.push({
-      type: "TextBlock",
-      text: this.scheduleStatus().replace(/\*\*/g, ""),
-      wrap: true,
-      isSubtle: true,
-      size: "Small",
-      spacing: "Large",
-      separator: true,
-    });
+    // The general settings: green when switched on, grey when off.
+    const general = this.store.get("schedule:checkin");
+    const digestAt = this.store.get("schedule:digest");
+    body.push(
+      {
+        type: "TextBlock",
+        text: general ? `ON · Everyone is asked at ${general}, Monday to Friday` : "OFF · No automatic asking",
+        wrap: true,
+        size: "Small",
+        spacing: "Large",
+        separator: true,
+        ...(general ? { color: "Good", weight: "Bolder" } : { isSubtle: true }),
+      },
+      {
+        type: "TextBlock",
+        text: digestAt ? `ON · Daily digest at ${digestAt}` : "OFF · No automatic digest",
+        wrap: true,
+        size: "Small",
+        spacing: "None",
+        ...(digestAt ? { color: "Good", weight: "Bolder" } : { isSubtle: true }),
+      },
+    );
 
     return {
       type: "AdaptiveCard",
@@ -1076,6 +1126,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     let sent = 0;
     const unreachable: Person[] = [];
     for (const group of this.store.groups()) {
+      if (this.store.get(`schedule:group:${group.id}`)) continue; // has a time of its own
       try {
         sent += (await this.askGroup(group)).asked;
       } catch (err) {
@@ -1084,6 +1135,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     }
     for (const person of this.store.nominees()) {
       if (this.store.groupsOf(person.id).length) continue; // asked with their group
+      if (this.store.get(`schedule:person:${person.id}`)) continue; // has a time of their own
       if (!this.address(person)) {
         unreachable.push(person);
         continue;
@@ -1225,16 +1277,45 @@ So you know how it's used: your answers are summarised each day for the CTO and 
 
         case "schedule": {
           const digest = /^digest\b/i.test(arg);
-          const key = digest ? "schedule:digest" : "schedule:checkin";
-          const value = arg.replace(/^digest\s*/i, "").trim();
+          let key = digest ? "schedule:digest" : "schedule:checkin";
+          let value = arg.replace(/^digest\s*/i, "").trim();
           if (!value) return await reply(this.scheduleStatus());
-          if (/^(off|none|stop|no|remove)$/i.test(value)) {
-            this.store.set(key, "");
-            return await reply(this.scheduleStatus());
+
+          // "schedule priya 10:30" or "schedule Recruitment Team off": a time of their own.
+          // The time (or "off") is the last word, or the last two ("5 pm").
+          const words = value.split(/\s+/);
+          const isWhen = (w: string) => /^(off|none|stop|no|remove)$/i.test(w) || parseTime(w) !== null;
+          const tail = words.length > 2 && isWhen(words.slice(-2).join(" ")) && !isWhen(words.at(-1)!) ? 2 : 1;
+          const who = digest ? "" : words.slice(0, -tail).join(" ").replace(/^group\s+/i, "").replace(/[:,]$/, "").trim();
+          let label = "";
+          if (who) {
+            const people = this.store.findNominees(who);
+            const group = this.resolveGroup(who);
+            if (people.length === 1) {
+              key = `schedule:person:${people[0]!.id}`;
+              label = displayName(people[0]!);
+            } else if (typeof group !== "string") {
+              key = `schedule:group:${group.id}`;
+              label = group.name;
+            } else {
+              return await reply(`I could not match "${who}" to one person or group. Send **list** to see who is added.`);
+            }
+            value = words.slice(-tail).join(" ");
           }
-          const time = parseTime(value);
-          if (!time) return await reply("I did not understand that time. Try **schedule 17:00** or **schedule off**.");
+
+          const off = /^(off|none|stop|no|remove)$/i.test(value);
+          const time = off ? "" : parseTime(value);
+          if (time === null) {
+            return await reply("I did not understand that time. Try **schedule 17:00**, **schedule priya 10:30** or **schedule off**.");
+          }
           this.store.set(key, time);
+          if (label) {
+            return await reply(
+              time
+                ? `${label} will be asked automatically at **${time}**, Monday to Friday, instead of at the general time.`
+                : `${label} no longer has a time of their own.`,
+            );
+          }
           return await reply(this.scheduleStatus());
         }
 
@@ -1520,7 +1601,9 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           await command(`greeting ${target} ${detail}`);
           break;
         case "schedule":
-          await command(`schedule ${target.toLowerCase() === "digest" ? "digest " : ""}${detail}`);
+          await command(
+            `schedule ${["", "ask", "all", "everyone"].includes(target.toLowerCase()) ? "" : `${target} `}${detail}`,
+          );
           break;
         case "digest":
         case "list":

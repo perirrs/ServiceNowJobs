@@ -496,7 +496,7 @@ Actions and what goes in target and text:
 - ask_all: ask everyone now. text = the topic, or empty.
 - set_role: record what a person's job is. One action per person. target = the person. text = their role as stated, for example "Content writer".
 - set_greeting: how to open messages to a person. target = the person. text = the greeting, for example "Hi Anna".
-- schedule: target = "ask" or "digest". text = the time, or "off".
+- schedule: set when updates are asked for automatically. target = "ask" for everyone, "digest" for the daily digest, or a person or group name to give them a time of their own. text = the time, or "off".
 - digest, list, board: show today's digest, the list of people, or the board. No target or text.
 - question: the manager is asking about the team's updates or notes. text = the question.
 
