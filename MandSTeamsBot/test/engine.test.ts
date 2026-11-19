@@ -2276,12 +2276,16 @@ test("with TalentFlow connected, a recruiter's real figures go into the check-in
     },
   };
   await t.engine.handleMessage(t.id(CTO), "ask priya");
-  assert.equal(t.brain.turns.at(-1)!.facts, "Today so far: 3 submitted to client, 1 L1 select.");
+  assert.equal(
+    t.brain.turns.at(-1)!.facts,
+    "Today so far: 3 submitted to client, 1 L1 select.\nYesterday (2026-11-15): 3 submitted to client, 1 L1 select.",
+  );
   assert.match(calls[0]!, /^priya@acme\.test 2026-11-16T00:00:00\.000Z$/);
+  assert.match(calls[1]!, /^priya@acme\.test 2026-11-15T00:00:00\.000Z$/);
 
   t.brain.doneAfterUserMessages = 99;
   await t.engine.handleMessage(t.id(PRIYA), "sent 5 today");
-  assert.equal(calls.length, 1); // fetched at most every 15 minutes
+  assert.equal(calls.length, 2); // fetched at most every 15 minutes
 
   t.setDate("2026-11-20T18:30:00Z");
   await t.engine.runWeekly(true);
@@ -2319,9 +2323,39 @@ test("with a target for the month, progress against it goes into the check-in", 
   await t.engine.handleMessage(t.id(CTO), "ask priya");
   assert.equal(
     t.brain.turns.at(-1)!.facts,
-    "Today so far: 2 submitted to client.\nThis month against target: submitted to client 7 of 20, joined 0 of 1.",
+    "Today so far: 2 submitted to client.\nYesterday (2026-11-15): 2 submitted to client.\nThis month against target: submitted to client 7 of 20, joined 0 of 1.",
   );
-  assert.deepEqual(froms, ["2026-11-16T00:00:00.000Z", "2026-11-01T00:00:00.000Z"]);
+  assert.deepEqual(froms, ["2026-11-16T00:00:00.000Z", "2026-11-15T00:00:00.000Z", "2026-11-01T00:00:00.000Z"]);
+});
+
+test("a TalentFlow days behind is flagged in the check-in, worked out once a day, and the digest sees it", async () => {
+  const t = setup();
+  await onboard(t);
+  let lastCalls = 0;
+  t.engine.ats = {
+    stats: async () => ({}),
+    lastUpdate: async () => {
+      lastCalls++;
+      return "2026-11-12T10:00:00.000Z";
+    },
+  };
+  await t.engine.handleMessage(t.id(CTO), "ask priya");
+  const facts = t.brain.turns.at(-1)!.facts!;
+  assert.match(facts, /^Today so far: nothing recorded\./);
+  assert.match(facts, /Last TalentFlow update: 2026-11-12, 4 days ago\. TalentFlow is behind\./);
+
+  await t.engine.runDigest();
+  assert.equal(lastCalls, 1); // once a day, though the digest fetched today's figures afresh
+  const priya = t.brain.digestCalls.at(-1)!.find((p) => p.person.email === "priya@acme.test")!;
+  assert.match(priya.talentflow!, /TalentFlow is behind/);
+});
+
+test("an update yesterday is not flagged as behind", async () => {
+  const t = setup();
+  await onboard(t);
+  t.engine.ats = { stats: async () => ({}), lastUpdate: async () => "2026-11-15T16:00:00.000Z" };
+  await t.engine.handleMessage(t.id(CTO), "ask priya");
+  assert.doesNotMatch(t.brain.turns.at(-1)!.facts!, /behind/);
 });
 
 test("TalentFlow figures count each move into a status inside the window, from Base44", async () => {

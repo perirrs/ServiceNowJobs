@@ -21,15 +21,44 @@ export interface EntitySchema {
 
 export type Base44Query = Record<string, unknown>;
 
+/** Base44 allows 70 list and count calls a minute per app; stay under that. */
+const PER_MINUTE = 60;
+
 export class Base44 {
-  constructor(private key: string) {}
+  private calls: number[] = [];
+
+  constructor(
+    private key: string,
+    private sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+  ) {}
+
+  /** Wait until a call fits in the last minute's allowance. */
+  private async slot(): Promise<void> {
+    for (;;) {
+      const now = Date.now();
+      this.calls = this.calls.filter((t) => now - t < 60_000);
+      if (this.calls.length < PER_MINUTE) {
+        this.calls.push(now);
+        return;
+      }
+      await this.sleep(60_000 - (now - this.calls[0]!) + 50);
+    }
+  }
 
   private async get<T>(path: string, params: Record<string, string> = {}): Promise<T> {
     const query = new URLSearchParams(params).toString();
-    const res = await fetch(`${BASE}${path}${query ? `?${query}` : ""}`, {
-      headers: { Authorization: `Bearer ${this.key}`, Accept: "application/json" },
-      signal: AbortSignal.timeout(20_000),
-    });
+    let res: Response;
+    for (let attempt = 0; ; attempt++) {
+      await this.slot();
+      res = await fetch(`${BASE}${path}${query ? `?${query}` : ""}`, {
+        headers: { Authorization: `Bearer ${this.key}`, Accept: "application/json" },
+        signal: AbortSignal.timeout(20_000),
+      });
+      if ((res.status !== 429 && res.status !== 503) || attempt >= 1) break;
+      // Too many calls, or the database is busy: wait as asked (at most 30 seconds), once.
+      const wait = Math.min(30, Number(res.headers.get("retry-after")) || 5);
+      await this.sleep(wait * 1000);
+    }
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       throw new Error(`Base44 answered ${res.status} for ${path}: ${body.slice(0, 200)}`);
@@ -65,7 +94,7 @@ export class Base44 {
   async list<T = Record<string, unknown>>(
     appId: string,
     entity: string,
-    opts: { q?: Base44Query; fields?: string[]; max?: number } = {},
+    opts: { q?: Base44Query; fields?: string[]; max?: number; sort?: string } = {},
   ): Promise<T[]> {
     const out: T[] = [];
     const max = opts.max ?? 5000;
@@ -76,6 +105,7 @@ export class Base44 {
       else {
         if (opts.q) params.q = JSON.stringify(opts.q);
         if (opts.fields?.length) params.fields = opts.fields.join(",");
+        if (opts.sort) params.sort = opts.sort;
       }
       const page: { items: T[]; next_cursor: string | null; has_more: boolean } = await this.get(
         `/apps/${appId}/entities/${entity}/v2/list`,

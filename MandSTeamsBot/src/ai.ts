@@ -83,6 +83,8 @@ export interface DigestPerson {
   person: Person;
   note: Note | null;
   activeItems: WorkItem[];
+  /** What TalentFlow, the recruitment system, shows for them, when they are in it. */
+  talentflow?: string;
   /** Why there is no note, when there isn't one. */
   missing: "no_response" | "not_connected" | null;
 }
@@ -205,7 +207,13 @@ function renderPersonBrief(ctx: CheckinContext): string {
     `## Notes from their recent check-ins\n${notes}`,
     rapport ? `## How you normally write to this person, and what is going on between you (from your past chat)\n${rapport}` : "",
     facts
-      ? `## Their figures in TalentFlow, the recruitment system (these are facts)\n${facts}\nDo not ask for these numbers. Ask about what they do not show: outcomes, feedback, next steps. If what the person says does not match them, ask about the difference plainly and without accusing.`
+      ? `## Their figures in TalentFlow, the recruitment system (these are facts)\n${facts}\nDo not ask for these numbers. Ask about what they do not show: outcomes, feedback, next steps.
+TalentFlow must be updated the same day; it is how leadership sees the work. Keep each of these to one short line, plain and not accusing:
+- If they mention work that TalentFlow does not show (submissions, interviews, offers, joins), ask them to update TalentFlow today.
+- If TalentFlow is behind (no update for days), ask them to bring it up to date today, before anything else.
+- If their earlier note says they did work yesterday that yesterday's TalentFlow figures do not show, ask them to add it.
+- In the evening, if today shows nothing recorded but they did work, ask them to update TalentFlow before they log off.
+- Once they say it is done, do not ask again in this conversation.`
       : "",
     `## Greeting for this person\nOpen your first message with exactly: "${greeting || "Hi"},"`,
     topic
@@ -338,6 +346,8 @@ Two or three sentences on the overall picture.
 **Questions to ask** For each person worth a conversation, the exact question to put to them, phrased so it could be asked as written.
 
 **No update today** Who did not respond, and who has not yet connected to the bot.
+
+For people in TalentFlow, the recruitment system, you also get what it shows. TalentFlow must be updated the same day. Put these under Needs your attention, as plain facts: someone whose TalentFlow is days behind; someone who said they did work (submissions, interviews, offers, joins) that TalentFlow does not show; and how many people kept TalentFlow up to date today out of how many are in it. Say "said 5 submissions, TalentFlow shows 1", not a judgement.
 
 Stay with what the notes say. Point out patterns across people and across days when the evidence is there: when the same problem shows up from several people, or for several days in the 7-day section, put it under Needs your attention as something to fix once; and say plainly when something is your reading rather than something a person stated. Do not rate people or speculate about their attitude.`;
 }
@@ -610,8 +620,11 @@ export class ClaudeBrain implements Brain {
         `# ${displayName(p.person)}`,
         `Role and targets: ${p.person.profile ?? "(not provided)"}`,
         `Today:\n${status}`,
+        p.talentflow ? `In TalentFlow:\n${p.talentflow}` : "",
         `Open items:\n${renderItems(p.activeItems)}`,
-      ].join("\n");
+      ]
+        .filter(Boolean)
+        .join("\n");
     });
     return this.text(
       digestSystem(this.company),

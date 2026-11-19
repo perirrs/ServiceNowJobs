@@ -66,6 +66,8 @@ export interface Ats {
   stats(email: string, fromIso: string, toIso: string): Promise<Record<string, number> | null>;
   /** This person's targets for a "YYYY-MM" month, or null when none are set. */
   targets?(email: string, month: string): Promise<Record<string, number> | null>;
+  /** When they last changed anything in the ATS (ISO, UTC), or null if never or not in it. */
+  lastUpdate?(email: string): Promise<string | null>;
 }
 
 interface Application {
@@ -115,6 +117,22 @@ export class Base44TalentFlow implements Ats {
       fields: ["status_history"],
     });
     return countMoves(rows, from, to);
+  }
+
+  async lastUpdate(email: string): Promise<string | null> {
+    const id = await this.recruiterId(email);
+    if (!id) return null;
+    const rows = await this.b44.list<{ updated_date?: string }>(await this.app(), "CandidateApplication", {
+      q: { recruiter_id: id },
+      fields: ["updated_date"],
+      sort: "-updated_date",
+      max: 1,
+    });
+    const at = rows[0]?.updated_date;
+    if (!at) return null;
+    // Stored in UTC without a zone.
+    const iso = /[zZ]|[+-]\d\d:?\d\d$/.test(at) ? at : `${at}Z`;
+    return Number.isNaN(Date.parse(iso)) ? null : new Date(iso).toISOString();
   }
 
   async targets(email: string, month: string): Promise<Record<string, number> | null> {

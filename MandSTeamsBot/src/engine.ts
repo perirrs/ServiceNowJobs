@@ -814,11 +814,15 @@ export class Engine {
   /** TalentFlow, when connected. */
   ats?: Ats;
 
-  /** Today's figures from TalentFlow for this person, fetched at most every 15 minutes. */
-  private async refreshAtsFacts(person: Person): Promise<void> {
+  /**
+   * What TalentFlow shows for this person: today's figures (fetched at most
+   * every 15 minutes, or now when `fresh`), and once a day yesterday's
+   * figures, when they last updated it, and this month against target.
+   */
+  private async refreshAtsFacts(person: Person, fresh = false): Promise<void> {
     if (!this.ats || this.isAdmin(person)) return;
     const stamp = this.store.get(`atsat:${person.id}`);
-    if (stamp && this.now().getTime() - Date.parse(stamp) < 15 * 60_000) return;
+    if (!fresh && stamp && this.now().getTime() - Date.parse(stamp) < 15 * 60_000) return;
     this.store.set(`atsat:${person.id}`, this.now().toISOString());
     try {
       // From midnight today in the bot's timezone, as UTC.
@@ -833,18 +837,53 @@ export class Engine {
       }
       const text = describeCounts(counts);
       const lines = [text ? `Today so far: ${text}.` : "Today so far: nothing recorded."];
-      // Progress against this month's targets, when TalentFlow has them.
-      const month = this.today().slice(0, 7);
-      const targets = this.ats.targets ? await this.ats.targets(person.email, month) : null;
-      if (targets) {
-        const monthCounts = (await this.ats.stats(person.email, this.localMidnightIso(`${month}-01`), nowIso)) ?? {};
-        lines.push(`This month against target: ${describeProgress(monthCounts, targets)}.`);
-      }
+      const daily = await this.atsDaily(person, nowIso);
+      if (daily) lines.push(daily);
       this.store.set(`atsfacts:${person.id}`, lines.join("\n"));
     } catch (err) {
       this.log(`Could not read TalentFlow for ${person.email}`, err);
       this.store.set(`atsfacts:${person.id}`, "");
     }
+  }
+
+  /**
+   * The slower-moving part of what TalentFlow shows, worked out once a day:
+   * yesterday's figures, how long since the last update, and this month
+   * against target. Kept for the day so a busy morning does not hit the limit.
+   */
+  private async atsDaily(person: Person, nowIso: string): Promise<string> {
+    const ats = this.ats!;
+    const date = this.today();
+    const key = `atsdaily:${person.id}`;
+    const saved = this.store.get(key);
+    if (saved?.startsWith(`${date}|`)) return saved.slice(date.length + 1);
+
+    const lines: string[] = [];
+    const yesterday = new Date(Date.parse(`${date}T12:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+    const y = await ats.stats(person.email, this.localMidnightIso(yesterday), this.localMidnightIso(date));
+    if (y) lines.push(`Yesterday (${yesterday}): ${describeCounts(y) || "nothing recorded"}.`);
+    if (ats.lastUpdate) {
+      const last = await ats.lastUpdate(person.email);
+      const lastDay = last ? this.localDate(last) : "";
+      const days = lastDay ? Math.round((Date.parse(`${date}T00:00:00Z`) - Date.parse(`${lastDay}T00:00:00Z`)) / 86_400_000) : -1;
+      if (!last) lines.push("Last TalentFlow update: never.");
+      else if (days >= 2) lines.push(`Last TalentFlow update: ${lastDay}, ${days} days ago. TalentFlow is behind.`);
+    }
+    // Progress against this month's targets, when TalentFlow has them.
+    const month = date.slice(0, 7);
+    const targets = ats.targets ? await ats.targets(person.email, month) : null;
+    if (targets) {
+      const monthCounts = (await ats.stats(person.email, this.localMidnightIso(`${month}-01`), nowIso)) ?? {};
+      lines.push(`This month against target: ${describeProgress(monthCounts, targets)}.`);
+    }
+    const text = lines.join("\n");
+    this.store.set(key, `${date}|${text}`);
+    return text;
+  }
+
+  /** The YYYY-MM-DD date of an ISO time in the bot's timezone. */
+  private localDate(iso: string): string {
+    return new Intl.DateTimeFormat("en-CA", { timeZone: this.tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(iso));
   }
 
   /** A public holiday today, by name, or "". */
@@ -2974,11 +3013,14 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     }
 
     const notes = new Map(this.store.notesOn(date).map((n) => [n.personId, n]));
+    // What TalentFlow shows for each person at the end of the day, to set against what they said.
+    if (this.ats) for (const person of this.store.nominees()) await this.refreshAtsFacts(person, true);
     const people: DigestPerson[] = this.store.nominees().map((person) => {
       const note = notes.get(person.id) ?? null;
       return {
         person,
         note,
+        talentflow: (this.ats && !this.isAdmin(person) && this.store.get(`atsfacts:${person.id}`)) || undefined,
         activeItems: this.store.activeItems(person.id),
         missing: note ? null : this.address(person) ? "no_response" : "not_connected",
       };
