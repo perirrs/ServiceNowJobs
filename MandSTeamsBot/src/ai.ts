@@ -33,6 +33,8 @@ export interface Turn {
   handover?: boolean;
   /** A group-chat message that was not this person's update: nothing to record or answer. */
   ignore?: boolean;
+  /** The reply should go to the person one to one, not in the group they wrote in. */
+  private?: boolean;
 }
 
 export interface ItemChange {
@@ -310,6 +312,7 @@ const TurnSchema = z.object({
   done: z.boolean().describe("True when this message closes today's check-in."),
   handover: z.boolean().describe("True when a person must answer this themselves; reply is then empty."),
   ignore: z.boolean().describe("True only for a group-chat message that is not this person's work update; reply is then empty."),
+  private: z.boolean().describe("Only for a reply to a group-chat message: true when your reply must not be seen by the group and should go to the person one to one."),
 });
 
 const NoteSchema = z.object({
@@ -411,7 +414,7 @@ export class ClaudeBrain implements Brain {
     const notes: string[] = [];
     if (ctx.fromGroup) {
       notes.push(
-        "The person's latest message was written in a group chat, where the update was asked for and where people also talk to each other. If it is not this person's own work update (a reply to someone else, banter, a question to the group, an acknowledgement like \"ok\"), set ignore to true and leave reply empty. If it is their update, answer as usual: your reply is sent to them privately, one to one, so do not greet them again.",
+        "The person's latest message was written in a group chat, where the update was asked for and where people also talk to each other. If it is not this person's own work update (a reply to someone else, banter, a question to the group, an acknowledgement like \"ok\"), set ignore to true and leave reply empty. If it is their update, answer as usual. Your reply is posted in the same group chat with this person tagged in front of it, so everyone can see it: do not write their name and do not greet them again. Keeping things in the group is the normal way, so set private to false. Set private to true only when the reply has to stay out of the group: it touches something personal or sensitive, or it presses the person about poor progress or a mistake in a way that would embarrass them in front of colleagues. A private reply is sent to them one to one instead.",
       );
     }
     if (ctx.finalTurn) {
@@ -429,7 +432,11 @@ export class ClaudeBrain implements Brain {
     );
     if (ctx.fromGroup && turn.ignore) return { reply: "", done: false, ignore: true };
     if (turn.handover) return { reply: "", done: false, handover: true };
-    return { reply: tidyReply(turn.reply, ctx.person.name, ctx.greeting), done: turn.done || ctx.finalTurn };
+    return {
+      reply: tidyReply(turn.reply, ctx.person.name, ctx.greeting),
+      done: turn.done || ctx.finalTurn,
+      private: ctx.fromGroup ? turn.private : undefined,
+    };
   }
 
   async writeNote(ctx: CheckinContext): Promise<NoteResult> {

@@ -39,6 +39,8 @@ class FakeBrain implements Brain {
   doneAfterUserMessages = 1;
   failNextTurn = false;
   handoverNext = false;
+  /** The next reply to a group message is marked as one that must stay out of the group. */
+  privateNext = false;
   /** Group messages containing this text are treated as chatter. */
   chatter = "lunch";
 
@@ -55,6 +57,10 @@ class FakeBrain implements Brain {
     }
     const userMessages = ctx.history.filter((m) => m.role === "user").length;
     const done = ctx.finalTurn || userMessages >= this.doneAfterUserMessages;
+    if (ctx.fromGroup && this.privateNext) {
+      this.privateNext = false;
+      return { reply: "Private question", done: false, private: true };
+    }
     return { reply: done ? "Thanks, that's all." : `Question ${ctx.history.length}`, done };
   }
   async writeNote(ctx: CheckinContext): Promise<NoteResult> {
@@ -819,7 +825,12 @@ test("a greeting set by hand is kept when the chat is read, and 'off' means plai
 function groupSetup() {
   const store = new Store(":memory:");
   const brain = new FakeBrain();
-  const sent: { to: string; text: string; mentions?: { userId: string; name: string }[] }[] = [];
+  const sent: {
+    to: string;
+    text: string;
+    mentions?: { userId: string; name: string }[];
+    quote?: { messageId: string; preview: string; userId: string; name: string };
+  }[] = [];
   const admin: string[] = [];
   let date = new Date("2026-11-16T17:00:00Z");
   const members = [
@@ -836,7 +847,7 @@ function groupSetup() {
     {
       senderName: "Sujith",
       connect: async (email) => ({ conversationId: `chat-${email}`, name: email }),
-      send: async (to, text, mentions) => void sent.push({ to, text, mentions }),
+      send: async (to, text, mentions, quote) => void sent.push({ to, text, mentions, quote }),
       findGroups: async (q) =>
         [
           { chatId: "g-rec", name: "Recruitment Team" },
@@ -859,7 +870,7 @@ test("adding a group needs one clear match, lists the members, and posts nothing
   assert.equal(g.store.nominees().length, 2);
 });
 
-test("a group is asked with one message; a reply there gets its follow-up privately", async () => {
+test("a group is asked with one message; a reply there gets its follow-up in the group, tagged", async () => {
   const g = groupSetup();
   await g.engine.handleMessage(g.cto, "add group Recruitment Team");
   await g.engine.handleMessage(g.cto, "ask group recruitment team");
@@ -868,9 +879,18 @@ test("a group is asked with one message; a reply there gets its follow-up privat
 
   g.brain.doneAfterUserMessages = 99;
   await g.engine.handleGroupReply("u-priya", "sent 3 submissions today");
-  assert.equal(g.sent.at(-1)!.to, `chat-${PRIYA}`); // the follow-up is one to one
+  const followUp = g.sent.at(-1)!;
+  assert.equal(followUp.to, "g-rec"); // it stays in the group
+  assert.match(followUp.text, /^\{@0\} Question/);
+  assert.deepEqual(followUp.mentions, [{ userId: "u-priya", name: "Priya Rao" }]);
   assert.equal(g.brain.turns.at(-1)!.fromGroup, true);
-  assert.equal(g.sent.filter((s) => s.to === "g-rec").length, 1); // nothing more in the group
+  assert.equal(g.sent.filter((s) => s.to === `chat-${PRIYA}`).length, 0); // nothing one to one
+
+  // Something that should not be said in front of the group goes one to one instead.
+  g.brain.privateNext = true;
+  await g.engine.handleGroupReply("u-priya", "could not finish, was unwell");
+  assert.equal(g.sent.at(-1)!.to, `chat-${PRIYA}`);
+  assert.equal(g.sent.at(-1)!.text, "Private question");
 });
 
 test("group banter is ignored: not recorded, not answered", async () => {
@@ -893,7 +913,7 @@ test("silent members are chased once in the group with a mention, then marked as
   g.setDate("2026-11-16T17:50:00Z"); // past the 45-minute chase
   await g.engine.tick();
   await g.engine.tick();
-  const chases = g.sent.filter((s) => s.to === "g-rec" && s.mentions?.length);
+  const chases = g.sent.filter((s) => s.to === "g-rec" && s.text.includes("Any update? Please share when you can."));
   assert.equal(chases.length, 1);
   assert.deepEqual(chases[0]!.mentions, [{ userId: "u-ravi", name: "Ravi Kumar" }]);
 
@@ -1117,22 +1137,24 @@ test("the wording step is given each person's role and the day's date to work fr
 
 // ---------- one chase when someone stops replying part-way through ----------
 
-test("an unanswered follow-up question is chased once, privately, and not again", async () => {
+test("an unanswered follow-up question is chased once, where it was asked, and not again", async () => {
   const g = groupSetup();
   await g.engine.handleMessage(g.cto, "add group Recruitment Team");
   await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
   g.brain.doneAfterUserMessages = 99;
-  await g.engine.handleGroupReply("u-priya", "sent 3 submissions"); // she gets a follow-up, one to one
-  const toPriya = () => g.sent.filter((s) => s.to === `chat-${PRIYA}`).map((s) => s.text);
-  assert.equal(toPriya().length, 1);
+  await g.engine.handleGroupReply("u-priya", "sent 3 submissions"); // she gets a follow-up in the group
+  const inGroup = () => g.sent.filter((s) => s.to === "g-rec");
+  assert.equal(inGroup().length, 2); // the ask, and her follow-up
 
   assert.equal(await g.engine.chaseFollowUps(45), 0); // not yet 45 minutes
   assert.equal(await g.engine.chaseFollowUps(0), 1);
-  assert.equal(toPriya().at(-1), "Any update on this?");
+  assert.equal(inGroup().at(-1)!.text, "{@0} Any update on this?");
+  assert.deepEqual(inGroup().at(-1)!.mentions, [{ userId: "u-priya", name: "Priya Rao" }]);
   assert.equal(await g.engine.chaseFollowUps(0), 0); // only ever once
 
   // Ravi never replied at all: that is the group chase's job, not this one.
-  assert.equal(g.sent.filter((s) => s.to === "chat-ravi@acme.test").length, 0);
+  assert.ok(!inGroup().some((s) => s.mentions?.some((m) => m.userId === "u-ravi")));
+  assert.equal(g.sent.filter((s) => s.to.startsWith("chat-")).length, 0); // nothing went one to one
 });
 
 test("no follow-up chase once you have taken the chat over, or after they answer", async () => {
@@ -1145,4 +1167,39 @@ test("no follow-up chase once you have taken the chat over, or after they answer
   await t.engine.handleDirectReply(priya.id, "half an update");
   t.engine.manualTakeover(priya.id);
   assert.equal(await t.engine.chaseFollowUps(0), 0);
+});
+
+test("the group keeps being read while a conversation there is still going, then stops", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  g.brain.doneAfterUserMessages = 99;
+  await g.engine.handleGroupReply("u-priya", "sent 3 submissions");
+
+  g.setDate("2026-11-16T19:05:00Z"); // the two-hour window has passed, Priya's follow-up is still open
+  await g.engine.tick();
+  assert.equal(g.engine.listeningGroups().length, 1);
+
+  await g.engine.chaseFollowUps(0); // her one chase
+  await g.engine.closeIdle(0); // then her conversation closes
+  await g.engine.tick();
+  assert.equal(g.engine.listeningGroups().length, 0);
+});
+
+test("a reply in the group quotes the exact message it answers", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  g.brain.doneAfterUserMessages = 99;
+  await g.engine.handleGroupReply("u-priya", "sent 3 submissions today", "msg-77");
+
+  const reply = g.sent.at(-1)!;
+  assert.equal(reply.to, "g-rec");
+  assert.deepEqual(reply.quote, { messageId: "msg-77", preview: "sent 3 submissions today", userId: "u-priya", name: "Priya Rao" });
+  assert.deepEqual(reply.mentions, [{ userId: "u-priya", name: "Priya Rao" }]);
+
+  // The group ask itself, and a chase, answer nothing in particular: no quote.
+  assert.equal(g.sent[0]!.quote, undefined);
+  await g.engine.chaseFollowUps(0);
+  assert.equal(g.sent.at(-1)!.quote, undefined);
 });

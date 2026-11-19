@@ -23,7 +23,13 @@ export interface DirectChannel {
   connect(
     email: string,
   ): Promise<{ conversationId: string; name: string } | { notFound: true; suggestions: string[] }>;
-  send(conversationId: string, text: string, mentions?: { userId: string; name: string }[]): Promise<void>;
+  send(
+    conversationId: string,
+    text: string,
+    mentions?: { userId: string; name: string }[],
+    /** The message being answered, shown quoted above the reply. */
+    quote?: { messageId: string; preview: string; userId: string; name: string },
+  ): Promise<void>;
   /** The sender's named group chats whose name contains the query. */
   findGroups?(query: string): Promise<{ chatId: string; name: string }[]>;
   /** Everyone in a group chat except the sender. */
@@ -53,7 +59,7 @@ const ADMIN_HELP = `**Daily Check-in: what you can type**
 - **board** (or **menu**): the team board, with who has replied, who is blocked, and buttons for everything below
 - **add** name@company.com: start asking someone for updates
 - **remove** name: stop asking them (their notes are kept)
-- **add group** Group Name: follow a Teams group chat. Updates are asked for in the group; any follow-up questions go to each person privately. **ask group** Name asks now, **remove group** Name stops.
+- **add group** Group Name: follow a Teams group chat. Updates are asked for in the group, and follow-up questions stay there with the person tagged; only something that should not be said in front of the group goes to them one to one. **ask group** Name asks now, **remove group** Name stops.
 - **ask** name: ask them for an update right now. **ask all** asks everyone.
 - **profile** name: their role, responsibilities and targets, so the questions fit their job
 - **style** name: what I learned from your past chat about how you write to them. **style name refresh** reads the chat again.
@@ -507,14 +513,14 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       .filter((x): x is { person: Person; checkin: Checkin } => !!x.person?.nominated && !!x.person.chatId);
   }
 
-  private async handleUpdate(person: Person, text: string, fromGroup = false): Promise<void> {
+  private async handleUpdate(person: Person, text: string, fromGroup = false, messageId = ""): Promise<void> {
     if (!text) return;
     const date = this.today();
     let checkin = this.store.checkin(person.id, date);
     // A message outside an open check-in (before the daily prompt, or after
     // closing) opens or reopens today's, so nothing a person says is lost.
     if (!checkin || checkin.status !== "open") checkin = this.store.openCheckin(person.id, date);
-    const messageId = this.store.addMessage(checkin.id, "user", text);
+    const recordId = this.store.addMessage(checkin.id, "user", text);
     // Recorded for tonight's note, but the human has taken over this chat.
     if (this.store.get(`takeover:${checkin.id}`)) return;
 
@@ -524,7 +530,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       const turn = await this.brain.nextTurn(this.context(person, checkin, finalTurn, fromGroup));
       if (turn.ignore) {
         // Group chatter, not an update: as if it was never said.
-        this.store.removeMessage(messageId);
+        this.store.removeMessage(recordId);
         return;
       }
       if (turn.handover || !turn.reply) {
@@ -535,7 +541,12 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         );
         return;
       }
-      await this.say(person, turn.reply);
+      // Answer where they wrote. In a group that means in the group, tagged,
+      // unless this reply has to stay out of it.
+      const inGroup =
+        fromGroup && !turn.private && (await this.sayInGroup(person, checkin, turn.reply, { id: messageId, text }));
+      if (!inGroup) await this.say(person, turn.reply);
+      this.store.set(`lastwhere:${checkin.id}`, inGroup ? "group" : "direct");
       this.store.addMessage(checkin.id, "bot", turn.reply);
       if (turn.done) await this.finish(person, checkin);
     } catch (err) {
@@ -571,6 +582,26 @@ So you know how it's used: your answers are summarised each day for the CTO and 
   }
 
   /**
+   * Post a message for one person in the group their check-in came from,
+   * with them tagged in front. False if that is not possible (no group, or
+   * the person cannot be tagged), so the caller can fall back to one to one.
+   */
+  private async sayInGroup(person: Person, checkin: Checkin, text: string, replyingTo?: { id: string; text: string }): Promise<boolean> {
+    const group = this.store.groups().find((g) => String(g.id) === this.store.get(`via:${checkin.id}`));
+    const userId = this.store.get(`aadOf:${person.id}`);
+    if (!group || !userId || !this.direct) return false;
+    const name = displayName(person);
+    await this.direct.send(
+      group.chatId,
+      `{@0} ${text}`,
+      [{ userId, name }],
+      // Quote the message being answered, so the group can see what the reply is to.
+      replyingTo?.id ? { messageId: replyingTo.id, preview: replyingTo.text, userId, name } : undefined,
+    );
+    return true;
+  }
+
+  /**
    * True when the person has replied before, the assistant then asked
    * something, and they have not answered or been chased about it yet.
    */
@@ -584,8 +615,8 @@ So you know how it's used: your answers are summarised each day for the CTO and 
   }
 
   /**
-   * One chase, privately, for a follow-up question left unanswered for
-   * `minMinutes`. After it the conversation is allowed to go quiet and close.
+   * One chase for a follow-up question left unanswered for `minMinutes`,
+   * in the same place the question was asked. After it the conversation is allowed to go quiet and close.
    */
   async chaseFollowUps(minMinutes = 0): Promise<number> {
     let chased = 0;
@@ -599,7 +630,9 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       if (!person?.nominated || !this.address(person)) continue;
       try {
         const nudge = this.personal ? "Any update on this?" : "A quick reminder on my last question, when you have a minute.";
-        await this.say(person, nudge);
+        const inGroup =
+          this.store.get(`lastwhere:${checkin.id}`) === "group" && (await this.sayInGroup(person, checkin, nudge));
+        if (!inGroup) await this.say(person, nudge);
         this.store.addMessage(checkin.id, "bot", nudge);
         this.store.set(`midchase:${checkin.id}`, "1");
         chased++;
@@ -699,7 +732,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     const group = this.store.addGroup(matches[0]!.chatId, matches[0]!.name);
     const members = await this.syncGroup(group);
     await this.refreshGroupMemory(group); // read the group's history now, before anything is asked
-    return `Now following **${group.name}** (${members.length} people: ${members.map(displayName).join(", ")}). Nothing has been posted there yet.\n\nSend **ask group ${group.name}** to ask now. The question goes in the group; any follow-up goes to each person privately.`;
+    return `Now following **${group.name}** (${members.length} people: ${members.map(displayName).join(", ")}). Nothing has been posted there yet.\n\nSend **ask group ${group.name}** to ask now. The question and any follow-ups stay in the group, with people tagged.`;
   }
 
   /** Bring our record of who is in the group in line with Teams. */
@@ -816,7 +849,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
   }
 
   /** Someone wrote in a group chat that is being watched. `userId` is their directory id. */
-  async handleGroupReply(userId: string, text: string): Promise<void> {
+  async handleGroupReply(userId: string, text: string, messageId = ""): Promise<void> {
     const person = this.store.personById(Number(this.store.get(`aad:${userId}`) || 0));
     if (!person?.nominated) return;
     await this.enqueue(person.id, async () => {
@@ -829,7 +862,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         if (!("notFound" in chat)) current = this.store.upsertPerson(current.email, { chatId: chat.conversationId });
       }
       await this.refreshMemory(current);
-      await this.handleUpdate(current, text.trim(), true);
+      await this.handleUpdate(current, text.trim(), true, messageId);
     });
     await this.refreshBoards();
   }
@@ -869,7 +902,12 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       if (minutes >= this.config.groupWindowMinutes) {
         // Stop reading the group. Whoever said nothing is marked as not having replied.
         for (const p of silent) this.store.setCheckinStatus(this.store.checkin(p.id, date)!.id, "no_response");
-        this.store.set(`gasked:${group.id}`, "");
+        // Follow-ups happen in the group, so keep reading it until every conversation from this ask is closed.
+        const stillTalking = this.store.groupMembers(group.id).some((p) => {
+          const c = this.store.checkin(p.id, date);
+          return c?.status === "open" && this.store.get(`via:${c.id}`) === String(group.id);
+        });
+        if (!stillTalking) this.store.set(`gasked:${group.id}`, "");
       }
     }
   }
@@ -1081,7 +1119,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
             { type: "TextBlock", text: g.name, weight: "Bolder", wrap: true },
             {
               type: "TextBlock",
-              text: `${this.store.groupMembers(g.id).length} people · asked in the group, followed up privately`,
+              text: `${this.store.groupMembers(g.id).length} people · asked and followed up in the group`,
               wrap: true,
               spacing: "None",
               isSubtle: true,

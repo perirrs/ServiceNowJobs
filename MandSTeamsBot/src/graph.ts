@@ -58,6 +58,14 @@ function tokenCache(dataDir: string): ICachePlugin {
   };
 }
 
+/** The message a reply answers, so Teams can show it quoted above the reply. */
+export interface Quote {
+  messageId: string;
+  preview: string;
+  userId: string;
+  name: string;
+}
+
 class GraphError extends Error {
   constructor(
     message: string,
@@ -187,7 +195,12 @@ export class GraphChat {
   }
 
   /** Returns the id of the sent message. */
-  async send(chatId: string, text: string, mentions: { userId: string; name: string }[] = []): Promise<string> {
+  async send(
+    chatId: string,
+    text: string,
+    mentions: { userId: string; name: string }[] = [],
+    quote?: Quote,
+  ): Promise<string> {
     // Each @mention is tied to the person's directory id. A marker like {@0} in
     // the text says where that mention goes; with no markers they go in front.
     const tag = (i: number) => `<at id="${i}">${textToHtml(mentions[i]!.name)}</at>`;
@@ -197,18 +210,48 @@ export class GraphChat {
     } else if (mentions.length) {
       content = `${mentions.map((_, i) => tag(i)).join(" ")} ${content}`;
     }
-    const msg = await this.call<{ id: string }>("POST", `/chats/${encodeURIComponent(chatId)}/messages`, {
-      body: { contentType: "html", content },
-      ...(mentions.length
-        ? {
-            mentions: mentions.map((m, i) => ({
-              id: i,
-              mentionText: m.name,
-              mentioned: { user: { id: m.userId, displayName: m.name, userIdentityType: "aadUser" } },
-            })),
-          }
-        : {}),
-    });
+    const mentionList = mentions.length
+      ? {
+          mentions: mentions.map((m, i) => ({
+            id: i,
+            mentionText: m.name,
+            mentioned: { user: { id: m.userId, displayName: m.name, userIdentityType: "aadUser" } },
+          })),
+        }
+      : {};
+    const post = (body: Record<string, unknown>) =>
+      this.call<{ id: string }>("POST", `/chats/${encodeURIComponent(chatId)}/messages`, body);
+
+    if (quote) {
+      // A reply that shows the message it answers, as Teams' own "Reply" does.
+      try {
+        const msg = await post({
+          body: { contentType: "html", content: `<attachment id="${quote.messageId}"></attachment>${content}` },
+          attachments: [
+            {
+              id: quote.messageId,
+              contentType: "messageReference",
+              content: JSON.stringify({
+                messageId: quote.messageId,
+                messagePreview: quote.preview.slice(0, 200),
+                messageSender: {
+                  application: null,
+                  device: null,
+                  user: { userIdentityType: "aadUser", id: quote.userId, displayName: quote.name },
+                },
+              }),
+            },
+          ],
+          ...mentionList,
+        });
+        return msg.id;
+      } catch (err) {
+        // Better an ordinary tagged message than none at all.
+        if (!(err instanceof GraphError) || err.status >= 500 || err.status === 429) throw err;
+        console.warn(`Teams would not accept the quoted reply (${err.status}); sending it without the quote.`);
+      }
+    }
+    const msg = await post({ body: { contentType: "html", content }, ...mentionList });
     return msg.id;
   }
 

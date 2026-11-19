@@ -89,10 +89,11 @@ Chat text is sent to the Claude API to write these notes; only the notes are kep
 
 `add group Group Name` follows one of your named Teams group chats; `ask group Group Name` (or the board's **Ask group now**) posts one request for updates there from your account. Then:
 
-- Each member's reply in the group is recorded as their update. Any follow-up question goes to them **privately**, in your one-to-one chat, so blockers are not discussed in front of the group.
+- The message can tag individuals with a question of their own, named by you ("ask group X, Santosh on the TalentFlow app") or drawn from what is due or overdue in the memory.
+- Each member's reply in the group is recorded as their update. Follow-up questions **stay in the group**, with that person tagged, so everything is in one place. Only a reply that should not be seen by the group (something personal, or pressing someone about poor progress) goes to them one to one.
 - Messages in the group that are not updates (banter, replies to each other) are ignored.
 - Members who have not replied are chased once, in the group, with an @mention, after `CHASE_AFTER_MINUTES`.
-- The group is read for `GROUP_WINDOW_MINUTES` (default 120) after the ask; anyone silent by then is marked as not having replied.
+- Anyone who has not replied within `GROUP_WINDOW_MINUTES` (default 120) of the ask is marked as not having replied. The group goes on being read until the conversations that did start have finished.
 - `ask all` and the schedule post once per group and do not also message its members one by one.
 
 Check what your local law and your staff policies require before using this setting; in some places people must be told when they are dealing with an AI system.

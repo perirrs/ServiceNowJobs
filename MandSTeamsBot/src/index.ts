@@ -43,9 +43,9 @@ if (config.sendAsUser) {
   direct = {
     senderName: me.name,
     connect: (email) => g.connect(email),
-    send: async (chatId, text, mentions) => {
+    send: async (chatId, text, mentions, quote) => {
       sentByAssistant.add(normalise(text));
-      await g.send(chatId, text, mentions);
+      await g.send(chatId, text, mentions, quote);
     },
     findGroups: (query) => g.findGroups(query),
     groupMembers: (chatId) => g.groupMembers(chatId),
@@ -125,7 +125,7 @@ async function pollGroups(g: GraphChat): Promise<void> {
       for (const line of await g.messagesSince(group.chatId, since)) {
         store.set(key, line.createdAt);
         // The sender's own messages in a group are ordinary conversation: nothing to do.
-        if (line.fromUserId !== senderId) await engine.handleGroupReply(line.fromUserId, line.text);
+        if (line.fromUserId !== senderId) await engine.handleGroupReply(line.fromUserId, line.text, line.id);
       }
     } catch (err) {
       console.error(`Could not read the group chat ${group.name}`, err);
