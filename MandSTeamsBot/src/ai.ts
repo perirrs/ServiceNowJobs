@@ -99,6 +99,8 @@ export interface AdminAction {
     | "list"
     | "board"
     | "build_tracker"
+    | "set_hours"
+    | "set_timezone"
     | "question";
   /** Who or what it applies to: an email, a person's name, or a group chat's name. */
   target: string;
@@ -428,6 +430,8 @@ const ActionsSchema = z.object({
         "list",
         "board",
         "build_tracker",
+        "set_hours",
+        "set_timezone",
         "question",
       ]),
       target: z.string(),
@@ -640,6 +644,8 @@ Actions and what goes in target and text:
 - set_greeting: how to open messages to a person. target = the person. text = the greeting, for example "Hi Anna".
 - schedule: set when people are asked automatically. There are two daily messages: a morning one (the plan for the day) and an evening one (the end-of-day update). One action per time. target = "ask" for everyone, "digest" for the daily digest, or a person or group name to give them a time of their own. text = "morning" or "evening" followed by the time, or by "off", for example "morning 09:30".
 - digest, list, board: show today's digest, the list of people, or the board. No target or text.
+- set_hours: office hours, when the bot may message people. text = "09:30-18:30" style, or "off" for any time.
+- set_timezone: the time the bot works in. text = a place or zone, for example "India" or "Asia/Dubai".
 - build_tracker: build (or rebuild) the tracker for a group chat by going through its whole chat history: every piece of work, who has it, what is done so far, progress and due date, pinned in the group. target = the group name.
 - Only add a schedule action when the manager gives a time. "Track it daily" without a time needs no action: the tracker is kept up to date anyway.
 - Only add ask_person, ask_group or ask_all when the manager wants people asked now ("ask them", "chase them now"). "Follow up daily" or "keep following up" describes the ongoing routine and needs no ask action.

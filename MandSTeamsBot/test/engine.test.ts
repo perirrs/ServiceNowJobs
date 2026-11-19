@@ -1921,3 +1921,58 @@ test("a group with nothing open in its history gets no empty tracker posted", as
   assert.equal(t.created.length, 0);
   assert.match(t.admin.at(-1)!, /found no open work/);
 });
+
+// ---------- office hours and the timezone ----------
+
+test("outside office hours replies are recorded but not answered; inside they are", async () => {
+  const t = setup();
+  await onboard(t);
+  t.brain.doneAfterUserMessages = 99;
+  await t.engine.handleMessage(t.id(CTO), "hours 9 to 5"); // means 09:00-17:00
+  assert.match(t.to(CTO).at(-1)!, /Office hours: \*\*09:00 to 17:00\*\*/);
+  t.setDate("2026-11-16T10:00:00Z");
+  await t.engine.handleMessage(t.id(CTO), "ask priya");
+  const toPriya = () => t.to(PRIYA).length;
+  const asked = toPriya();
+
+  t.setDate("2026-11-16T18:30:00Z"); // after hours
+  await t.engine.handleMessage(t.id(PRIYA), "late update");
+  assert.equal(toPriya(), asked);
+  const priya = t.store.personByEmail(PRIYA)!;
+  assert.ok(t.store.messages(t.store.checkin(priya.id, "2026-11-16")!.id).some((m) => m.text === "late update"));
+  assert.equal(await t.engine.chaseFollowUps(0), 0);
+  assert.equal(await t.engine.runReminders(0), 0);
+
+  t.setDate("2026-11-16T16:00:00Z"); // back inside hours
+  await t.engine.handleMessage(t.id(PRIYA), "one more thing");
+  assert.equal(toPriya(), asked + 1);
+});
+
+test("scheduled messages to staff wait for office hours; the weekend is quiet", async () => {
+  const t = setup();
+  await onboard(t);
+  await t.engine.handleMessage(t.id(CTO), "hours 09:30-18:30");
+  await t.engine.handleMessage(t.id(CTO), "schedule morning 08:00"); // before office hours
+  t.setDate("2026-11-17T08:00:00Z");
+  await t.engine.tick();
+  assert.equal(t.brain.turns.length, 0);
+  t.setDate("2026-11-21T12:00:00Z"); // Saturday, inside the hours
+  assert.equal(await t.engine.chaseFollowUps(0), 0);
+});
+
+test("the timezone can be set from the chat, and office hours are read in it", async () => {
+  const t = setup();
+  await onboard(t);
+  await t.engine.handleMessage(t.id(CTO), "timezone India");
+  assert.match(t.to(CTO).at(-1)!, /Asia\/Kolkata/);
+  await t.engine.handleMessage(t.id(CTO), "hours 09:30-18:30");
+  // 17:00 UTC is 22:30 in India: outside hours.
+  assert.match(t.to(CTO).at(-1)!, /outside office hours now/);
+  t.setDate("2026-11-16T05:00:00Z"); // 10:30 in India
+  await t.engine.handleMessage(t.id(CTO), "hours");
+  assert.match(t.to(CTO).at(-1)!, /It is office hours now/);
+  await t.engine.handleMessage(t.id(CTO), "timezone Mars/Olympus");
+  assert.match(t.to(CTO).at(-1)!, /do not know the timezone/);
+  await t.engine.handleMessage(t.id(CTO), "hours off");
+  assert.match(t.to(CTO).at(-1)!, /No office hours are set/);
+});

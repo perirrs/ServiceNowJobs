@@ -62,6 +62,8 @@ export interface Identity {
 
 const ADMIN_HELP = `**Daily Check-in: what you can type**
 
+- **hours 09:30-18:30**: office hours, Monday to Friday. Outside them I send nothing to anyone (no replies, chases or scheduled messages), but still record what people write. **hours off** allows any time.
+- **timezone India**: the time I work in, for office hours and schedules.
 - **pause**: stop sending anything to anyone, at once. **resume** starts again.
 - **board** (or **menu**): the team board, with who has replied, who is blocked, and buttons for everything below
 - **add** name@company.com: start asking someone for updates. I first read your whole chat history with them and put their work on the tracker.
@@ -219,6 +221,26 @@ const validProgress = (value: number | undefined, status: string): number | null
 /** "▰▰▰▱▱ 60%" */
 const progressBar = (p: number) => `${"▰".repeat(Math.round(p / 20))}${"▱".repeat(5 - Math.round(p / 20))} ${p}%`;
 
+/** "India", "IST", "uk", "Asia/Dubai" -> an IANA timezone name, or null. */
+export function parseZone(input: string): string | null {
+  const plain = input.trim().toLowerCase();
+  const known: Record<string, string> = {
+    india: "Asia/Kolkata", ist: "Asia/Kolkata", kolkata: "Asia/Kolkata", hyderabad: "Asia/Kolkata", bangalore: "Asia/Kolkata",
+    bengaluru: "Asia/Kolkata", mumbai: "Asia/Kolkata", delhi: "Asia/Kolkata", chennai: "Asia/Kolkata",
+    uk: "Europe/London", london: "Europe/London", gmt: "Europe/London", bst: "Europe/London", england: "Europe/London",
+    dubai: "Asia/Dubai", uae: "Asia/Dubai", gst: "Asia/Dubai",
+    us: "America/New_York", usa: "America/New_York", est: "America/New_York", "new york": "America/New_York",
+    singapore: "Asia/Singapore", sgt: "Asia/Singapore",
+  };
+  const zone = known[plain] ?? input.trim();
+  try {
+    new Intl.DateTimeFormat("en-GB", { timeZone: zone });
+    return zone;
+  } catch {
+    return null;
+  }
+}
+
 const validDate = (value: string | undefined) => (value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : "");
 
 export class Engine {
@@ -272,8 +294,36 @@ export class Engine {
     return force || !this.store.get(`round:${c.id}:${round}`);
   }
 
+  /** The timezone everything runs on: set from the chat, otherwise from TIMEZONE. */
+  private get tz(): string {
+    return this.store.get("timezone") || this.config.timezone;
+  }
+
   private today(): string {
-    return todayIn(this.config.timezone, this.now());
+    return todayIn(this.tz, this.now());
+  }
+
+  /** Office hours as minutes from midnight, or null when the bot may speak at any time. */
+  private officeHours(): { start: number; end: number; text: string } | null {
+    const value = this.store.get("hours") || "";
+    const m = /^(\d\d):(\d\d)-(\d\d):(\d\d)$/.exec(value);
+    if (!m) return null;
+    return { start: Number(m[1]) * 60 + Number(m[2]), end: Number(m[3]) * 60 + Number(m[4]), text: value.replace("-", " to ") };
+  }
+
+  /**
+   * Whether staff may be messaged now. Outside office hours (and at the
+   * weekend, when hours are set) what people write is still recorded, but
+   * nothing is sent to them: no replies, chases or scheduled messages.
+   */
+  private inOfficeHours(): boolean {
+    const hours = this.officeHours();
+    if (!hours) return true;
+    const { minutes, weekend } = this.localNow();
+    if (weekend) return false;
+    return hours.start <= hours.end
+      ? minutes >= hours.start && minutes < hours.end
+      : minutes >= hours.start || minutes < hours.end; // a window that runs past midnight
   }
 
   /** Sending as a real person without mentioning automation: write and behave as that person would. */
@@ -715,8 +765,8 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     const recordId = this.store.addMessage(checkin.id, "user", text);
     // Recorded for tonight's note, but the human has taken over this chat.
     if (this.store.get(`takeover:${checkin.id}`)) return;
-    // Paused: what they said is kept, and nothing is sent back.
-    if (this.paused) return;
+    // Paused, or outside office hours: what they said is kept, and nothing is sent back.
+    if (this.paused || !this.inOfficeHours()) return;
 
     if (!this.config.humanDelay) {
       const draft = await this.draftReply(person, checkin, { text, fromGroup, messageId, ids: [recordId] });
@@ -747,7 +797,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     const person = this.store.personById(personId);
     const checkin = this.store.checkin(personId, this.today());
     if (!person || !checkin || checkin.id !== checkinId || checkin.status !== "open") return null;
-    if (this.store.get(`takeover:${checkin.id}`) || this.paused) return null;
+    if (this.store.get(`takeover:${checkin.id}`) || this.paused || !this.inOfficeHours()) return null;
     return { person, checkin };
   }
 
@@ -982,7 +1032,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
    */
   async chaseFollowUps(minMinutes = 0): Promise<number> {
     let chased = 0;
-    if (this.paused) return 0;
+    if (this.paused || !this.inOfficeHours()) return 0;
     for (const checkin of this.store.checkinsOn(this.today())) {
       if (checkin.status !== "open") continue;
       const messages = this.sinceAsk(checkin.id);
@@ -1349,7 +1399,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         );
       });
 
-      if (silent.length && !this.store.get(`gchased:${group.id}`) && minutes >= this.config.chaseAfterMinutes) {
+      if (silent.length && !this.store.get(`gchased:${group.id}`) && minutes >= this.config.chaseAfterMinutes && this.inOfficeHours()) {
         const nudge = this.nudgeText();
         const mentions = silent
           .map((p) => ({ userId: this.store.get(`aadOf:${p.id}`) ?? "", name: displayName(p) }))
@@ -1525,7 +1575,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       if (this.store.get(`trackerhash:${group.id}`) === html) continue;
 
       const when = new Intl.DateTimeFormat("en-GB", {
-        timeZone: this.config.timezone,
+        timeZone: this.tz,
         weekday: "short",
         day: "numeric",
         month: "short",
@@ -1560,7 +1610,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
 
   private localNow(): { date: string; minutes: number; weekend: boolean } {
     const parts = new Intl.DateTimeFormat("en-GB", {
-      timeZone: this.config.timezone,
+      timeZone: this.tz,
       hour: "2-digit",
       minute: "2-digit",
       hour12: false,
@@ -1574,6 +1624,13 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     };
   }
 
+  private hoursStatus(): string {
+    const hours = this.officeHours();
+    return hours
+      ? `Office hours: **${hours.text}**, Monday to Friday (${this.tz} time). Outside them I send nothing to anyone, but I still record what people write. ${this.inOfficeHours() ? "It is office hours now." : "It is outside office hours now, so I am quiet."}`
+      : `No office hours are set: I may message people at any time (${this.tz} time). Set them with **hours 09:30-18:30**.`;
+  }
+
   private scheduleStatus(): string {
     const morning = this.store.get("schedule:morning");
     const evening = this.store.get("schedule:evening");
@@ -1582,7 +1639,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       morning ? `Morning plan: everyone is asked automatically at **${morning}**.` : "",
       evening ? `End-of-day update: everyone is asked automatically at **${evening}**.` : "",
       morning || evening
-        ? `Monday to Friday, ${this.config.timezone} time.${morning && evening ? "" : ` No ${morning ? "end-of-day" : "morning"} message is set.`}`
+        ? `Monday to Friday, ${this.tz} time.${morning && evening ? "" : ` No ${morning ? "end-of-day" : "morning"} message is set.`}`
         : "No automatic asking: updates are only requested when you say **ask**.",
       digest ? `Daily digest at **${digest}**.` : "No automatic digest: send **digest** when you want one.",
     ]
@@ -1602,7 +1659,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     if (!last || now.getTime() - Date.parse(last) < 10 * 60_000) return;
     const when = (d: Date) =>
       new Intl.DateTimeFormat("en-GB", {
-        timeZone: this.config.timezone,
+        timeZone: this.tz,
         weekday: "short",
         day: "numeric",
         month: "short",
@@ -1657,6 +1714,8 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       const due = Number(at.slice(0, 2)) * 60 + Number(at.slice(3));
       // A ten-minute window, so a restart just after the time still runs it, once.
       if (minutes < due || minutes > due + 10 || this.store.get(`ran:${kind}`) === date) continue;
+      // The digest goes to you; everything else goes to staff and waits for office hours.
+      if (kind !== "digest" && !this.inOfficeHours()) continue;
       this.store.set(`ran:${kind}`, date);
       this.log(`[schedule] running ${kind} for ${date}`);
       try {
@@ -1682,7 +1741,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
   /** A stored message time (UTC) shown as HH:MM in the configured timezone. */
   private clock(at: string): string {
     return new Intl.DateTimeFormat("en-GB", {
-      timeZone: this.config.timezone,
+      timeZone: this.tz,
       hour: "2-digit",
       minute: "2-digit",
       hour12: false,
@@ -1870,6 +1929,18 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     }
 
     // The general settings: green when switched on, grey when off.
+    const hours = this.officeHours();
+    body.push({
+      type: "TextBlock",
+      text: hours
+        ? `ON · Office hours ${hours.text}, Monday to Friday (${this.tz})${this.inOfficeHours() ? "" : " · quiet now"}`
+        : `OFF · No office hours: I may message people at any time (${this.tz})`,
+      wrap: true,
+      size: "Small",
+      spacing: "Large",
+      separator: true,
+      ...(hours ? { color: "Good", weight: "Bolder" } : { isSubtle: true }),
+    });
     const morningAt = this.store.get("schedule:morning");
     const eveningAt = this.store.get("schedule:evening");
     const digestAt = this.store.get("schedule:digest");
@@ -2009,7 +2080,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
    */
   async runReminders(minMinutes = 0): Promise<number> {
     let nudged = 0;
-    if (this.paused) return 0;
+    if (this.paused || !this.inOfficeHours()) return 0;
     for (const checkin of this.store.checkinsOn(this.today())) {
       if (checkin.status !== "open" || checkin.reminded) continue;
       if (this.store.get(`takeover:${checkin.id}`)) continue;
@@ -2107,6 +2178,9 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     let verb = verbRaw.toLowerCase().replace(/[:,]$/, "");
     // "list" alone is a command; "list who is blocked" is a question.
     if (["help", "hi", "hello", "menu", "board", "refresh", "list", "digest", "pause", "resume"].includes(verb) && arg) verb = "";
+    if (verb === "office") {
+      verb = "hours";
+    }
     if (verb === "stop") verb = "pause";
     if (verb === "add") verb = "nominate";
     if (verb === "delete") verb = "remove";
@@ -2154,6 +2228,35 @@ So you know how it's used: your answers are summarised each day for the CTO and 
               ? `The tracker in **${group.name}** is up to date and pinned at the top of that chat. I update it as people report.`
               : `I could not post the tracker in ${group.name}. The server log has the details.`,
           );
+        }
+
+        case "hours": {
+          const value = arg.toLowerCase().trim();
+          if (!value) return await reply(this.hoursStatus());
+          if (/^(off|none|any|always|24\/7|anytime)$/.test(value)) {
+            this.store.set("hours", "");
+            return await reply(this.hoursStatus());
+          }
+          const parts = value.split(/\s*(?:-|–|to|till|until)\s*/).filter(Boolean);
+          const start = parts[0] ? parseTime(parts[0]) : null;
+          let end = parts[1] ? parseTime(parts[1]) : null;
+          // "9 to 6" means six in the evening.
+          if (start && end && end <= start && !/am|pm/.test(parts[1]!) && Number(end.slice(0, 2)) < 12) {
+            end = `${String(Number(end.slice(0, 2)) + 12).padStart(2, "0")}${end.slice(2)}`;
+          }
+          if (!start || !end || start === end) {
+            return await reply("I did not understand those hours. Try **hours 09:30-18:30**, or **hours off** to allow any time.");
+          }
+          this.store.set("hours", `${start}-${end}`);
+          return await reply(this.hoursStatus());
+        }
+
+        case "timezone": {
+          if (!arg) return await reply(`I am working in **${this.tz}** time. Change it with **timezone India**, **timezone UK** or a name like **timezone Asia/Dubai**.`);
+          const zone = parseZone(arg);
+          if (!zone) return await reply(`I do not know the timezone "${arg}". Try **timezone India**, **timezone UK**, or a name like **Asia/Kolkata**.`);
+          this.store.set("timezone", zone);
+          return await reply(`Now working in **${zone}** time. Schedules and office hours are read in this time from now on.\n\n${this.hoursStatus()}`);
         }
 
         case "pause":
@@ -2541,6 +2644,12 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         case "list":
         case "board":
           await command(action.type);
+          break;
+        case "set_hours":
+          await command(`hours ${detail || target}`);
+          break;
+        case "set_timezone":
+          await command(`timezone ${detail || target}`);
           break;
         case "build_tracker": {
           const group = this.resolveGroup(target);
