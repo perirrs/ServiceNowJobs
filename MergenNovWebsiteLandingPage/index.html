@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mergen | Follow one ticket | ServiceNow Premier Partner</title>
+<meta name="description" content="Follow one incident through a tangled IT estate, then through the route Mergen rebuilds on ServiceNow: listen, measure, propose, build, go live, stay, and count the return.">
+<meta name="theme-color" content="#04121b">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- The fixed stage: one thread, drawn on canvas, that the whole story happens to -->
+<div class="stage" aria-hidden="true">
+  <canvas id="stage"></canvas>
+  <div id="pins"></div>
+  <div id="chip" class="chip">INC0048213</div>
+</div>
+
+<div class="progress" aria-hidden="true"><i id="progress"></i></div>
+
+<header class="nav">
+  <a class="nav__logo" href="#top" aria-label="Mergen home">
+    <img src="https://thedemoproject.com/mergen_react_infinity/img/mergen-logo.png" alt="Mergen" height="30"
+         onerror="this.replaceWith(Object.assign(document.createElement('b'),{textContent:'MERGEN'}))">
+  </a>
+  <nav class="nav__links" aria-label="Page">
+    <a href="#knot">The story</a>
+    <a href="#return">The return</a>
+    <a href="#proof">Proof</a>
+    <a href="#industries">Industries</a>
+  </nav>
+  <a class="btn btn--sm" href="#contact">Talk to an expert</a>
+</header>
+
+<nav class="rail" id="rail" aria-label="Story chapters"></nav>
+
+<!-- The ticket's record header. It keeps score for the whole story. -->
+<aside class="hud" id="hud" aria-hidden="true">
+  <div class="hud__id">
+    <span class="hud__tag" id="hudTag">LIVE</span>
+    <b>INC0048213</b>
+    <span class="hud__desc">Order entry unavailable · 340 users</span>
+  </div>
+  <dl class="hud__fields">
+    <div class="hud__f hud__f--wide"><dt>State</dt><dd id="hudState">New</dd></div>
+    <div class="hud__f hud__f--wide"><dt>Assigned to</dt><dd id="hudGroup">Unassigned</dd></div>
+    <div class="hud__f"><dt>Elapsed</dt><dd id="hudElapsed">0m</dd></div>
+    <div class="hud__f"><dt>Reassigned</dt><dd id="hudHand">0×</dd></div>
+    <div class="hud__f"><dt>Hours lost</dt><dd id="hudLost">0</dd></div>
+  </dl>
+</aside>
+
+<main>
+
+  <!-- 00 HERO -->
+  <section class="chapter hero" id="top" data-ch="hero">
+    <div class="hero__body">
+      <p class="eyebrow"><span class="dot"></span>Mergen · ServiceNow Premier Partner</p>
+      <h1>Follow<br>one ticket.</h1>
+      <p class="hero__sub">INC0048213 was opened at 09:02 on a Monday. Scroll to see where it goes in a tangled IT estate, and where it goes after Mergen rebuilds the route on ServiceNow.</p>
+      <div class="hero__cta">
+        <a class="btn" href="#contact">Talk to an expert</a>
+        <a class="btn btn--ghost" href="#knot">Start the story <span aria-hidden="true">↓</span></a>
+      </div>
+    </div>
+    <div class="record" aria-label="The incident this story follows">
+      <div class="record__top"><span>Incident</span><b>INC0048213</b></div>
+      <p class="record__title">Order entry unavailable</p>
+      <dl>
+        <div><dt>Opened</dt><dd>Mon 09:02</dd></div>
+        <div><dt>Priority</dt><dd>1 · Critical</dd></div>
+        <div><dt>Affected</dt><dd>340 users</dd></div>
+        <div><dt>Assigned to</dt><dd class="is-empty">nobody yet</dd></div>
+      </dl>
+    </div>
+    <p class="hero__strip">ITSM / ITOM / HRSD / CSM / SPM / SecOps / GRC / App Engine / Agentic AI</p>
+  </section>
+
+  <!-- 01 THE KNOT -->
+  <section class="chapter" id="knot" data-ch="knot" data-label="The knot">
+    <header class="ch-head">
+      <p class="kicker"><span>01</span>The knot</p>
+      <h2>09:02. Order entry goes down for 340 sales reps.</h2>
+      <p class="lead">One application, one error. Watch what the organisation does with it.</p>
+    </header>
+    <div class="step" data-min="0">
+      <p class="when">Mon 09:02</p>
+      <p>One rep emails the help desk. Another phones. A third uses the old portal. That makes three records of one problem, and none of them know about the others.</p>
+    </div>
+    <div class="step" data-min="158">
+      <p class="when">Mon 11:40</p>
+      <p>The service desk can't tell which server runs order entry. That knowledge lives in a spreadsheet nobody has opened since the last reorganisation.</p>
+    </div>
+    <div class="step" data-min="1513">
+      <p class="when">Tue 10:15</p>
+      <p>App team. Infrastructure. The hosting vendor. Back to the app team. Every handoff starts the explanation again, and the clock keeps running while the ticket sits in each queue.</p>
+    </div>
+    <div class="step" data-min="3248">
+      <p class="when">Wed 15:10</p>
+      <p>Someone finally finds it: an expired certificate. The fix takes twelve minutes. Finding the person who could make it took two days and six hours.</p>
+    </div>
+    <div class="step step--fact">
+      <p class="fact__n">$2M <small>an hour</small></p>
+      <p>That was one ticket in one application. When an outage is high-impact, this is the median cost.</p>
+      <p class="src">New Relic, 2025 Observability Forecast</p>
+    </div>
+    <div class="step">
+      <p class="when">The same knot, elsewhere</p>
+      <ul class="symptoms">
+        <li>Seven tools that each hold part of the truth</li>
+        <li>A CMDB nobody trusts</li>
+        <li>Approvals that live in inboxes</li>
+        <li>A ServiceNow instance customised until it can't upgrade</li>
+        <li>Licences paid for, modules never switched on</li>
+        <li>Audits answered by hand</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 02 THE CALL -->
+  <section class="chapter" id="call" data-ch="call" data-label="The call">
+    <header class="ch-head">
+      <p class="kicker"><span>02</span>The call</p>
+      <h2>Then someone asks a better question.</h2>
+      <p class="lead">It stops being “who dropped it?” and becomes “why was it so easy to drop?”</p>
+    </header>
+    <div class="step thread-msgs">
+      <figure class="msg">
+        <figcaption>CIO, to Mergen</figcaption>
+        <blockquote>We already own ServiceNow. We're still running on email and heroics. Can you take a look?</blockquote>
+      </figure>
+      <figure class="msg msg--us">
+        <figcaption>Mergen</figcaption>
+        <blockquote>Yes. Before we recommend anything, we'd like to watch a ticket move.</blockquote>
+      </figure>
+    </div>
+    <div class="step">
+      <p class="when">How it starts</p>
+      <p>Most of our work begins like this, with a ticket that should have been easy. The architect who answers your first message is the one who scopes the work and leads the delivery. You aren't passed to a different team once the contract is signed.</p>
+    </div>
+  </section>
+
+  <!-- 03 LISTEN -->
+  <section class="chapter" id="listen" data-ch="listen" data-label="Listen">
+    <header class="ch-head">
+      <p class="kicker"><span>03</span>Listen</p>
+      <h2>First we sit where the work happens.</h2>
+    </header>
+    <div class="step">
+      <p class="when">Week 1</p>
+      <p>We shadow real tickets across your service desk, application owners, infrastructure, security and HR. Process documents describe how work is meant to move. We watch how it does.</p>
+    </div>
+    <div class="step">
+      <p class="when">Week 2</p>
+      <p>We scan the instance itself: what is configured, what has been customised, what is licensed and never switched on, and what would break in the next upgrade.</p>
+    </div>
+    <div class="step">
+      <p class="when">The rule</p>
+      <p>By the end, everyone who touched INC0048213 has told us their part of it. No recommendation is made before the evidence has been reviewed.</p>
+    </div>
+  </section>
+
+  <!-- 04 MEASURE -->
+  <section class="chapter" id="measure" data-ch="measure" data-label="Measure">
+    <header class="ch-head">
+      <p class="kicker"><span>04</span>Measure</p>
+      <h2>Then we pull the knot straight and measure it.</h2>
+    </header>
+    <div class="step">
+      <p class="when">Gap analysis</p>
+      <p>Laid end to end, INC0048213 is 54 hours and 8 minutes long. Twelve of those minutes are work. The rest is waiting, and every wait has a cause.</p>
+    </div>
+    <div class="step">
+      <p class="when">Scored and sequenced</p>
+      <p>Each gap gets a name, an owner and a cost. Current usage is reviewed module by module, then every fix is scored on value and effort and put in order.</p>
+    </div>
+    <div class="step">
+      <p class="when">What you receive</p>
+      <p>A maturity assessment and gap analysis your leadership can read in ten minutes and defend in a budget meeting.</p>
+    </div>
+  </section>
+
+  <!-- 05 PROPOSE -->
+  <section class="chapter" id="propose" data-ch="propose" data-label="Propose">
+    <header class="ch-head">
+      <p class="kicker"><span>05</span>Propose</p>
+      <h2>A route you can fund.</h2>
+      <p class="lead">The same ticket, redrawn. Five stops where there were nine handoffs.</p>
+    </header>
+    <div class="step">
+      <p class="when">Roadmap</p>
+      <p>Three horizons. Fix the route in the first 90 days. Extend it to HR, security and customer service within six months. Make it predictive within twelve.</p>
+    </div>
+    <div class="step">
+      <p class="when">Business case</p>
+      <p>Cost, return and payback period, built from your own measured baseline. The value is proven before the funding is requested.</p>
+    </div>
+    <div class="step">
+      <p class="when">Design rule</p>
+      <p>Standard configuration before custom code. Every customisation needs a recorded business reason, which is what keeps your upgrades predictable.</p>
+    </div>
+    <div class="step">
+      <p class="when">Operating model</p>
+      <p>Who owns the platform, how changes are governed and what your team needs to learn are decided now, and not left until after go-live.</p>
+    </div>
+  </section>
+
+  <!-- 06 BUILD -->
+  <section class="chapter" id="build" data-ch="build" data-label="Build">
+    <header class="ch-head">
+      <p class="kicker"><span>06</span>Build</p>
+      <h2>Built in sprints. Shown every two weeks.</h2>
+    </header>
+    <div class="step">
+      <p class="when">Sprints 1–2</p>
+      <p>Foundations. A CMDB aligned to the Common Service Data Model, so the platform knows what runs on what. One intake for every channel.</p>
+    </div>
+    <div class="step">
+      <p class="when">Sprints 3–5</p>
+      <p>Routing, service maps and the vendor integration. A ticket now reaches the team that owns the service, with its history attached.</p>
+    </div>
+    <div class="step">
+      <p class="when">Sprints 6–7</p>
+      <p>Now Assist and AI agents for triage and summaries. Knowledge articles written from resolved incidents. Automated tests for every workflow.</p>
+    </div>
+    <div class="step">
+      <p class="when">Cutover</p>
+      <p>User acceptance testing, training and a rehearsed cutover. Migrated records are reconciled against the source, and you see the count.</p>
+    </div>
+    <div class="step">
+      <p class="when">Beyond IT</p>
+      <p>The same route extends to HRSD, CSM, SPM, SecOps, GRC and custom apps on App Engine when the work crosses departments.</p>
+    </div>
+  </section>
+
+  <!-- 07 GO LIVE -->
+  <section class="chapter" id="golive" data-ch="golive" data-label="Go live">
+    <header class="ch-head">
+      <p class="kicker"><span>07</span>Go live</p>
+      <h2>Same ticket. New route.</h2>
+      <p class="lead">Monday, 09:02 again. Order entry goes down for 340 sales reps.</p>
+    </header>
+    <div class="step">
+      <p class="when">09:02</p>
+      <p>One record. The email, the phone call and the portal entry attach themselves to it.</p>
+    </div>
+    <div class="step">
+      <p class="when">09:02</p>
+      <p>Triage reads the error, checks the service map and names the cause: an expired certificate on the order-entry server.</p>
+    </div>
+    <div class="step">
+      <p class="when">09:03</p>
+      <p>Routed once, to the team that owns that server, with the fix attached.</p>
+    </div>
+    <div class="step">
+      <p class="when">09:14</p>
+      <p>Resolved. Twelve minutes, because twelve minutes was always the real work.</p>
+      <table class="compare">
+        <thead><tr><th></th><th>Before</th><th>After</th></tr></thead>
+        <tbody>
+          <tr><th>Elapsed</th><td>54h 08m</td><td>12m</td></tr>
+          <tr><th>Reassigned</th><td>9×</td><td>1×</td></tr>
+          <tr><th>Hours lost</th><td>7,820</td><td>68</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="step">
+      <p class="when">Next quarter</p>
+      <p>No ticket at all. Certificate expiry is flagged 30 days out, and the change is raised, approved and applied before anyone notices.</p>
+    </div>
+  </section>
+
+  <!-- 08 STAY -->
+  <section class="chapter" id="stay" data-ch="stay" data-label="Stay">
+    <header class="ch-head">
+      <p class="kicker"><span>08</span>Stay</p>
+      <h2>Go-live is week one.</h2>
+    </header>
+    <div class="step">
+      <p class="when">Hypercare</p>
+      <p>For the first weeks the team that built it stays on the floor with your service desk, watching every queue, fixing within hours and tuning what real usage reveals.</p>
+    </div>
+    <div class="step">
+      <p class="when">Run</p>
+      <p>After that, 24×7 support and administration. Upgrades are planned ahead and regression-tested before they reach production.</p>
+    </div>
+    <div class="step">
+      <p class="when">Improve</p>
+      <p>Every quarter we pick the next knot on the roadmap. The platform keeps improving, and the savings keep compounding.</p>
+    </div>
+    <div class="step">
+      <p class="when">Handover</p>
+      <p>When your team is ready to run it without us, they already know how. That was designed in at the proposal.</p>
+    </div>
+  </section>
+
+  <!-- 09 THE RETURN -->
+  <section class="return" id="return" data-rail="The return">
+    <div class="wrap">
+      <header class="sec-head">
+        <p class="kicker kicker--dark"><span>09</span>The return</p>
+        <h2>What the untangling is worth.</h2>
+        <p class="lead">The savings come from four places. Put in your own numbers.</p>
+      </header>
+
+      <div class="calc">
+        <form class="calc__in" id="calc" aria-label="Savings estimate inputs">
+          <label>
+            <span>Tickets a month <output id="oTickets"></output></span>
+            <input type="range" id="iTickets" min="2000" max="60000" step="1000" value="15000">
+          </label>
+          <label>
+            <span>Cost to handle one ticket <output id="oCost"></output></span>
+            <input type="range" id="iCost" min="8" max="60" step="1" value="22">
+          </label>
+          <label>
+            <span>Major-incident hours a year <output id="oHours"></output></span>
+            <input type="range" id="iHours" min="0" max="80" step="1" value="12">
+          </label>
+          <label>
+            <span>Cost of one outage hour <output id="oOutage"></output></span>
+            <input type="range" id="iOutage" min="50" max="2000" step="50" value="300">
+          </label>
+          <label>
+            <span>Overlapping tools you could retire <output id="oTools"></output></span>
+            <input type="range" id="iTools" min="0" max="12" step="1" value="6">
+          </label>
+        </form>
+
+        <div class="calc__out" aria-live="polite">
+          <p class="calc__label">Estimated saving, each year</p>
+          <p class="calc__total" id="cTotal">$4.32M</p>
+          <ul class="calc__rows">
+            <li><span>Tickets that never reach a person</span><b id="cA"></b><i><em id="bA"></em></i></li>
+            <li><span>Less effort on every ticket that does</span><b id="cB"></b><i><em id="bB"></em></i></li>
+            <li><span>Shorter major incidents</span><b id="cC"></b><i><em id="bC"></em></i></li>
+            <li><span>Tools you stop paying for</span><b id="cD"></b><i><em id="bD"></em></i></li>
+          </ul>
+          <figure class="curve" id="curve">
+            <svg viewBox="0 0 600 220" role="img" aria-label="Cumulative saving over 36 months">
+              <line x1="0" y1="200" x2="600" y2="200" class="curve__axis"/>
+              <line x1="66.7" y1="20" x2="66.7" y2="200" class="curve__mark"/>
+              <path id="curveArea" class="curve__area"/>
+              <path id="curveLine" class="curve__line" pathLength="1"/>
+              <circle id="curveDot" r="6" class="curve__dot"/>
+              <text x="74" y="34" class="curve__t">Go-live</text>
+              <text x="0" y="216" class="curve__t">Kick-off</text>
+              <text x="600" y="216" class="curve__t" text-anchor="end">Month 36</text>
+            </svg>
+            <figcaption>Over 36 months, with a four-month build and a five-month ramp: <b id="c36"></b></figcaption>
+          </figure>
+        </div>
+      </div>
+
+      <p class="fine">An estimate, and not a quote. Working assumptions: 30% of tickets resolved by self-service or automation, 35% less effort on the remainder, 40% less major-incident time, $120K a year for each retired tool. In an assessment we replace every one of these with your measured baseline.</p>
+
+      <div class="bench">
+        <article>
+          <p class="bench__n">75 → under 10 <small>minutes</small></p>
+          <p>Level-1 resolution time on ServiceNow's own IT service desk after moving to AI agents.</p>
+          <p class="src">ServiceNow, Now on Now, 2025</p>
+        </article>
+        <article>
+          <p class="bench__n">25 → 9 <small>minutes</small></p>
+          <p>Average service desk handling time at Wellstar Health System, with incident response time down 25%.</p>
+          <p class="src">ServiceNow customer story, Wellstar</p>
+        </article>
+        <article>
+          <p class="bench__n">$76M <small>a year</small></p>
+          <p>What high-impact outages can cost a business annually, at a median of $2M for every hour.</p>
+          <p class="src">New Relic, 2025 Observability Forecast</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- PROOF -->
+  <section class="proof" id="proof">
+    <div class="wrap">
+      <header class="sec-head">
+        <p class="kicker"><span>10</span>Proof</p>
+        <h2>We have done this before.</h2>
+      </header>
+
+      <ul class="stats">
+        <li><b data-count="500">0</b><i>+</i><span>programmes in production</span></li>
+        <li><b data-count="70">0</b><i>+</i><span>assessments and roadmaps</span></li>
+        <li><b data-count="120">0</b><i>+</i><span>modules implemented</span></li>
+        <li><b data-count="75">0</b><i>+</i><span>custom applications built</span></li>
+      </ul>
+
+      <div class="proof__grid">
+        <article class="case">
+          <p class="when">Case study · BFSI · CSM</p>
+          <h3>A global wealth manager, 14 regulators, one complaint workflow.</h3>
+          <p>Complaint handling ran on email and could not be audited in any jurisdiction. Mergen rebuilt it on ServiceNow CSM. Each complaint is tagged at intake with its regulator, and the workflow enforces that regulator's clock and escalation rules.</p>
+          <dl class="case__nums">
+            <div><dt>100%</dt><dd>closed inside regulatory windows</dd></div>
+            <div><dt>89%</dt><dd>faster response to audits</dd></div>
+            <div><dt>+18</dt><dd>complainant NPS</dd></div>
+          </dl>
+        </article>
+
+        <div class="principles">
+          <article>
+            <h3>One partner from plan to platform</h3>
+            <p>The team that assesses your ServiceNow estate also delivers it, so recommendations come from people who will have to build them.</p>
+          </article>
+          <article>
+            <h3>Standard before custom</h3>
+            <p>Every design starts from out-of-the-box capability, which keeps future upgrades predictable.</p>
+          </article>
+          <article>
+            <h3>Evidence at every decision</h3>
+            <p>Assessments, business cases, test suites and migration reconciliation, before each commitment and not after it.</p>
+          </article>
+          <article>
+            <h3>Ownership designed in</h3>
+            <p>Operating model, governance and skills plans are part of the engagement, so your team runs the platform when Mergen steps back.</p>
+          </article>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- INDUSTRIES -->
+  <section class="industries" id="industries">
+    <div class="wrap">
+      <header class="sec-head">
+        <p class="kicker"><span>11</span>Industries</p>
+        <h2>Every industry has its own knot.</h2>
+      </header>
+      <ol class="ind">
+        <li><h3>BFSI</h3><p>Cases, controls and reporting on one platform, so audits and daily operations use the same record.</p></li>
+        <li><h3>Manufacturing</h3><p>Production, service and supply share one view, so exceptions show up before they stop the line.</p></li>
+        <li><h3>Healthcare</h3><p>Patient, workforce and compliance journeys that clinicians and staff can follow without extra steps.</p></li>
+        <li><h3>Retail</h3><p>Stores, inventory and customer requests stay coordinated when volume spikes and teams are stretched.</p></li>
+        <li><h3>Telecom</h3><p>Field work, network events and support share one view of the customer and the asset.</p></li>
+        <li><h3>Public sector</h3><p>Requests, cases and records stay traceable, so the service remains available and accountable.</p></li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="cta" id="contact">
+    <div class="wrap">
+      <p class="eyebrow"><span class="dot"></span>Start here</p>
+      <h2>Bring us your worst ticket.</h2>
+      <p class="lead">Tell us where you are on ServiceNow today. We'll trace one real ticket with you and show you where the time goes, before we propose anything.</p>
+      <div class="hero__cta">
+        <a class="btn" href="mailto:info@mergenit.com?subject=Trace%20a%20ticket%20with%20Mergen">Talk to an expert</a>
+        <a class="btn btn--ghost" href="#top">Replay the story <span aria-hidden="true">↑</span></a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <p><b>Mergen</b> · ServiceNow Premier Partner · Advise, Build, Run</p>
+    <p>INC0048213 is an illustrative incident. Benchmarks are cited to their publishers. <a href="mailto:info@mergenit.com">info@mergenit.com</a></p>
+  </div>
+</footer>
+
+<script src="story.js"></script>
+</body>
+</html>
