@@ -19,3 +19,8 @@ test("the person's name is removed wherever it appears", () => {
 test("line breaks are flattened to one line", () => {
   assert.equal(tidyReply("Ok.\n\nWhat is the blocker?", null), "Ok. What is the blocker?");
 });
+
+test("a name that is part of the person's own greeting is kept", () => {
+  assert.equal(tidyReply("Hi Ravi, any update?", "Ravi Kumar", "Hi Ravi"), "Hi Ravi, any update?");
+  assert.equal(tidyReply("Hi Anna, any update?", "Mahanth M", "Hi Anna"), "Hi Anna, any update?");
+});

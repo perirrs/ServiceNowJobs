@@ -45,6 +45,7 @@ const ADMIN_HELP = `**Daily Check-in: what you can type**
 - **ask** name: ask them for an update right now. **ask all** asks everyone.
 - **profile** name: their role, responsibilities and targets, so the questions fit their job
 - **style** name: what I learned from your past chat about how you write to them. **style name refresh** reads the chat again.
+- **greeting** name Hi Anna: how to open messages to that person. I learn this from your past chat; use this to set or correct it. **greeting name off** goes back to a plain Hi.
 - **list**: everyone you have added and where they stand today
 - **report** name: their recent notes and open items
 - **digest**: today's summary of everyone, right now
@@ -307,6 +308,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       history: this.store.messages(checkin.id),
       finalTurn,
       rapport: this.personal ? this.store.get(`rapport:${person.id}`) || undefined : undefined,
+      greeting: this.personal ? this.store.get(`greeting:${person.id}`) || undefined : undefined,
     };
   }
 
@@ -327,9 +329,16 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         (m) => !(m.fromSender && own.has(m.text.replace(/\s+/g, " ").trim())),
       );
       // Too little to learn from: remember that, so we do not look again every time.
-      const text = chat.filter((m) => m.fromSender).length >= 3
-        ? await this.brain.learnRapport(person, this.direct.senderName, chat)
-        : "";
+      let text = "";
+      if (chat.filter((m) => m.fromSender).length >= 3) {
+        const learned = await this.brain.learnRapport(person, this.direct.senderName, chat);
+        text = learned.brief;
+        // A greeting the admin set by hand is never overwritten by what was learned.
+        const address = learned.address.replace(/^hi\b[\s,]*/i, "").replace(/[\n,.!]+/g, " ").trim().slice(0, 30);
+        if (address && this.store.get(`greeting:${person.id}`) === undefined) {
+          this.store.set(`greeting:${person.id}`, `Hi ${address}`);
+        }
+      }
       this.store.set(key, text);
       return text || undefined;
     } catch (err) {
@@ -973,9 +982,21 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           const learned = await this.learnRapport(target, refresh);
           return await reply(
             learned
-              ? `**How you write to ${displayName(target)}** (read once from your past chat, and reused)\n\n${learned}`
+              ? `**How you write to ${displayName(target)}** (read once from your past chat, and reused)\n\nGreeting: "${this.store.get(`greeting:${target.id}`) || "Hi"}"\n\n${learned}`
               : `There is not enough past chat with ${displayName(target)} to learn from, so I use the standard short, simple style.`,
           );
+        }
+
+        case "greeting": {
+          const [who = "", ...rest] = arg.split(/\s+/);
+          const target = this.resolveOne(who.replace(/:$/, ""));
+          if (typeof target === "string") return await reply(target);
+          const wanted = rest.join(" ").replace(/[,.!]+$/, "").trim();
+          const key = `greeting:${target.id}`;
+          if (!wanted) return await reply(`Messages to ${displayName(target)} open with "${this.store.get(key) || "Hi"}".`);
+          // An empty value means "plain Hi, chosen on purpose", so learning will not replace it.
+          this.store.set(key, /^(off|none|plain|hi)$/i.test(wanted) ? "" : wanted.slice(0, 40));
+          return await reply(`Messages to ${displayName(target)} will open with "${this.store.get(key) || "Hi"}".`);
         }
 
         case "remove": {

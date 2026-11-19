@@ -66,9 +66,10 @@ class FakeBrain implements Brain {
     return "ANSWER";
   }
   rapportCalls: { fromSender: boolean; text: string }[][] = [];
-  async learnRapport(_p: unknown, _s: string, chat: { fromSender: boolean; text: string }[]): Promise<string> {
+  learnedAddress = "";
+  async learnRapport(_p: unknown, _s: string, chat: { fromSender: boolean; text: string }[]) {
     this.rapportCalls.push(chat);
-    return "Casual. Says 'pls share'.";
+    return { brief: "Casual. Says 'pls share'.", address: this.learnedAddress };
   }
 }
 
@@ -747,4 +748,40 @@ test("with too little past chat nothing is learned, and it does not keep looking
   assert.equal(r.brain.rapportCalls.length, 0);
   assert.equal(r.reads(), 1);
   assert.equal(r.brain.turns.at(-1)!.rapport, undefined);
+});
+
+// ---------- a greeting of their own for each person ----------
+
+const SOME_CHAT = [
+  { fromSender: true, text: "Hi Anna" },
+  { fromSender: true, text: "pls share the list" },
+  { fromSender: true, text: "any update on globex" },
+];
+
+test("the usual form of address is learned from past chat and used as that person's greeting", async () => {
+  const r = rapportSetup(SOME_CHAT);
+  r.brain.learnedAddress = "Anna";
+  await r.engine.handleMessage(r.cto, `add ${PRIYA}`);
+  await r.engine.handleMessage(r.cto, "ask priya");
+  assert.equal(r.brain.turns.at(-1)!.greeting, "Hi Anna");
+});
+
+test("with nothing learned the greeting is a plain Hi, and each person's is separate", async () => {
+  const r = rapportSetup(SOME_CHAT);
+  await r.engine.handleMessage(r.cto, `add ${PRIYA}`);
+  await r.engine.handleMessage(r.cto, "add ravi@acme.test");
+  await r.engine.handleMessage(r.cto, "greeting ravi Hi bro");
+  await r.engine.handleMessage(r.cto, "ask all");
+  const byEmail = new Map(r.brain.turns.map((t) => [t.person.email, t.greeting]));
+  assert.equal(byEmail.get(PRIYA), undefined);
+  assert.equal(byEmail.get("ravi@acme.test"), "Hi bro");
+});
+
+test("a greeting set by hand is kept when the chat is read, and 'off' means plain Hi for good", async () => {
+  const r = rapportSetup(SOME_CHAT);
+  r.brain.learnedAddress = "Anna";
+  await r.engine.handleMessage(r.cto, `add ${PRIYA}`);
+  await r.engine.handleMessage(r.cto, "greeting priya off");
+  await r.engine.handleMessage(r.cto, "ask priya");
+  assert.equal(r.brain.turns.at(-1)!.greeting, undefined);
 });

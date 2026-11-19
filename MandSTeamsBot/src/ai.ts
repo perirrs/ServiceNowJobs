@@ -18,6 +18,8 @@ export interface CheckinContext {
   finalTurn: boolean;
   /** How the sender writes to this person, and what is going on between them, learned from their chat history. */
   rapport?: string;
+  /** How to open a message to this person, for example "Hi Anna". Plain "Hi" when not set. */
+  greeting?: string;
 }
 
 export interface Turn {
@@ -54,7 +56,11 @@ export interface Brain {
   digest(date: string, people: DigestPerson[]): Promise<string>;
   answer(question: string, material: string): Promise<string>;
   /** Read a chat history once and describe how the sender writes to this person. */
-  learnRapport(person: Person, senderName: string, chat: { fromSender: boolean; text: string }[]): Promise<string>;
+  learnRapport(
+    person: Person,
+    senderName: string,
+    chat: { fromSender: boolean; text: string }[],
+  ): Promise<{ brief: string; address: string }>;
 }
 
 // ---------- rendering context for the model ----------
@@ -84,7 +90,7 @@ function renderNote(n: Note | NoteContent): string {
 }
 
 function renderPersonBrief(ctx: CheckinContext): string {
-  const { person, activeItems, recentNotes, date, rapport } = ctx;
+  const { person, activeItems, recentNotes, date, rapport, greeting } = ctx;
   const notes = recentNotes.length
     ? recentNotes.map((n) => `### ${n.date}\n${renderNote(n)}`).join("\n\n")
     : "(no earlier check-ins: this is their first)";
@@ -95,6 +101,7 @@ function renderPersonBrief(ctx: CheckinContext): string {
     `## Items still open from earlier days\n${renderItems(activeItems)}`,
     `## Notes from their recent check-ins\n${notes}`,
     rapport ? `## How you normally write to this person, and what is going on between you (from your past chat)\n${rapport}` : "",
+    `## Greeting for this person\nOpen your first message with exactly: "${greeting || "Hi"},"`,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -112,7 +119,8 @@ const STYLE = `How to write every message:
 - One short line of about 15 words at most. No line breaks, no lists, no headings.
 - Exactly one question per message, never two. Ask the most important thing now and leave the rest for your next message.
 - Very simple English. Many readers are in India and English is their second language: use short, common words and plain direct sentences. No idioms, no slang, no formal or corporate phrases. Good examples: "Any update on the 3 submissions from yesterday?", "What is the blocker?", "When will it be done?"
-- Never write the person's name anywhere, not even in a greeting: open with "Hi," and nothing more. The same goes for any nickname, title or form of address such as "Anna", "Boss", "sir" or "bro", even when the briefing shows they are normally used. Do not say "thanks" or "thank you". No emojis.
+- Open your first message with the greeting the briefing gives for this person, exactly as written, and nothing more. Each person has their own: for some it is a plain "Hi", for others it includes how they are usually addressed.
+- After that opening, do not write the person's name, nickname or any form of address again. Do not say "thanks" or "thank you". No emojis.
 - Do not repeat back what they just told you. A brief "Ok." is enough before the next question.`;
 
 const SUBSTANCE = `The first message of every conversation gives you the person's role, responsibilities and targets, their open items, and notes from recent days. Use them:
@@ -148,7 +156,7 @@ What ${senderName} needs from the chat: what the person got done today, what hap
 ${SUBSTANCE}
 
 ${STYLE}
-- If the briefing describes how ${senderName} normally writes to this person, write the same way: the same level of formality, the same kind of words and phrases, the same habits. The rules above still win where they differ, so stay to one short line, with no name, nickname or form of address, and no thanks.
+- If the briefing describes how ${senderName} normally writes to this person, write the same way: the same level of formality, the same kind of words and phrases, the same habits. The rules above still win where they differ, so stay to one short line, with no thanks, and address the person only in the opening greeting.
 - Speak only as ${senderName}: say "I" and "me". Never mention a check-in system, summaries, notes, an assistant, AI or automation, and never refer to ${senderName} in the third person.
 
 When to hand over to ${senderName}: set handover to true and leave reply empty, so that ${senderName} answers personally, whenever the person
@@ -223,14 +231,16 @@ function answerSystem(company: string): string {
  * Enforce the house style in code as well as in the prompt, since a small
  * model slips now and then: no thanks, no use of the person's name, one line.
  */
-export function tidyReply(reply: string, personName: string | null): string {
+export function tidyReply(reply: string, personName: string | null, greeting = ""): string {
   let text = reply.replace(/\s*\n+\s*/g, " ").trim();
   // Drop whole sentences that are only there to say thanks.
   text = text
     .split(/(?<=[.!?])\s+/)
     .filter((sentence) => !/\bthank(s| you)\b/i.test(sentence))
     .join(" ");
-  for (const part of (personName ?? "").split(/\s+/).filter((w) => w.length > 2)) {
+  // A name that is part of this person's own greeting is meant to be there.
+  const allowed = greeting.toLowerCase().split(/\s+/);
+  for (const part of (personName ?? "").split(/\s+/).filter((w) => w.length > 2 && !allowed.includes(w.toLowerCase()))) {
     const name = part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     text = text.replace(new RegExp(`,?\\s*\\b${name}\\b,?`, "gi"), (m) => (m.trim().endsWith(",") ? "," : ""));
   }
@@ -261,6 +271,11 @@ const NoteSchema = z.object({
       update: z.string(),
     }),
   ),
+});
+
+const RapportSchema = z.object({
+  brief: z.string(),
+  address: z.string().describe("Form of address only, no greeting word. Empty if none."),
 });
 
 // ---------- Claude implementation ----------
@@ -322,7 +337,7 @@ export class ClaudeBrain implements Brain {
       "low",
     );
     if (turn.handover) return { reply: "", done: false, handover: true };
-    return { reply: tidyReply(turn.reply, ctx.person.name), done: turn.done || ctx.finalTurn };
+    return { reply: tidyReply(turn.reply, ctx.person.name, ctx.greeting), done: turn.done || ctx.finalTurn };
   }
 
   async writeNote(ctx: CheckinContext): Promise<NoteResult> {
@@ -370,21 +385,24 @@ export class ClaudeBrain implements Brain {
     person: Person,
     senderName: string,
     chat: { fromSender: boolean; text: string }[],
-  ): Promise<string> {
+  ): Promise<{ brief: string; address: string }> {
     const transcript = chat
       .map((m) => `${m.fromSender ? senderName : displayName(person)}: ${m.text.slice(0, 300)}`)
       .join("\n");
-    return this.text(
+    return this.structured(
       `You are preparing a short private briefing for an assistant that will write Microsoft Teams messages as ${senderName} to a colleague, ${displayName(person)}, asking for daily work updates. You are given their recent one-to-one chat. The assistant should sound like ${senderName} does with this particular person, and know what is going on between them.
 
-Write the briefing in two parts, under 200 words in total:
+Produce two things.
 
-1. How ${senderName} writes to this person: how formal or casual, how messages open and close, typical length, forms of address, any mix of languages or regional words, punctuation and capitalisation habits, favourite phrases. Then quote three to six short messages ${senderName} actually sent, word for word, as examples.
-
+brief: under 200 words, in two parts.
+1. How ${senderName} writes to this person: how formal or casual, how messages open and close, typical length, any mix of languages or regional words, punctuation and capitalisation habits, favourite phrases. Then quote three to six short messages ${senderName} actually sent, word for word, as examples.
 2. Work context: what they are working on together, anything promised or pending between them that a daily update would touch.
 
-Describe only what the chat shows. Leave out anything personal or sensitive, such as health, family, money or other people's private matters, even if it appears in the chat. If there is too little chat to tell, say so in one line rather than guessing.`,
-      transcript,
+address: the word or short phrase ${senderName} uses to address this person when greeting them, exactly as ${senderName} writes it, for example "Anna", "Ravi", "sir" or "bro". Give only the form of address, without "Hi". Leave it empty if ${senderName} does not consistently use one.
+
+Describe only what the chat shows. Leave out anything personal or sensitive, such as health, family, money or other people's private matters, even if it appears in the chat.`,
+      [{ role: "user", content: transcript }],
+      RapportSchema,
       "medium",
     );
   }
