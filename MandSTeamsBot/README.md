@@ -192,3 +192,8 @@ A person who is nominated before the app reaches them shows as "not connected" i
 ```bash
 npm test
 ```
+
+## Admin commands from this machine
+
+Each line written to `DATA_DIR/admin-inbox.txt` runs within ten seconds as if the first admin had typed it to the bot. The replies are appended to `DATA_DIR/admin-outbox.txt` and also reach that admin in Teams.
+

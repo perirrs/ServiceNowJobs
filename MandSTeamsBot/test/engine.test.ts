@@ -1088,6 +1088,9 @@ test("a person with a time of their own is asked then, and left out of the gener
   await t.engine.handleMessage(t.id(CTO), "schedule priya evening 18:00");
   assert.match(t.to(CTO).at(-1)!, /priya will be asked automatically at \*\*18:00 UTC\*\* \(end-of-day update\)/);
 
+  await t.engine.handleMessage(t.id(CTO), "schedule");
+  assert.match(t.to(CTO).at(-1)!, /Own times, Monday to Friday:\n- \*\*priya\*\*: evening 18:00 UTC/);
+
   await t.engine.tick(); // 17:00: the general evening time
   assert.deepEqual(t.brain.turns.map((x) => x.person.email), ["ravi@acme.test"]);
 

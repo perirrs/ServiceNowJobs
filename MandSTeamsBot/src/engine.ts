@@ -2502,9 +2502,24 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         ? `Monday to Friday.${morning && evening ? "" : ` No ${morning ? "end-of-day" : "morning"} message is set.`}`
         : "No automatic asking: updates are only requested when you say **ask**.",
       digest ? `Daily digest at **${digest}**.` : "No automatic digest: send **digest** when you want one.",
+      this.ownTimes(),
     ]
       .filter(Boolean)
       .join("\n");
+  }
+
+  /** Groups and people with times of their own, one line each. */
+  private ownTimes(): string {
+    const lines: string[] = [];
+    const add = (name: string, kind: string) => {
+      const times = SLOTS.map((slot) => [slot, this.showTime(this.store.get(`schedule:${kind}:${slot}`))] as const)
+        .filter(([, t]) => t)
+        .map(([slot, t]) => `${slot} ${t}`);
+      if (times.length) lines.push(`- **${name}**: ${times.join(", ")}`);
+    };
+    for (const g of this.store.groups()) add(g.name, `group:${g.id}`);
+    for (const p of this.store.nominees()) add(displayName(p), `person:${p.id}`);
+    return lines.length ? `Own times, Monday to Friday:\n${lines.join("\n")}` : "";
   }
 
   /**

@@ -1,3 +1,5 @@
+import { appendFileSync, existsSync, readFileSync, renameSync, unlinkSync } from "node:fs";
+import path from "node:path";
 import { App } from "@microsoft/teams.apps";
 import { ClaudeBrain } from "./ai.js";
 import { loadConfig } from "./config.js";
@@ -81,13 +83,19 @@ if (config.sendAsUser) {
   );
 }
 
+/** While an inbox command runs, what the bot says to that admin is also written to the outbox. */
+let outbox: { conversationId: string; lines: string[] } | null = null;
+
 const brain = new ClaudeBrain(config.model, config.companyName, undefined, direct?.senderName, config.discloseAutomation);
 brain.smartModel = config.smartModel;
 const engine = new Engine(
   store,
   brain,
   {
-    send: async (conversationId, text) => void (await app.send(conversationId, text)),
+    send: async (conversationId, text) => {
+      if (outbox && outbox.conversationId === conversationId) outbox.lines.push(text);
+      await app.send(conversationId, text);
+    },
     sendCard: async (conversationId, card) =>
       (
         await app.send(conversationId, {
@@ -261,6 +269,51 @@ if (config.base44Key && config.talentflowApp) {
   console.log("TalentFlow connected: recruiters' real figures are used in check-ins.");
 }
 await engine.announceStart();
+
+// A local command inbox, so admin commands can be given on this machine without
+// Teams: each line of DATA_DIR/admin-inbox.txt runs as if the first admin had
+// typed it to the bot, and the replies are appended to DATA_DIR/admin-outbox.txt.
+// The replies still reach that admin in Teams too. Only someone who can write to
+// the data folder can use it, and they can already read the token cache there.
+const inbox = path.join(config.dataDir, "admin-inbox.txt");
+const outboxFile = path.join(config.dataDir, "admin-outbox.txt");
+let inboxBusy = false;
+setInterval(async () => {
+  if (inboxBusy || !existsSync(inbox)) return;
+  inboxBusy = true;
+  try {
+    const working = `${inbox}.running`;
+    renameSync(inbox, working);
+    const commands = readFileSync(working, "utf8").split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+    unlinkSync(working);
+    const admin = config.adminEmails.map((e) => store.personByEmail(e)).find((p) => p?.teamsUserId && p.conversationId);
+    if (!admin) {
+      appendFileSync(outboxFile, `\n# ${new Date().toISOString()}\nNo admin has opened the bot in Teams yet, so the inbox cannot run.\n`);
+      return;
+    }
+    const id: Identity = {
+      teamsUserId: admin.teamsUserId!,
+      conversationId: admin.conversationId!,
+      name: admin.name ?? undefined,
+      lookupEmail: async () => admin.email,
+    };
+    for (const command of commands) {
+      outbox = { conversationId: admin.conversationId!, lines: [] };
+      try {
+        await engine.handleMessage(id, command);
+      } catch (err) {
+        outbox.lines.push(`Failed: ${String(err)}`);
+      }
+      appendFileSync(outboxFile, `\n# ${new Date().toISOString()} > ${command}\n${outbox.lines.join("\n\n")}\n`);
+      outbox = null;
+    }
+  } catch (err) {
+    console.error("[inbox] failed", err);
+  } finally {
+    outbox = null;
+    inboxBusy = false;
+  }
+}, 10_000);
 
 // One-off manual trigger: `node dist/index.js --checkin-now` asks everyone
 // nominated for an update straight away, then carries on running as normal.
