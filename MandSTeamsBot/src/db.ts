@@ -16,6 +16,17 @@ export interface Person {
   profile: string | null;
 }
 
+/** A message sent in the sender's name. */
+export interface SentMessage {
+  id: number;
+  chatId: string;
+  messageId: string;
+  text: string;
+  label: string;
+  at: string;
+  deleted: boolean;
+}
+
 /** A Teams group chat whose members are asked together. */
 export interface Group {
   id: number;
@@ -125,6 +136,23 @@ CREATE TABLE IF NOT EXISTS group_members (
   group_id INTEGER NOT NULL REFERENCES groups(id),
   person_id INTEGER NOT NULL REFERENCES people(id),
   PRIMARY KEY (group_id, person_id)
+);
+CREATE TABLE IF NOT EXISTS sent (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  chat_id TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  text TEXT NOT NULL,
+  label TEXT NOT NULL,
+  at TEXT NOT NULL,
+  deleted INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS drafts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  chat_id TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  label TEXT NOT NULL,
+  at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'waiting'
 );
 CREATE TABLE IF NOT EXISTS kv (
   key TEXT PRIMARY KEY,
@@ -504,6 +532,67 @@ export class Store {
       .prepare("SELECT group_id FROM group_members WHERE person_id = ?")
       .all(personId)
       .map((r) => r.group_id as number);
+  }
+
+  // ---- what was sent in the sender's name, and drafts waiting for approval ----
+
+  logSent(chatId: string, messageId: string, text: string, label: string, at: string): void {
+    this.db.prepare("INSERT INTO sent (chat_id, message_id, text, label, at) VALUES (?, ?, ?, ?, ?)").run(chatId, messageId, text, label, at);
+  }
+
+  /** Messages sent since `sinceIso`, newest first. */
+  sentSince(sinceIso: string): SentMessage[] {
+    return this.db
+      .prepare("SELECT * FROM sent WHERE at >= ? ORDER BY id DESC")
+      .all(sinceIso)
+      .map((r) => ({
+        id: r.id as number,
+        chatId: r.chat_id as string,
+        messageId: r.message_id as string,
+        text: r.text as string,
+        label: r.label as string,
+        at: r.at as string,
+        deleted: r.deleted === 1,
+      }));
+  }
+
+  sentById(id: number): SentMessage | undefined {
+    return this.sentSince("").find((m) => m.id === id);
+  }
+
+  markSentDeleted(id: number): void {
+    this.db.prepare("UPDATE sent SET deleted = 1 WHERE id = ?").run(id);
+  }
+
+  addDraft(chatId: string, payload: string, label: string, at: string): number {
+    const res = this.db.prepare("INSERT INTO drafts (chat_id, payload, label, at) VALUES (?, ?, ?, ?)").run(chatId, payload, label, at);
+    return Number(res.lastInsertRowid);
+  }
+
+  draft(id: number): { id: number; chatId: string; payload: string; label: string; at: string; status: string } | undefined {
+    const r = this.db.prepare("SELECT * FROM drafts WHERE id = ?").get(id);
+    return r
+      ? { id: r.id as number, chatId: r.chat_id as string, payload: r.payload as string, label: r.label as string, at: r.at as string, status: r.status as string }
+      : undefined;
+  }
+
+  setDraftStatus(id: number, status: string): void {
+    this.db.prepare("UPDATE drafts SET status = ? WHERE id = ?").run(status, id);
+  }
+
+  /** In the records of check-ins from `date`, change (or with null, remove) the assistant's messages with this exact text. */
+  rewriteBotText(date: string, oldText: string, newText: string | null): void {
+    const ids = this.db
+      .prepare(
+        `SELECT m.id FROM messages m JOIN checkins c ON c.id = m.checkin_id
+         WHERE c.date = ? AND m.role = 'bot' AND m.text = ?`,
+      )
+      .all(date, oldText)
+      .map((r) => r.id as number);
+    for (const id of ids) {
+      if (newText === null) this.db.prepare("DELETE FROM messages WHERE id = ?").run(id);
+      else this.db.prepare("UPDATE messages SET text = ? WHERE id = ?").run(newText, id);
+    }
   }
 
   // ---- small persistent flags and cursors ----

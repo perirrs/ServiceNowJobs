@@ -24,6 +24,8 @@ export interface Config {
   discloseAutomation: boolean;
   /** Wait as long as a person would take to read and type before each reply. */
   humanDelay: boolean;
+  /** On the day a person or group is added, messages to them wait for the sender's approval. */
+  approveFirstDay: boolean;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -45,6 +47,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     pollSeconds: Math.max(10, Number(env.POLL_SECONDS ?? 20)),
     discloseAutomation: env.DISCLOSE_AUTOMATION !== "false",
     humanDelay: env.HUMAN_DELAY !== "false",
+    approveFirstDay: env.APPROVE_FIRST_DAY !== "false",
     idleCloseMinutes: Number(env.IDLE_CLOSE_MINUTES ?? 30),
     groupWindowMinutes: Number(env.GROUP_WINDOW_MINUTES ?? 120),
     // The whole history by default. The ceiling only guards against a runaway read.

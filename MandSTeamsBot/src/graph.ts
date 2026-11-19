@@ -271,6 +271,18 @@ export class GraphChat {
     return msg.id;
   }
 
+  /** Delete a message this person sent. */
+  async softDelete(chatId: string, messageId: string): Promise<void> {
+    const me = await this.whoAmI();
+    const res = await fetch(
+      `${GRAPH}/users/${me.id}/chats/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(messageId)}/softDelete`,
+      { method: "POST", headers: { Authorization: `Bearer ${await this.token()}` } },
+    );
+    if (!res.ok) {
+      throw new GraphError(`Graph softDelete failed: ${res.status} ${(await res.text()).slice(0, 300)}`, res.status);
+    }
+  }
+
   /** Replace the body of a message this person sent earlier. */
   async updateHtml(chatId: string, messageId: string, html: string): Promise<void> {
     const res = await fetch(`${GRAPH}/chats/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(messageId)}`, {

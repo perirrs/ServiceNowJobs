@@ -49,8 +49,10 @@ if (config.sendAsUser) {
       (mentions ?? []).forEach((m, i) => (shown = shown.replace(`{@${i}}`, m.name)));
       if (mentions?.length && shown === text) shown = `${mentions.map((m) => m.name).join(" ")} ${text}`;
       sentByAssistant.add(normalise(shown));
-      await g.send(chatId, text, mentions, quote);
+      return g.send(chatId, text, mentions, quote);
     },
+    senderEmail: me.email,
+    unsend: (chatId, messageId) => g.softDelete(chatId, messageId),
     sync: () => pollNow(),
     createTracker: async (chatId, html) => {
       const id = await g.sendHtml(chatId, html);

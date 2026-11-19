@@ -28,6 +28,7 @@ const config: Config = {
   idleCloseMinutes: 30,
   groupWindowMinutes: 120,
   humanDelay: false,
+  approveFirstDay: false,
 };
 
 /** Scripted stand-in for Claude that records what it was shown. */
@@ -2016,4 +2017,68 @@ test("office hours can carry their own timezone too", async () => {
   t.setDate("2026-11-16T14:00:00Z"); // 19:30 in India
   await t.engine.handleMessage(t.id(CTO), "hours");
   assert.match(t.to(CTO).at(-1)!, /outside office hours now/);
+});
+
+// ---------- the sent log, and approve-first drafts ----------
+
+test("what is sent as the sender is logged and can be deleted", async () => {
+  const g = groupSetup();
+  const removed: string[] = [];
+  const direct = (g.engine as unknown as { direct: Record<string, unknown> }).direct;
+  let n = 0;
+  const realSend = direct.send as (...a: unknown[]) => Promise<void>;
+  direct.send = async (...a: unknown[]) => {
+    await realSend(...a);
+    return `msg-${++n}`;
+  };
+  direct.unsend = async (_chat: string, id: string) => void removed.push(id);
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  const log = g.store.sentSince("");
+  assert.equal(log.length, 1);
+  assert.equal(log[0]!.label, "Recruitment Team");
+  assert.equal(log[0]!.messageId, "msg-1");
+
+  await g.engine.handleMessage(g.cto, `unsend ${log[0]!.id}`);
+  assert.deepEqual(removed, ["msg-1"]);
+  assert.match(g.admin.at(-1)!, /Deleted/);
+  assert.equal(g.store.sentById(log[0]!.id)!.deleted, true);
+});
+
+test("on approve-first, messages become drafts: sent as edited, or skipped and taken out of the record", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "approve Recruitment Team");
+  assert.match(g.admin.at(-1)!, /come to you first as a draft/);
+
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  assert.equal(g.sent.length, 0); // held
+  const draftMsg = g.admin.find((m) => /Draft for Recruitment Team/.test(m))!;
+  const id = Number(/draft send (\d+)/.exec(draftMsg)![1]);
+
+  await g.engine.handleMessage(g.cto, `draft send ${id}\nHi team, quick update today please`);
+  assert.equal(g.sent.length, 1);
+  assert.equal(g.sent[0]!.text, "Hi team, quick update today please");
+  const priya = g.store.personByEmail(PRIYA)!;
+  assert.equal(g.store.messages(g.store.checkin(priya.id, "2026-11-16")!.id)[0]!.text, "Hi team, quick update today please");
+  await g.engine.handleMessage(g.cto, `draft send ${id}`);
+  assert.match(g.admin.at(-1)!, /already sent/);
+
+  g.brain.doneAfterUserMessages = 99;
+  await g.engine.handleGroupReply("u-priya", "3 submissions");
+  const second = Number(/draft send (\d+)/.exec(g.admin.filter((m) => /Draft for/.test(m)).at(-1)!)![1]);
+  await g.engine.handleMessage(g.cto, `draft skip ${second}`);
+  assert.equal(g.sent.length, 1); // nothing more went out
+  assert.ok(!g.store.messages(g.store.checkin(priya.id, "2026-11-16")!.id).some((m) => m.role === "bot" && m.text.includes("Question")));
+});
+
+test("approve-first is on for the rest of the day a group is added, then off by itself", async () => {
+  const g = groupSetup();
+  (g.engine as unknown as { config: Config }).config.approveFirstDay = true;
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  assert.equal(g.sent.length, 0);
+  g.setDate("2026-11-17T17:00:00Z");
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  assert.equal(g.sent.length, 1);
 });

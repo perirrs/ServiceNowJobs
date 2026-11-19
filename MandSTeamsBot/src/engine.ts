@@ -29,7 +29,11 @@ export interface DirectChannel {
     mentions?: { userId: string; name: string }[],
     /** The message being answered, shown quoted above the reply. */
     quote?: { messageId: string; preview: string; userId: string; name: string },
-  ): Promise<void>;
+  ): Promise<string | void>;
+  /** The sender's email, so their own copy of the log and drafts goes to them. */
+  senderEmail?: string;
+  /** Delete a message the sender sent. */
+  unsend?(conversationId: string, messageId: string): Promise<void>;
   /** Post the tracker table in a group chat and pin it. Returns the new message's id. */
   createTracker?(chatId: string, html: string): Promise<string>;
   /** Replace the tracker table in place. */
@@ -64,6 +68,8 @@ const ADMIN_HELP = `**Daily Check-in: what you can type**
 
 - **hours 09:30-18:30**: office hours, Monday to Friday. Outside them I send nothing to anyone (no replies, chases or scheduled messages), but still record what people write. **hours off** allows any time.
 - **timezone India**: the time I work in, for office hours and schedules.
+- **sent**: everything I sent as you today, each with a Delete button. You also get this list once a day after office hours.
+- **approve** Name: every message to that person or group comes to you first as a draft to send, edit or skip. **approve Name off** stops it. On the day someone is added this is on by default.
 - **pause**: stop sending anything to anyone, at once. **resume** starts again.
 - **board** (or **menu**): the team board, with who has replied, who is blocked, and buttons for everything below
 - **add** name@company.com: start asking someone for updates. I first read your whole chat history with them and put their work on the tracker.
@@ -128,6 +134,12 @@ export function cardToCommand(value: unknown): string {
       return "refresh";
     case "pause":
       return "pause";
+    case "draftSend":
+      return `draft send ${v.id}\n${str(str("field"))}`;
+    case "draftSkip":
+      return `draft skip ${v.id}`;
+    case "unsend":
+      return `unsend ${v.id}`;
     case "resume":
       return "resume";
     case "schedule":
@@ -190,6 +202,25 @@ const FIRST_CHASES = [
   "need your update for today",
 ];
 const FOLLOWUP_CHASES = ["Any update on this?", "?", "any update?", "waiting on this one", "pls check above", "hello?"];
+
+/** A message on its way to staff from the sender's account. */
+interface Outgoing {
+  chatId: string;
+  text: string;
+  mentions?: { userId: string; name: string }[];
+  quote?: { messageId: string; preview: string; userId: string; name: string };
+  /** Who it is for, as the sender would say it. */
+  label: string;
+  /** The text as written into the check-in record, when that differs from what is sent. */
+  recorded?: string;
+}
+
+/** The message as it reads in Teams, with each tag shown as "@Name". */
+function shown(out: Outgoing): string {
+  let text = out.text;
+  (out.mentions ?? []).forEach((m, i) => (text = text.replace(`{@${i}}`, `@${m.name}`)));
+  return text;
+}
 
 const clamp = (n: number, low: number, high: number) => Math.min(high, Math.max(low, n));
 /** Plus or minus a quarter, so replies do not arrive like clockwork. */
@@ -409,8 +440,131 @@ export class Engine {
     if (this.paused) throw new Error("Paused: nothing is sent to staff");
     const to = this.address(person);
     if (!to) throw new Error(`No chat to reach ${person.email} in`);
-    const channel = this.direct ?? this.messenger;
-    for (const part of chunk(text)) await channel.send(to, part);
+    for (const part of chunk(text)) {
+      if (this.direct) await this.sendAsSender({ chatId: to, text: part, label: displayName(person) });
+      else await this.messenger.send(to, part);
+    }
+  }
+
+  /**
+   * The one way anything reaches staff from the sender's account. Logged, so
+   * the sender can see and delete it; held as a draft for approval when that
+   * chat is still on approve-first.
+   */
+  private async sendAsSender(out: Outgoing): Promise<void> {
+    if (this.paused) throw new Error("Paused: nothing is sent to staff");
+    if (this.needsApproval(out.chatId)) {
+      await this.queueDraft(out);
+      return;
+    }
+    await this.sendNow(out);
+  }
+
+  private async sendNow(out: Outgoing): Promise<void> {
+    const id = await this.direct!.send(out.chatId, out.text, out.mentions, out.quote);
+    this.store.logSent(out.chatId, typeof id === "string" ? id : "", shown(out), out.label, this.now().toISOString());
+  }
+
+  /** On approve-first: today only, after being added, or always if set so. */
+  private needsApproval(chatId: string): boolean {
+    const setting = this.store.get(`approve:${chatId}`) || "";
+    return setting === "always" || setting === this.today();
+  }
+
+  private chatLabel(chatId: string): string {
+    const group = this.store.groups().find((g) => g.chatId === chatId);
+    if (group) return group.name;
+    const person = this.store.nominees().find((p) => p.chatId === chatId);
+    return person ? displayName(person) : "a chat";
+  }
+
+  /** The admin the sender is, who gets the drafts and the log. Falls back to every admin. */
+  private senderAdmins(): Person[] {
+    const email = this.direct?.senderEmail?.toLowerCase();
+    const admins = this.config.adminEmails
+      .map((e) => this.store.personByEmail(e))
+      .filter((p): p is Person => !!p?.conversationId);
+    const own = admins.filter((p) => p.email === email);
+    return own.length ? own : admins;
+  }
+
+  private async toSender(text: string, card?: Record<string, unknown>): Promise<void> {
+    for (const admin of this.senderAdmins()) {
+      try {
+        if (card && this.messenger.sendCard) await this.messenger.sendCard(admin.conversationId!, card);
+        else await this.sayAdmin(admin, text);
+      } catch (err) {
+        this.log(`Could not reach ${admin.email}`, err);
+      }
+    }
+  }
+
+  private async queueDraft(out: Outgoing): Promise<void> {
+    const id = this.store.addDraft(out.chatId, JSON.stringify(out), out.label, this.now().toISOString());
+    const text = shown(out);
+    await this.toSender(`Draft for ${out.label}, not sent yet: "${text}". Send **draft send ${id}** or **draft skip ${id}**.`, {
+      type: "AdaptiveCard",
+      $schema: "http://adaptivecards.io/schemas/adaptive-card.json",
+      version: "1.4",
+      body: [
+        { type: "TextBlock", text: `Draft for ${out.label}`, weight: "Bolder", wrap: true },
+        { type: "TextBlock", text: "Not sent yet. Change it if you like, then send or skip.", isSubtle: true, spacing: "None", wrap: true, size: "Small" },
+        { type: "Input.Text", id: `d${id}`, value: text, isMultiline: true },
+      ],
+      actions: [
+        { type: "Action.Submit", title: "Send", data: { cmd: "draftSend", id, field: `d${id}` } },
+        { type: "Action.Submit", title: "Skip", data: { cmd: "draftSkip", id } },
+      ],
+    });
+  }
+
+  /** A card listing what was sent in the sender's name today, each with a Delete button. */
+  private sentCard(): Record<string, unknown> | null {
+    const since = new Date(this.now().getTime() - 36 * 3_600_000).toISOString();
+    const today = this.today();
+    const rows = this.store.sentSince(since).filter((m) => todayIn(this.tz, new Date(m.at)) === today).slice(0, 25);
+    if (!rows.length) return null;
+    return {
+      type: "AdaptiveCard",
+      $schema: "http://adaptivecards.io/schemas/adaptive-card.json",
+      version: "1.4",
+      body: [
+        { type: "TextBlock", text: `Sent as you today (${rows.length})`, weight: "Bolder", size: "Medium" },
+        ...rows.map((m) => ({
+          type: "ColumnSet",
+          separator: true,
+          columns: [
+            {
+              type: "Column",
+              width: "stretch",
+              items: [
+                { type: "TextBlock", text: `${this.clock(m.at.replace("T", " ").slice(0, 19))} · ${m.label}${m.deleted ? " · deleted" : ""}`, isSubtle: true, size: "Small", wrap: true },
+                { type: "TextBlock", text: m.text.length > 160 ? `${m.text.slice(0, 159)}…` : m.text, wrap: true, spacing: "None" },
+              ],
+            },
+            {
+              type: "Column",
+              width: "auto",
+              verticalContentAlignment: "Center",
+              items: m.deleted || !m.messageId ? [] : [{ type: "ActionSet", actions: [{ type: "Action.Submit", title: "Delete", data: { cmd: "unsend", id: m.id } }] }],
+            },
+          ],
+        })),
+      ],
+    };
+  }
+
+  /** Once a day, after office hours (or 19:00), the sender gets the list of what went out in their name. */
+  private async pushSentLog(): Promise<void> {
+    if (!this.direct) return;
+    const today = this.today();
+    if (this.store.get("sentlog") === today) return;
+    const hours = this.officeHours();
+    const { minutes, weekend } = this.localNow(hours?.zone ?? this.tz);
+    if (weekend || minutes < (hours ? hours.end : 19 * 60)) return;
+    this.store.set("sentlog", today);
+    const card = this.sentCard();
+    if (card) await this.toSender("Here is what I sent as you today. Send **sent** to see it again.", card);
   }
 
   /** Message an admin in their chat with the bot. One person can be both admin and nominee. */
@@ -1048,12 +1202,14 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     this.store.set(`lastlayout:${person.id}`, layout);
 
     const body = layout === "front" || layout === "tagOnly" ? `{@0} ${text}` : layout === "end" ? `${text} {@0}` : text;
-    await this.direct.send(
-      group.chatId,
-      body,
-      layout === "quoteOnly" ? [] : [{ userId, name }],
-      layout === "tagOnly" ? undefined : quote,
-    );
+    await this.sendAsSender({
+      chatId: group.chatId,
+      text: body,
+      mentions: layout === "quoteOnly" ? [] : [{ userId, name }],
+      quote: layout === "tagOnly" ? undefined : quote,
+      label: `${name} in ${group.name}`,
+      recorded: text,
+    });
     return true;
   }
 
@@ -1197,6 +1353,9 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       return `Several group chats match:\n\n${matches.slice(0, 10).map((g) => `- ${g.name}`).join("\n")}\n\nSend the full name of the one you mean.`;
     }
     const group = this.store.addGroup(matches[0]!.chatId, matches[0]!.name);
+    if (this.config.approveFirstDay && this.store.get(`approve:${group.chatId}`) !== "always") {
+      this.store.set(`approve:${group.chatId}`, this.today());
+    }
     const members = await this.syncGroup(group);
     const tracked = members.filter((p) => !this.isAdmin(p));
     if (progress) {
@@ -1368,11 +1527,12 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         ...(alsoTag.length ? [`${alsoTag.map((_, i) => name(tagged.length + i)).join(" ")} please share your update.`] : []),
       ].join("\n");
     const text = lines((i) => `@${displayName(mentioned[i]!.person)}`); // as it reads, for our record
-    await this.direct!.send(
-      group.chatId,
-      lines((i) => `{@${i}}`),
-      mentioned.map((t) => ({ userId: t.userId, name: displayName(t.person) })),
-    );
+    await this.sendAsSender({
+      chatId: group.chatId,
+      text: lines((i) => `{@${i}}`),
+      mentions: mentioned.map((t) => ({ userId: t.userId, name: displayName(t.person) })),
+      label: group.name,
+    });
     for (const person of due) {
       const checkin = this.store.openCheckin(person.id, date);
       this.beginAsk(checkin);
@@ -1449,7 +1609,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           .map((p) => ({ userId: this.store.get(`aadOf:${p.id}`) ?? "", name: displayName(p) }))
           .filter((m) => m.userId);
         try {
-          await this.direct!.send(group.chatId, nudge, mentions);
+          await this.sendAsSender({ chatId: group.chatId, text: nudge, mentions, label: group.name });
           this.store.set(`gchased:${group.id}`, "1");
           for (const p of silent) {
             const c = this.store.checkin(p.id, date)!;
@@ -1738,6 +1898,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     await this.closeIdle(this.config.idleCloseMinutes);
     await this.noteProgress();
     await this.refreshTrackers();
+    await this.pushSentLog();
     await this.refreshBoards();
 
     type Job = [string, () => Promise<unknown>];
@@ -2253,7 +2414,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     // Short one-liners are commands. Anything longer or on several lines is
     // free-form and may hold several instructions, so it is interpreted.
     const short = !text.includes("\n") && text.split(/\s+/).length <= 6;
-    if (!short && !["profile", "greeting", "style", "schedule", "tracker"].includes(verb)) verb = "";
+    if (!short && !["profile", "greeting", "style", "schedule", "tracker", "draft"].includes(verb)) verb = "";
 
     try {
       switch (verb) {
@@ -2324,6 +2485,92 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           if (!zone) return await reply(`I do not know the timezone "${arg}". Try **timezone India**, **timezone UK**, or a name like **Asia/Kolkata**.`);
           this.store.set("timezone", zone);
           return await reply(`Now working in **${zone}** time. Schedules and office hours are read in this time from now on.\n\n${this.hoursStatus()}`);
+        }
+
+        case "sent": {
+          const card = this.sentCard();
+          if (!card) return await reply("Nothing has been sent as you today.");
+          if (admin.conversationId && this.messenger.sendCard) return void (await this.messenger.sendCard(admin.conversationId, card));
+          return await reply(this.store.sentSince("").slice(0, 25).map((m) => `- ${m.label}: ${m.text}`).join("\n"));
+        }
+
+        case "unsend": {
+          const message = this.store.sentById(Number(arg));
+          if (!message) return await reply("I could not find that message.");
+          if (message.deleted) return await reply("That message is already deleted.");
+          if (!this.direct?.unsend || !message.messageId) return await reply("I cannot delete that one; please delete it in Teams.");
+          try {
+            await this.direct.unsend(message.chatId, message.messageId);
+          } catch (err) {
+            this.log("Could not delete a message", err);
+            return await reply(`Teams would not let me delete it. Please delete it yourself in the chat with ${message.label}.`);
+          }
+          this.store.markSentDeleted(message.id);
+          this.store.rewriteBotText(this.today(), message.text, null);
+          return await reply(`Deleted: "${message.text}" (${message.label}).`);
+        }
+
+        case "draft": {
+          const m = /^(send|skip)\s+(\d+)\s*([\s\S]*)$/i.exec(arg);
+          if (!m) return await reply("Use **draft send 12** or **draft skip 12**.");
+          const draft = this.store.draft(Number(m[2]));
+          if (!draft) return await reply("I could not find that draft.");
+          if (draft.status !== "waiting") return await reply(`That draft was already ${draft.status}.`);
+          const out = JSON.parse(draft.payload) as Outgoing;
+          const original = shown(out);
+          if (m[1]!.toLowerCase() === "skip") {
+            this.store.setDraftStatus(draft.id, "skipped");
+            for (const t of new Set([original, out.text, out.recorded ?? ""])) if (t) this.store.rewriteBotText(this.today(), t, null);
+            return await reply(`Skipped. Nothing was sent to ${draft.label}.`);
+          }
+          if (this.paused) return await reply("Paused: send **resume** first.");
+          if (this.now().getTime() - Date.parse(draft.at) > 3 * 3_600_000) {
+            this.store.setDraftStatus(draft.id, "expired");
+            return await reply("That draft is more than three hours old, so I have not sent it.");
+          }
+          const edited = m[3]!.trim();
+          let final = out;
+          if (edited && edited !== original) {
+            // Keep a tag only where its "@Name" is still in the text.
+            const mentions = (out.mentions ?? []).filter((x) => edited.includes(`@${x.name}`));
+            let text = edited;
+            mentions.forEach((x, i) => (text = text.replace(`@${x.name}`, `{@${i}}`)));
+            final = { ...out, text, mentions };
+            for (const t of new Set([original, out.text, out.recorded ?? ""])) if (t) this.store.rewriteBotText(this.today(), t, edited);
+          }
+          await this.sendNow(final);
+          this.store.setDraftStatus(draft.id, "sent");
+          return await reply(`Sent to ${draft.label}.`);
+        }
+
+        case "approve": {
+          const value = arg.trim();
+          if (!value) {
+            const on = this.store
+              .keys("approve:")
+              .filter((k) => this.needsApproval(k.slice("approve:".length)))
+              .map((k) => this.chatLabel(k.slice("approve:".length)));
+            return await reply(
+              on.length
+                ? `Messages to these wait for your approval: ${on.join(", ")}.`
+                : "Nothing is waiting for approval: messages go out automatically.",
+            );
+          }
+          const mode = /\b(off|no)$/i.test(value) ? "" : /\btoday$/i.test(value) ? this.today() : "always";
+          const who = value.replace(/\s+(on|off|always|today|no|yes)$/i, "").replace(/^group\s+/i, "").trim();
+          const people = this.store.findNominees(who);
+          const group = this.resolveGroup(who);
+          const chatId = people.length === 1 ? people[0]!.chatId : typeof group !== "string" ? group.chatId : null;
+          const label = people.length === 1 ? displayName(people[0]!) : typeof group !== "string" ? group.name : who;
+          if (!chatId) return await reply(`I could not match "${who}" to one person or group.`);
+          this.store.set(`approve:${chatId}`, mode);
+          return await reply(
+            mode === ""
+              ? `Messages to ${label} now go out without asking you.`
+              : mode === "always"
+                ? `Every message to ${label} will come to you first as a draft, until you send **approve ${label} off**.`
+                : `Messages to ${label} come to you as drafts for the rest of today.`,
+          );
         }
 
         case "pause":
@@ -2437,6 +2684,9 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           const person = this.store.upsertPerson(email, chat && { name: chat.name, chatId: chat.conversationId });
           this.store.setNominated(person.id, true);
           this.store.set(`solo:${person.id}`, "1"); // added in their own right, not only through a group
+          if (this.config.approveFirstDay && person.chatId && this.store.get(`approve:${person.chatId}`) !== "always") {
+            this.store.set(`approve:${person.chatId}`, this.today());
+          }
           let history = "";
           if (this.personal && person.chatId) {
             // Always from scratch, even if they were followed before.
