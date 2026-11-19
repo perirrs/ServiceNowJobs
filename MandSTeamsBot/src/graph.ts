@@ -408,6 +408,30 @@ export class GraphChat {
     return found;
   }
 
+  /**
+   * Create a named group chat with the signed-in person and these colleagues.
+   * Nothing is posted in it. Returns the new chat's id.
+   */
+  async createGroup(topic: string, emails: string[]): Promise<string> {
+    const me = await this.whoAmI();
+    const ids = new Set<string>([me.id]);
+    for (const email of emails) {
+      const user = await this.findUser(email);
+      if (!user) throw new Error(`Nobody in the directory has the address ${email}`);
+      ids.add(user.id);
+    }
+    const chat = await this.call<{ id: string }>("POST", "/chats", {
+      chatType: "group",
+      topic,
+      members: [...ids].map((id) => ({
+        "@odata.type": "#microsoft.graph.aadUserConversationMember",
+        roles: ["owner"],
+        "user@odata.bind": `${GRAPH}/users('${id}')`,
+      })),
+    });
+    return chat.id;
+  }
+
   /** Everyone in a group chat except the signed-in person. People without an email (guests) are left out. */
   async groupMembers(chatId: string): Promise<{ userId: string; email: string; name: string }[]> {
     const me = await this.whoAmI();
