@@ -1,0 +1,15 @@
+# One always-on copy of the check-in bot.
+#   docker compose up -d --build     start (or update after a code change)
+#   docker compose logs -f           watch the log
+#   docker compose down              stop
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+    volumes:
+      # Database and Teams sign-in token. Back this folder up.
+      - ./data:/data
+    # No ports: in socket mode the bot only makes outbound connections.

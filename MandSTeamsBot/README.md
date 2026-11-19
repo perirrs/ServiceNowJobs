@@ -138,7 +138,8 @@ A person who is nominated before the app reaches them shows as "not connected" i
 - **Data.** Everything lives in one SQLite file, `data/mands.db`: profiles, every chat message, every note and digest. Back it up, and restrict who can read the server. Conversation text is sent to Anthropic's API to generate replies and summaries.
 - **Who can see what.** Admin rights come only from `ADMIN_EMAILS`, matched against the identity Teams vouches for. Nominated people can only ever see their own chat.
 - **Cost.** Each person's check-in is a handful of short Claude calls, plus one larger call for the digest. The model is `claude-opus-5-5` by default; set `CLAUDE_MODEL` to change it.
-- **Single instance.** The scheduler runs inside the process, so run exactly one copy.
+- **Single instance.** Run exactly one copy: two would send every message twice.
+- **It must be running to do anything.** See [DEPLOY.md](DEPLOY.md) for running it as a background service on Windows and for moving it to an always-on machine.
 
 ## How it is put together
 

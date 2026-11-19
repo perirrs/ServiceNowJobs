@@ -1,0 +1,27 @@
+# systemd unit for running the bot directly on a Linux machine, without Docker.
+# Assumes the bot is in /opt/mands-teams-bot (built, with .env and data/ in it)
+# and a user called "mandsbot" owns that folder.
+#
+#   sudo cp deploy/mands-teams-bot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now mands-teams-bot
+#   journalctl -u mands-teams-bot -f
+[Unit]
+Description=AI daily check-in bot for Microsoft Teams
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=mandsbot
+WorkingDirectory=/opt/mands-teams-bot
+ExecStart=/usr/bin/node --env-file=.env dist/index.js
+Restart=always
+RestartSec=15
+# The folder holds a token that can read and send Teams chats: keep it private.
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

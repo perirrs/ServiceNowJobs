@@ -1203,3 +1203,22 @@ test("a reply in the group quotes the exact message it answers", async () => {
   await g.engine.chaseFollowUps(0);
   assert.equal(g.sent.at(-1)!.quote, undefined);
 });
+
+// ---------- coming back after being offline ----------
+
+test("after a long gap the admins are told it was offline; a quick restart says nothing", async () => {
+  const t = setup();
+  await t.engine.handleInstall(t.id(CTO));
+  const before = () => t.to(CTO).length;
+
+  await t.engine.announceStart(); // very first start: nothing to compare with
+  await t.engine.tick();
+  let count = before();
+  t.setDate("2026-11-16T17:03:00Z");
+  await t.engine.announceStart(); // three minutes later: a restart, not an outage
+  assert.equal(before(), count);
+
+  t.setDate("2026-11-17T09:00:00Z");
+  await t.engine.announceStart();
+  assert.match(t.to(CTO).at(-1)!, /I was offline from Mon,? 16 Nov,? 17:03 to Tue,? 17 Nov,? 09:00/);
+});

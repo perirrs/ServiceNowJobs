@@ -194,6 +194,8 @@ if (graph) {
 await app.start(config.port);
 console.log(`Check-in bot running. Admins: ${config.adminEmails.join(", ")}. Timezone ${config.timezone}.`);
 
+await engine.announceStart();
+
 // One-off manual trigger: `node dist/index.js --checkin-now` asks everyone
 // nominated for an update straight away, then carries on running as normal.
 if (process.argv.includes("--checkin-now")) {

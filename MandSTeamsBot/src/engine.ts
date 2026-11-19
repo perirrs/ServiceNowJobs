@@ -941,8 +941,34 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     ].join("\n");
   }
 
+  /**
+   * Called once when the bot starts. If it had been down for a while, tell
+   * the admins: scheduled asks in that gap did not happen, and they would
+   * otherwise have no way to know.
+   */
+  async announceStart(): Promise<void> {
+    const last = this.store.get("heartbeat");
+    const now = this.now();
+    this.store.set("heartbeat", now.toISOString());
+    if (!last || now.getTime() - Date.parse(last) < 10 * 60_000) return;
+    const when = (d: Date) =>
+      new Intl.DateTimeFormat("en-GB", {
+        timeZone: this.config.timezone,
+        weekday: "short",
+        day: "numeric",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }).format(d);
+    await this.notifyAdmins(
+      `I was offline from ${when(new Date(last))} to ${when(now)} and am running again. Anything scheduled in that time was skipped: send **ask all** if you want it now. Replies people sent meanwhile are being picked up.`,
+    );
+  }
+
   /** Runs once a minute: the chase, closing quiet conversations, and anything scheduled. */
   async tick(): Promise<void> {
+    this.store.set("heartbeat", this.now().toISOString());
     await this.runReminders(this.config.chaseAfterMinutes);
     await this.runGroupTimers();
     await this.chaseFollowUps(this.config.chaseAfterMinutes);
