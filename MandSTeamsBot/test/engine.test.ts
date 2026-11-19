@@ -222,7 +222,9 @@ test("the bot is forced to close after the question cap", async () => {
   t.brain.doneAfterUserMessages = 99;
   await t.engine.runCheckins(); // bot turn 1
   await t.engine.handleMessage(t.id(PRIYA), "a"); // bot turn 2
-  await t.engine.handleMessage(t.id(PRIYA), "b"); // bot turn 3 = cap, must be final
+  await t.engine.handleMessage(t.id(PRIYA), "b"); // second follow-up
+  assert.equal(t.brain.turns.at(-1)!.finalTurn, false);
+  await t.engine.handleMessage(t.id(PRIYA), "c"); // third = the cap of 3, must be final
   assert.equal(t.brain.turns.at(-1)!.finalTurn, true);
   assert.equal(t.store.checkin(t.store.personByEmail(PRIYA)!.id, "2026-11-16")!.status, "completed");
 });
@@ -1249,4 +1251,112 @@ test("questions to the bot can draw on what was learned from the chat history", 
   const material = g.brain.questions.at(-1)!.material;
   assert.match(material, /Group chat: Recruitment Team[\s\S]*TalentFlow app due 2026-11-20/);
   assert.match(material, /Owes the landing page copy, overdue/);
+});
+
+// ---------- the four correctness fixes, and the pause switch ----------
+
+test("asking again and chasing do not use up the follow-up allowance", async () => {
+  const t = setup();
+  await onboard(t);
+  t.brain.doneAfterUserMessages = 99;
+  await t.engine.handleMessage(t.id(CTO), "ask priya");
+  await t.engine.handleMessage(t.id(CTO), "ask priya"); // asked again: a second message before any reply
+  await t.engine.handleMessage(t.id(PRIYA), "first reply");
+  assert.equal(t.brain.turns.at(-1)!.finalTurn, false);
+});
+
+test("someone asked in a group: their one-to-one chat is left alone until a private follow-up goes there", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  g.brain.doneAfterUserMessages = 99;
+  await g.engine.handleGroupReply("u-priya", "sent 3 submissions");
+  assert.equal(g.engine.openDirectCheckins().length, 0); // nobody's private chat is being read
+
+  g.brain.privateNext = true;
+  await g.engine.handleGroupReply("u-priya", "could not finish, was unwell");
+  const watched = g.engine.openDirectCheckins();
+  assert.deepEqual(watched.map((w) => w.person.email), [PRIYA]);
+  assert.ok(g.store.get(`cursor:${watched[0]!.checkin.id}`)); // and only from that message on
+});
+
+test("when the sender replies to someone in the group himself, the assistant steps back for that person only", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  g.brain.doneAfterUserMessages = 99;
+  await g.engine.handleGroupReply("u-priya", "sent 3 submissions");
+  await g.engine.handleGroupReply("u-ravi", "testing the app");
+  const groupId = g.store.groups()[0]!.id;
+
+  // The assistant's own posts are recognised, with or without the tag in front.
+  assert.equal(g.engine.isAssistantGroupText(groupId, "Hi team, please share today's update."), true);
+  assert.equal(g.engine.isAssistantGroupText(groupId, "Priya Rao Question 2"), true);
+  assert.equal(g.engine.isAssistantGroupText(groupId, "Priya, call me"), false);
+
+  g.engine.senderSpokeInGroup(groupId, ["u-priya"]); // he tagged or replied to Priya
+  const before = g.sent.length;
+  await g.engine.handleGroupReply("u-priya", "ok will call");
+  assert.equal(g.sent.length, before); // silent for her
+  await g.engine.handleGroupReply("u-ravi", "found two bugs");
+  assert.equal(g.sent.length, before + 1); // still following up with Ravi
+});
+
+test("a message from the sender aimed at nobody in particular steps back for everyone mid-conversation", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  g.brain.doneAfterUserMessages = 99;
+  await g.engine.handleGroupReply("u-priya", "sent 3 submissions");
+  g.engine.senderSpokeInGroup(g.store.groups()[0]!.id, []);
+  const before = g.sent.length;
+  await g.engine.handleGroupReply("u-priya", "more detail");
+  assert.equal(g.sent.length, before);
+  // Ravi had not replied yet, so he is unaffected and still gets a follow-up when he does.
+  await g.engine.handleGroupReply("u-ravi", "testing the app");
+  assert.equal(g.sent.length, before + 1);
+});
+
+test("conversations left open overnight are summarised or marked unanswered the next day", async () => {
+  const t = setup();
+  await onboard(t);
+  await t.engine.handleMessage(t.id(CTO), "add ravi@acme.test");
+  await t.engine.handleInstall(t.id("ravi@acme.test"));
+  t.brain.doneAfterUserMessages = 99;
+  await t.engine.runCheckins();
+  await t.engine.handleMessage(t.id(PRIYA), "half an update"); // Priya replied, Ravi did not
+  const priya = t.store.personByEmail(PRIYA)!;
+  const ravi = t.store.personByEmail("ravi@acme.test")!;
+
+  t.setDate("2026-11-17T08:00:00Z");
+  assert.equal(await t.engine.closePastDays(), 2);
+  assert.equal(t.store.checkin(priya.id, "2026-11-16")!.status, "completed");
+  assert.equal(t.store.checkin(ravi.id, "2026-11-16")!.status, "no_response");
+  assert.match(t.to(CTO).at(-1)!, /Update from priya[\s\S]*2026-11-16/);
+  assert.equal(await t.engine.closePastDays(), 0);
+});
+
+test("pause stops everything going out; replies are still recorded; resume starts again", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "add solo@acme.test");
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  const before = g.sent.length;
+
+  await g.engine.handleMessage(g.cto, "pause");
+  assert.match(g.admin.at(-1)!, /Paused/);
+  await g.engine.handleMessage(g.cto, "ask all");
+  await g.engine.handleMessage(g.cto, "schedule 17:00");
+  g.brain.doneAfterUserMessages = 99;
+  await g.engine.handleGroupReply("u-priya", "sent 3 submissions");
+  g.setDate("2026-11-16T17:50:00Z");
+  await g.engine.tick(); // would chase, and would run the 17:00 schedule
+  assert.equal(g.sent.length, before); // nothing at all went out
+
+  const priya = g.store.personByEmail(PRIYA)!;
+  assert.ok(g.store.messages(g.store.checkin(priya.id, "2026-11-16")!.id).some((m) => m.text === "sent 3 submissions"));
+
+  await g.engine.handleMessage(g.cto, "resume");
+  await g.engine.handleGroupReply("u-priya", "and 1 interview");
+  assert.equal(g.sent.length, before + 1);
 });

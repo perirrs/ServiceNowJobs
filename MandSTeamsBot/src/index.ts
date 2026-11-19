@@ -44,7 +44,11 @@ if (config.sendAsUser) {
     senderName: me.name,
     connect: (email) => g.connect(email),
     send: async (chatId, text, mentions, quote) => {
-      sentByAssistant.add(normalise(text));
+      // Remember it the way it will read in Teams, where each tag shows as the person's name.
+      let shown = text;
+      (mentions ?? []).forEach((m, i) => (shown = shown.replace(`{@${i}}`, m.name)));
+      if (mentions?.length && shown === text) shown = `${mentions.map((m) => m.name).join(" ")} ${text}`;
+      sentByAssistant.add(normalise(shown));
       await g.send(chatId, text, mentions, quote);
     },
     findGroups: (query) => g.findGroups(query),
@@ -124,8 +128,12 @@ async function pollGroups(g: GraphChat): Promise<void> {
     try {
       for (const line of await g.messagesSince(group.chatId, since)) {
         store.set(key, line.createdAt);
-        // The sender's own messages in a group are ordinary conversation: nothing to do.
-        if (line.fromUserId !== senderId) await engine.handleGroupReply(line.fromUserId, line.text, line.id);
+        if (line.fromUserId !== senderId) {
+          await engine.handleGroupReply(line.fromUserId, line.text, line.id);
+        } else if (!sentByAssistant.has(normalise(line.text)) && !engine.isAssistantGroupText(group.id, line.text)) {
+          // The sender wrote this themselves: the assistant steps back for whoever it was aimed at.
+          engine.senderSpokeInGroup(group.id, line.addressedUserIds);
+        }
       }
     } catch (err) {
       console.error(`Could not read the group chat ${group.name}`, err);

@@ -19,6 +19,8 @@ export interface ChatLine {
   fromUserId: string;
   fromName: string;
   text: string;
+  /** Directory ids of the people this message tags or replies to. */
+  addressedUserIds: string[];
 }
 
 export function textToHtml(text: string): string {
@@ -327,6 +329,7 @@ export class GraphChat {
           fromUserId: m.from.user.id,
           fromName: m.from.user.displayName ?? "",
           text,
+          addressedUserIds: [],
         });
       }
       url = page["@odata.nextLink"];
@@ -344,8 +347,23 @@ export class GraphChat {
         deletedDateTime?: string | null;
         from?: { user?: { id?: string } | null } | null;
         body?: { content?: string };
+        mentions?: { mentioned?: { user?: { id?: string } | null } | null }[] | null;
+        attachments?: { contentType?: string | null; content?: string | null }[] | null;
       }[];
     }>("GET", `/chats/${encodeURIComponent(chatId)}/messages?$top=30`);
+    // Who a message is aimed at: anyone it tags, and the author of a message it quotes.
+    const addressed = (m: (typeof r.value)[number]): string[] => {
+      const ids = (m.mentions ?? []).map((x) => x.mentioned?.user?.id ?? "");
+      for (const a of m.attachments ?? []) {
+        if (a.contentType !== "messageReference" || !a.content) continue;
+        try {
+          ids.push((JSON.parse(a.content) as { messageSender?: { user?: { id?: string } } }).messageSender?.user?.id ?? "");
+        } catch {
+          // An attachment we cannot read tells us nothing about who is addressed.
+        }
+      }
+      return [...new Set(ids.filter(Boolean))];
+    };
     return r.value
       .filter((m) => m.messageType === "message" && !m.deletedDateTime && m.createdDateTime > since && m.from?.user?.id)
       .map((m) => ({
@@ -354,6 +372,7 @@ export class GraphChat {
         fromUserId: m.from!.user!.id!,
         fromName: "",
         text: htmlToText(m.body?.content ?? ""),
+        addressedUserIds: addressed(m),
       }))
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }

@@ -296,6 +296,14 @@ export class Store {
     this.db.prepare("UPDATE checkins SET reminded = 1 WHERE id = ?").run(checkinId);
   }
 
+  /** Check-ins from earlier days that were never closed. */
+  openCheckinsBefore(date: string): Checkin[] {
+    return this.db
+      .prepare("SELECT * FROM checkins WHERE date < ? AND status = 'open'")
+      .all(date)
+      .map(toCheckin);
+  }
+
   checkinsOn(date: string): Checkin[] {
     return this.db.prepare("SELECT * FROM checkins WHERE date = ?").all(date).map(toCheckin);
   }
