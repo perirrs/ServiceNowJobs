@@ -168,6 +168,16 @@ You need to be (or work with) a Teams administrator for your Microsoft 365 tenan
 
 A person who is nominated before the app reaches them shows as "not connected" in `list`; the bot introduces itself as soon as the install lands or they message it.
 
+### Running on a Linux server
+
+In socket mode the bot needs no public address, so a small Linux VM is enough (it runs live on an Ubuntu 24.04 B2ats_v2 VM in Azure). Copy `package.json`, `package-lock.json`, `dist/`, `.env` and `service/` to `/opt/mandsteamsbot` (and `data/` when moving from another machine, after stopping the old copy), then:
+
+```bash
+sudo bash /opt/mandsteamsbot/service/install-linux.sh
+```
+
+It installs Node 24 and the dependencies, adds log rotation, and runs the bot as the `mandsteamsbot` systemd service, which starts at boot and restarts if it stops. The service runs as the `mands` user; change `User=` in `service/mandsteamsbot.service` for another account. Only ever run one copy.
+
 ## Things to know
 
 - **Staff are told.** The bot's first message to each nominated person says their answers are summarised daily for the CTO and CEO, and it says so again if asked. Keep that in: people give better updates when they know where they go, and in the UK and EU you are required to tell staff about monitoring of this kind. Worth a line in your staff privacy notice too.
