@@ -183,9 +183,14 @@ const NoteSchema = z.object({
 
 // ---------- Claude implementation ----------
 
-// Opus 5.5 can decline a request on safety grounds; with this the API retries
-// on a fallback model inside the same call instead of failing the check-in.
+// Larger models can decline a request on safety grounds; with this the API
+// retries on a fallback model inside the same call instead of failing the
+// check-in. Haiku models have no server-side fallback, so it is left off there.
 const FALLBACK_BETA = "server-side-fallback-2026-07-01";
+
+function fallbackParams(model: string): { betas?: string[]; fallbacks?: "default" } {
+  return model.includes("haiku") ? {} : { betas: [FALLBACK_BETA], fallbacks: "default" };
+}
 
 type Effort = "low" | "medium" | "high";
 
@@ -287,8 +292,7 @@ export class ClaudeBrain implements Brain {
     const response = await this.client.beta.messages.parse({
       model: this.model,
       max_tokens: 16000,
-      betas: [FALLBACK_BETA],
-      fallbacks: "default",
+      ...fallbackParams(this.model),
       system,
       messages,
       output_config: { effort, format: betaZodOutputFormat(schema) },
@@ -306,8 +310,7 @@ export class ClaudeBrain implements Brain {
     const response = await this.client.beta.messages.create({
       model: this.model,
       max_tokens: 16000,
-      betas: [FALLBACK_BETA],
-      fallbacks: "default",
+      ...fallbackParams(this.model),
       system,
       messages: [{ role: "user", content }],
       output_config: { effort },
