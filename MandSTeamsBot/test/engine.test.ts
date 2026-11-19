@@ -65,6 +65,11 @@ class FakeBrain implements Brain {
     this.questions.push({ question, material });
     return "ANSWER";
   }
+  rapportCalls: { fromSender: boolean; text: string }[][] = [];
+  async learnRapport(_p: unknown, _s: string, chat: { fromSender: boolean; text: string }[]): Promise<string> {
+    this.rapportCalls.push(chat);
+    return "Casual. Says 'pls share'.";
+  }
 }
 
 function setup(opts: { direct?: boolean; personal?: boolean } = {}) {
@@ -669,4 +674,77 @@ test("a handover puts the person in 'needs you personally' with what they wrote"
   b.brain.handoverNext = true;
   await b.engine.handleMessage(b.id(PRIYA), "can I take leave on friday");
   assert.match(b.edits.at(-1)!.json, /Needs you personally \(1\)[\s\S]*can I take leave on friday/);
+});
+
+// ---------- learning the sender's tone from past chat ----------
+
+function rapportSetup(history: { fromSender: boolean; text: string }[]) {
+  const store = new Store(":memory:");
+  const brain = new FakeBrain();
+  let reads = 0;
+  const engine = new Engine(
+    store,
+    brain,
+    { send: async () => undefined },
+    { ...config, discloseAutomation: false },
+    () => new Date("2026-11-16T17:00:00Z"),
+    () => undefined,
+    {
+      senderName: "Sujith",
+      connect: async (email) => ({ conversationId: `chat-${email}`, name: "Priya Rao" }),
+      send: async () => undefined,
+      history: async () => {
+        reads++;
+        return history;
+      },
+    },
+  );
+  const cto: Identity = { teamsUserId: "t", conversationId: "c", lookupEmail: async () => CTO };
+  return { store, brain, engine, cto, reads: () => reads };
+}
+
+test("past chat is read once, the tone is stored, and it is reused on later days", async () => {
+  const r = rapportSetup([
+    { fromSender: true, text: "pls share the list" },
+    { fromSender: false, text: "ok sir" },
+    { fromSender: true, text: "any update on globex" },
+    { fromSender: true, text: "call me when free" },
+  ]);
+  await r.engine.handleMessage(r.cto, `add ${PRIYA}`);
+  await r.engine.handleMessage(r.cto, "ask priya");
+  assert.equal(r.reads(), 1);
+  assert.equal(r.brain.turns.at(-1)!.rapport, "Casual. Says 'pls share'.");
+
+  const priya = r.store.personByEmail(PRIYA)!;
+  await r.engine.handleDirectReply(priya.id, "done");
+  await r.engine.handleMessage(r.cto, "ask priya");
+  assert.equal(r.reads(), 1); // not read again
+  assert.equal(r.brain.rapportCalls.length, 1);
+});
+
+test("the assistant's own earlier messages are left out of what it learns from", async () => {
+  const r = rapportSetup([
+    { fromSender: true, text: "pls share the list" },
+    { fromSender: true, text: "any update on globex" },
+    { fromSender: true, text: "call me when free" },
+    { fromSender: true, text: "Thanks, that's all." }, // what the assistant sent on an earlier day
+  ]);
+  await r.engine.handleMessage(r.cto, `add ${PRIYA}`);
+  const priya = r.store.personByEmail(PRIYA)!;
+  const earlier = r.store.openCheckin(priya.id, "2026-11-13");
+  r.store.addMessage(earlier.id, "bot", "Thanks, that's all.");
+  r.store.setCheckinStatus(earlier.id, "completed");
+
+  await r.engine.handleMessage(r.cto, "ask priya");
+  assert.deepEqual(r.brain.rapportCalls[0]!.map((m) => m.text), ["pls share the list", "any update on globex", "call me when free"]);
+});
+
+test("with too little past chat nothing is learned, and it does not keep looking", async () => {
+  const r = rapportSetup([{ fromSender: false, text: "hello sir" }]);
+  await r.engine.handleMessage(r.cto, `add ${PRIYA}`);
+  await r.engine.handleMessage(r.cto, "ask priya");
+  await r.engine.handleMessage(r.cto, "ask priya");
+  assert.equal(r.brain.rapportCalls.length, 0);
+  assert.equal(r.reads(), 1);
+  assert.equal(r.brain.turns.at(-1)!.rapport, undefined);
 });

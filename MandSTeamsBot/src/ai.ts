@@ -16,6 +16,8 @@ export interface CheckinContext {
   history: ChatMessage[];
   /** True when the bot has used up its questions and must close. */
   finalTurn: boolean;
+  /** How the sender writes to this person, and what is going on between them, learned from their chat history. */
+  rapport?: string;
 }
 
 export interface Turn {
@@ -51,6 +53,8 @@ export interface Brain {
   writeNote(ctx: CheckinContext): Promise<NoteResult>;
   digest(date: string, people: DigestPerson[]): Promise<string>;
   answer(question: string, material: string): Promise<string>;
+  /** Read a chat history once and describe how the sender writes to this person. */
+  learnRapport(person: Person, senderName: string, chat: { fromSender: boolean; text: string }[]): Promise<string>;
 }
 
 // ---------- rendering context for the model ----------
@@ -80,7 +84,7 @@ function renderNote(n: Note | NoteContent): string {
 }
 
 function renderPersonBrief(ctx: CheckinContext): string {
-  const { person, activeItems, recentNotes, date } = ctx;
+  const { person, activeItems, recentNotes, date, rapport } = ctx;
   const notes = recentNotes.length
     ? recentNotes.map((n) => `### ${n.date}\n${renderNote(n)}`).join("\n\n")
     : "(no earlier check-ins: this is their first)";
@@ -90,7 +94,10 @@ function renderPersonBrief(ctx: CheckinContext): string {
     `## Role, responsibilities and targets (written by leadership)\n${person.profile ?? "(not provided yet: ask about their work in general terms)"}`,
     `## Items still open from earlier days\n${renderItems(activeItems)}`,
     `## Notes from their recent check-ins\n${notes}`,
-  ].join("\n\n");
+    rapport ? `## How you normally write to this person, and what is going on between you (from your past chat)\n${rapport}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 function renderTranscript(history: ChatMessage[], person: Person): string {
@@ -141,6 +148,7 @@ What ${senderName} needs from the chat: what the person got done today, what hap
 ${SUBSTANCE}
 
 ${STYLE}
+- If the briefing describes how ${senderName} normally writes to this person, write the same way: the same level of formality, the same kind of words and phrases, the same habits. The rules above still win where they differ, so stay to one short line, with no name and no thanks.
 - Speak only as ${senderName}: say "I" and "me". Never mention a check-in system, summaries, notes, an assistant, AI or automation, and never refer to ${senderName} in the third person.
 
 When to hand over to ${senderName}: set handover to true and leave reply empty, so that ${senderName} answers personally, whenever the person
@@ -355,6 +363,29 @@ export class ClaudeBrain implements Brain {
       digestSystem(this.company),
       `Date: ${date}\n\n${sections.join("\n\n")}`,
       "high",
+    );
+  }
+
+  async learnRapport(
+    person: Person,
+    senderName: string,
+    chat: { fromSender: boolean; text: string }[],
+  ): Promise<string> {
+    const transcript = chat
+      .map((m) => `${m.fromSender ? senderName : displayName(person)}: ${m.text.slice(0, 300)}`)
+      .join("\n");
+    return this.text(
+      `You are preparing a short private briefing for an assistant that will write Microsoft Teams messages as ${senderName} to a colleague, ${displayName(person)}, asking for daily work updates. You are given their recent one-to-one chat. The assistant should sound like ${senderName} does with this particular person, and know what is going on between them.
+
+Write the briefing in two parts, under 200 words in total:
+
+1. How ${senderName} writes to this person: how formal or casual, how messages open and close, typical length, forms of address, any mix of languages or regional words, punctuation and capitalisation habits, favourite phrases. Then quote three to six short messages ${senderName} actually sent, word for word, as examples.
+
+2. Work context: what they are working on together, anything promised or pending between them that a daily update would touch.
+
+Describe only what the chat shows. Leave out anything personal or sensitive, such as health, family, money or other people's private matters, even if it appears in the chat. If there is too little chat to tell, say so in one line rather than guessing.`,
+      transcript,
+      "medium",
     );
   }
 

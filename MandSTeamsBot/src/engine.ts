@@ -24,6 +24,8 @@ export interface DirectChannel {
     email: string,
   ): Promise<{ conversationId: string; name: string } | { notFound: true; suggestions: string[] }>;
   send(conversationId: string, text: string): Promise<void>;
+  /** Recent messages in the sender's chat with a colleague, oldest first. */
+  history?(conversationId: string): Promise<{ fromSender: boolean; text: string }[]>;
 }
 
 /** Who a Teams activity came from. */
@@ -42,6 +44,7 @@ const ADMIN_HELP = `**Daily Check-in: what you can type**
 - **remove** name: stop asking them (their notes are kept)
 - **ask** name: ask them for an update right now. **ask all** asks everyone.
 - **profile** name: their role, responsibilities and targets, so the questions fit their job
+- **style** name: what I learned from your past chat about how you write to them. **style name refresh** reads the chat again.
 - **list**: everyone you have added and where they stand today
 - **report** name: their recent notes and open items
 - **digest**: today's summary of everyone, right now
@@ -303,7 +306,36 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       recentNotes: this.store.recentNotes(person.id, 5, checkin.date),
       history: this.store.messages(checkin.id),
       finalTurn,
+      rapport: this.personal ? this.store.get(`rapport:${person.id}`) || undefined : undefined,
     };
+  }
+
+  /**
+   * Read the sender's past chat with this person once, and keep a short note of
+   * how the sender writes to them. Done the first time they are asked for an
+   * update; after that the stored note is reused unless `force` is set.
+   */
+  private async learnRapport(person: Person, force = false): Promise<string | undefined> {
+    const key = `rapport:${person.id}`;
+    const known = this.store.get(key);
+    if (known !== undefined && !force) return known || undefined;
+    if (!this.personal || !this.direct?.history || !person.chatId) return undefined;
+    try {
+      // Leave out what the assistant itself sent, so it learns the person's style and not its own.
+      const own = new Set(this.store.assistantTexts(person.id).map((t) => t.replace(/\s+/g, " ").trim()));
+      const chat = (await this.direct.history(person.chatId)).filter(
+        (m) => !(m.fromSender && own.has(m.text.replace(/\s+/g, " ").trim())),
+      );
+      // Too little to learn from: remember that, so we do not look again every time.
+      const text = chat.filter((m) => m.fromSender).length >= 3
+        ? await this.brain.learnRapport(person, this.direct.senderName, chat)
+        : "";
+      this.store.set(key, text);
+      return text || undefined;
+    } catch (err) {
+      this.log(`Could not read the chat history with ${person.email}`, err);
+      return undefined;
+    }
   }
 
   /** Send today's opening question. Returns false if the person cannot be reached or already has one. */
@@ -314,6 +346,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     if (existing && !force) return false;
     if (existing?.status === "open") return false;
 
+    await this.learnRapport(person);
     const checkin = this.store.openCheckin(person.id, date);
     try {
       const turn = await this.brain.nextTurn(this.context(person, checkin));
@@ -927,6 +960,21 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           this.store.setProfile(target.id, split[2]!.trim());
           return await reply(
             `Saved. Questions for ${displayName(target)} will be phrased around this role and these targets.\n\n${nextSteps(target)}`,
+          );
+        }
+
+        case "style": {
+          const refresh = /\brefresh\b/i.test(arg);
+          const target = this.resolveOne(arg.replace(/\brefresh\b/i, "").trim());
+          if (typeof target === "string") return await reply(target);
+          if (!this.personal) {
+            return await reply("I only learn your writing style when messages are sent from your own account without mentioning automation.");
+          }
+          const learned = await this.learnRapport(target, refresh);
+          return await reply(
+            learned
+              ? `**How you write to ${displayName(target)}** (read once from your past chat, and reused)\n\n${learned}`
+              : `There is not enough past chat with ${displayName(target)} to learn from, so I use the standard short, simple style.`,
           );
         }
 

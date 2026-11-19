@@ -47,6 +47,8 @@ if (config.sendAsUser) {
       sentByAssistant.add(normalise(text));
       await g.send(chatId, text);
     },
+    history: async (chatId) =>
+      (await g.history(chatId)).map((m) => ({ fromSender: m.fromUserId === me.id, text: m.text })),
   };
   console.log(
     `Check-ins will be sent from ${me.name} <${me.email}>'s Teams account` +

@@ -75,7 +75,9 @@ How it behaves:
 - If you type in a chat yourself during an open check-in, the assistant stays quiet there for the rest of the day. What the colleague says is still recorded for the note.
 - Replies are picked up by polling (`POLL_SECONDS`, default 20), so expect a short delay.
 
-With `DISCLOSE_AUTOMATION=false` the assistant instead writes as you in the first person and never mentions automation: no heads-up is sent on nomination. It does not claim to be human either. If a colleague asks whether the messages are automated, asks for a decision only you can give, or raises something personal, it stops replying in that chat and alerts you in the bot chat so that you answer yourself. Check what your local law and your staff policies require before using this setting; in some places people must be told when they are dealing with an AI system.
+With `DISCLOSE_AUTOMATION=false` the assistant instead writes as you in the first person and never mentions automation: no heads-up is sent on nomination. It does not claim to be human either. If a colleague asks whether the messages are automated, asks for a decision only you can give, or raises something personal, it stops replying in that chat and alerts you in the bot chat so that you answer yourself. In this mode the assistant also learns how you write to each person. The first time someone is asked for an update, it reads up to 150 recent messages of your one-to-one chat with them (sent to the Claude API for this one call), stores a short note of your tone and of the work going on between you, and reuses that note from then on. It leaves out personal matters and its own earlier messages. `style name` shows the note; `style name refresh` reads the chat again. The writing rules (one short line, no names, no thanks) still win over anything it learns.
+
+Check what your local law and your staff policies require before using this setting; in some places people must be told when they are dealing with an AI system.
 
 Setup:
 

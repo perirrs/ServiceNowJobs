@@ -296,6 +296,17 @@ export class Store {
       .map((r) => ({ role: r.role as "bot" | "user", text: r.text as string, at: r.at as string }));
   }
 
+  /** Everything the assistant has sent this person, across all days. */
+  assistantTexts(personId: number): string[] {
+    return this.db
+      .prepare(
+        `SELECT m.text FROM messages m JOIN checkins c ON c.id = m.checkin_id
+         WHERE c.person_id = ? AND m.role = 'bot'`,
+      )
+      .all(personId)
+      .map((r) => r.text as string);
+  }
+
   // ---- notes ----
 
   saveNote(checkin: Checkin, content: NoteContent): void {

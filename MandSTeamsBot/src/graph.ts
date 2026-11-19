@@ -193,6 +193,33 @@ export class GraphChat {
     return msg.id;
   }
 
+  /** The most recent messages in a chat (up to `max`), oldest first. */
+  async history(chatId: string, max = 150): Promise<ChatLine[]> {
+    type Page = {
+      value: {
+        id: string;
+        messageType: string;
+        createdDateTime: string;
+        deletedDateTime?: string | null;
+        from?: { user?: { id?: string } | null } | null;
+        body?: { content?: string };
+      }[];
+      "@odata.nextLink"?: string;
+    };
+    const lines: ChatLine[] = [];
+    let url: string | undefined = `/chats/${encodeURIComponent(chatId)}/messages?$top=50`;
+    while (url && lines.length < max) {
+      const page: Page = await this.call<Page>("GET", url);
+      for (const m of page.value) {
+        const text = htmlToText(m.body?.content ?? "");
+        if (m.messageType !== "message" || m.deletedDateTime || !m.from?.user?.id || !text) continue;
+        lines.push({ id: m.id, createdAt: m.createdDateTime, fromUserId: m.from.user.id, text });
+      }
+      url = page["@odata.nextLink"];
+    }
+    return lines.slice(0, max).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
   /** Messages in a chat created after `since`, oldest first. */
   async messagesSince(chatId: string, since: string): Promise<ChatLine[]> {
     const r = await this.call<{
