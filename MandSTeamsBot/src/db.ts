@@ -25,6 +25,8 @@ export interface SentMessage {
   label: string;
   at: string;
   deleted: boolean;
+  /** The check-in record rows written when it was sent. */
+  recordIds: number[];
 }
 
 /** A Teams group chat whose members are asked together. */
@@ -45,6 +47,8 @@ export interface Checkin {
 }
 
 export interface ChatMessage {
+  /** The row's id; absent on messages made up outside the store. */
+  id?: number;
   role: "bot" | "user";
   text: string;
   at: string;
@@ -236,6 +240,8 @@ export class Store {
     // Added after the first release: older databases need the column.
     const columns = this.db.prepare("PRAGMA table_info(people)").all();
     if (!columns.some((c) => c.name === "chat_id")) this.db.exec("ALTER TABLE people ADD COLUMN chat_id TEXT");
+    const sentColumns = this.db.prepare("PRAGMA table_info(sent)").all();
+    if (!sentColumns.some((c) => c.name === "record_ids")) this.db.exec("ALTER TABLE sent ADD COLUMN record_ids TEXT");
     const itemColumns = this.db.prepare("PRAGMA table_info(items)").all();
     if (!itemColumns.some((c) => c.name === "due")) this.db.exec("ALTER TABLE items ADD COLUMN due TEXT");
     if (!itemColumns.some((c) => c.name === "progress")) this.db.exec("ALTER TABLE items ADD COLUMN progress INTEGER");
@@ -316,6 +322,11 @@ export class Store {
 
   // ---- check-ins ----
 
+  checkinById(id: number): Checkin | undefined {
+    const r = this.db.prepare("SELECT * FROM checkins WHERE id = ?").get(id);
+    return r ? toCheckin(r) : undefined;
+  }
+
   checkin(personId: number, date: string): Checkin | undefined {
     const r = this.db
       .prepare("SELECT * FROM checkins WHERE person_id = ? AND date = ?")
@@ -381,9 +392,9 @@ export class Store {
 
   messages(checkinId: number): ChatMessage[] {
     return this.db
-      .prepare("SELECT role, text, at FROM messages WHERE checkin_id = ? ORDER BY id")
+      .prepare("SELECT id, role, text, at FROM messages WHERE checkin_id = ? ORDER BY id")
       .all(checkinId)
-      .map((r) => ({ role: r.role as "bot" | "user", text: r.text as string, at: r.at as string }));
+      .map((r) => ({ id: r.id as number, role: r.role as "bot" | "user", text: r.text as string, at: r.at as string }));
   }
 
   /** Everything the assistant has sent this person, across all days. */
@@ -569,8 +580,23 @@ export class Store {
 
   // ---- what was sent in the sender's name, and drafts waiting for approval ----
 
-  logSent(chatId: string, messageId: string, text: string, label: string, at: string): void {
-    this.db.prepare("INSERT INTO sent (chat_id, message_id, text, label, at) VALUES (?, ?, ?, ?, ?)").run(chatId, messageId, text, label, at);
+  logSent(chatId: string, messageId: string, text: string, label: string, at: string, recordIds: number[] = []): void {
+    this.db
+      .prepare("INSERT INTO sent (chat_id, message_id, text, label, at, record_ids) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(chatId, messageId, text, label, at, JSON.stringify(recordIds));
+  }
+
+  /** Remove messages from check-in records, by id. */
+  deleteMessages(ids: number[]): void {
+    for (const id of ids) this.db.prepare("DELETE FROM messages WHERE id = ?").run(id);
+  }
+
+  /** Drafts still waiting that were made before `beforeIso`. */
+  staleDrafts(beforeIso: string): { id: number; payload: string }[] {
+    return this.db
+      .prepare("SELECT id, payload FROM drafts WHERE status = 'waiting' AND at < ?")
+      .all(beforeIso)
+      .map((r) => ({ id: r.id as number, payload: r.payload as string }));
   }
 
   /** Messages sent since `sinceIso`, newest first. */
@@ -586,6 +612,7 @@ export class Store {
         label: r.label as string,
         at: r.at as string,
         deleted: r.deleted === 1,
+        recordIds: JSON.parse((r.record_ids as string | null) || "[]") as number[],
       }));
   }
 

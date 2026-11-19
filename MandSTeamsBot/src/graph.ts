@@ -296,11 +296,13 @@ export class GraphChat {
     return (await res.json()) as T;
   }
 
-  /** Who is out of office at some point between two times, from their Outlook calendars. Unknown means not away. */
-  async awayBetween(emails: string[], startIso: string, endIso: string): Promise<Map<string, boolean>> {
-    const away = new Map<string, boolean>();
+  /** When each person is out of office between two times, from their Outlook calendars, as [start, end] ISO pairs. Unknown means never. */
+  async awayBetween(emails: string[], startIso: string, endIso: string): Promise<Map<string, [string, string][]>> {
+    const away = new Map<string, [string, string][]>();
     for (let i = 0; i < emails.length; i += 20) {
-      const r = await this.calendar<{ value?: { scheduleId: string; scheduleItems?: { status: string }[] }[] }>(
+      const r = await this.calendar<{
+        value?: { scheduleId: string; scheduleItems?: { status: string; start?: { dateTime: string }; end?: { dateTime: string } }[] }[];
+      }>(
         "POST",
         "/me/calendar/getSchedule",
         {
@@ -310,7 +312,14 @@ export class GraphChat {
           availabilityViewInterval: 60,
         },
       );
-      for (const s of r.value ?? []) away.set(s.scheduleId.toLowerCase(), (s.scheduleItems ?? []).some((x) => x.status === "oof"));
+      for (const s of r.value ?? []) {
+        away.set(
+          s.scheduleId.toLowerCase(),
+          (s.scheduleItems ?? [])
+            .filter((x) => x.status === "oof" && x.start && x.end)
+            .map((x): [string, string] => [`${x.start!.dateTime.slice(0, 19)}Z`, `${x.end!.dateTime.slice(0, 19)}Z`]),
+        );
+      }
     }
     return away;
   }

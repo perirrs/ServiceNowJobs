@@ -37,7 +37,7 @@ export interface DirectChannel {
   /** Delete a message the sender sent. */
   unsend?(conversationId: string, messageId: string): Promise<void>;
   /** Who is out of office between two times (by email), from Outlook. */
-  awayBetween?(emails: string[], startIso: string, endIso: string): Promise<Map<string, boolean>>;
+  awayBetween?(emails: string[], startIso: string, endIso: string): Promise<Map<string, [string, string][]>>;
   /** The sender's meetings between two times. */
   meetings?(startIso: string, endIso: string): Promise<{ id: string; subject: string; start: string; end: string; attendees: string[]; chatId: string }[]>;
   /** Post the tracker table in a group chat and pin it. Returns the new message's id. */
@@ -214,6 +214,28 @@ const FIRST_CHASES = [
 ];
 const FOLLOWUP_CHASES = ["Any update on this?", "?", "any update?", "waiting on this one", "pls check above", "hello?"];
 
+/**
+ * What follows from a message once it has really gone out: recording it,
+ * opening the conversation it starts, setting the flags that stop it being
+ * sent again. Held with a draft, and applied only when the draft is sent.
+ */
+type Effect =
+  | { kind: "record"; checkinId: number; text: string }
+  | { kind: "kv"; key: string; value: string }
+  | { kind: "cursor"; checkinId: number }
+  | { kind: "reminded"; checkinId: number }
+  | { kind: "finish"; checkinId: number }
+  | { kind: "openAsk"; personId: number; date: string; text: string; round: Round; topic: string }
+  | {
+      kind: "groupAsk";
+      groupId: number;
+      date: string;
+      text: string;
+      round: Round;
+      asks: { personId: number; topic: string }[];
+    }
+  | { kind: "depAsk"; helperId: number; date: string; groupId: number; text: string; topic: string };
+
 /** A message on its way to staff from the sender's account. */
 interface Outgoing {
   chatId: string;
@@ -224,6 +246,14 @@ interface Outgoing {
   label: string;
   /** The text as written into the check-in record, when that differs from what is sent. */
   recorded?: string;
+  /** Applied once it is really sent. */
+  effects?: Effect[];
+  /** Applied if it is held and then skipped or left to expire, so the same thing is not drafted again. */
+  onSkip?: Effect[];
+  /** Set to the draft's id while it waits, so nothing piles up behind it. */
+  waitKey?: string;
+  /** Another chat whose approve-first setting also covers this message (a group, for a private follow-up). */
+  alsoApprove?: string;
 }
 
 /** The message as it reads in Teams, with each tag shown as "@Name". */
@@ -349,6 +379,18 @@ export class Engine {
     private direct?: DirectChannel,
   ) {
     this.migrateSchedules();
+    this.migrateAskMarks();
+  }
+
+  /** Ask marks used to count messages; they now hold the id of the last message before the ask. */
+  private migrateAskMarks(): void {
+    if (this.store.get("askmark-ids")) return;
+    for (const key of this.store.keys("askmark:")) {
+      const count = Number(this.store.get(key) || 0);
+      const messages = this.store.messages(Number(key.slice("askmark:".length)));
+      this.store.set(key, String(count > 0 ? (messages[count - 1]?.id ?? messages.at(-1)?.id ?? 0) : 0));
+    }
+    this.store.set("askmark-ids", "1");
   }
 
   /** Times saved before there were two daily messages: file each under morning or evening. */
@@ -458,14 +500,26 @@ export class Engine {
   }
 
   /** Message a nominee as part of their check-in. */
-  private async say(person: Person, text: string): Promise<void> {
+  private async say(
+    person: Person,
+    text: string,
+    opts: Pick<Outgoing, "effects" | "onSkip" | "waitKey" | "alsoApprove"> = {},
+  ): Promise<"sent" | "held"> {
     if (this.paused) throw new Error("Paused: nothing is sent to staff");
     const to = this.address(person);
     if (!to) throw new Error(`No chat to reach ${person.email} in`);
-    for (const part of chunk(text)) {
-      if (this.direct) await this.sendAsSender({ chatId: to, text: part, label: displayName(person) });
-      else await this.messenger.send(to, part);
+    const parts = chunk(text);
+    let result: "sent" | "held" = "sent";
+    for (let i = 0; i < parts.length; i++) {
+      const last = i === parts.length - 1;
+      if (this.direct) {
+        result = await this.sendAsSender({ chatId: to, text: parts[i]!, label: displayName(person), ...(last ? opts : { alsoApprove: opts.alsoApprove }) });
+      } else {
+        await this.messenger.send(to, parts[i]!);
+        if (last) await this.applyEffects(opts.effects);
+      }
     }
+    return result;
   }
 
   /**
@@ -473,18 +527,117 @@ export class Engine {
    * the sender can see and delete it; held as a draft for approval when that
    * chat is still on approve-first.
    */
-  private async sendAsSender(out: Outgoing): Promise<void> {
+  private async sendAsSender(out: Outgoing): Promise<"sent" | "held"> {
     if (this.paused) throw new Error("Paused: nothing is sent to staff");
-    if (this.needsApproval(out.chatId)) {
-      await this.queueDraft(out);
-      return;
+    if (this.needsApproval(out.chatId) || (out.alsoApprove && this.needsApproval(out.alsoApprove))) {
+      const id = await this.queueDraft(out);
+      if (out.waitKey) this.store.set(out.waitKey, String(id));
+      return "held";
     }
     await this.sendNow(out);
+    return "sent";
   }
 
-  private async sendNow(out: Outgoing): Promise<void> {
+  /** Send, then apply what follows from it. With `edited`, the record shows the edited text. */
+  private async sendNow(out: Outgoing, edited?: string): Promise<void> {
     const id = await this.direct!.send(out.chatId, out.text, out.mentions, out.quote);
-    this.store.logSent(out.chatId, typeof id === "string" ? id : "", shown(out), out.label, this.now().toISOString());
+    const recordIds = await this.applyEffects(out.effects, edited);
+    this.store.logSent(out.chatId, typeof id === "string" ? id : "", edited ?? shown(out), out.label, this.now().toISOString(), recordIds);
+  }
+
+  /** Apply what follows from a message that went out. Returns the ids of the record rows written. */
+  private async applyEffects(effects: Effect[] = [], edited?: string): Promise<number[]> {
+    const ids: number[] = [];
+    for (const e of effects) {
+      switch (e.kind) {
+        case "record":
+          ids.push(this.store.addMessage(e.checkinId, "bot", edited ?? e.text));
+          break;
+        case "kv":
+          this.store.set(e.key, e.value);
+          break;
+        case "cursor":
+          // Their one-to-one chat is watched only from this message on.
+          this.store.set(`cursor:${e.checkinId}`, new Date(this.now().getTime() - 3000).toISOString());
+          break;
+        case "reminded":
+          this.store.markReminded(e.checkinId);
+          break;
+        case "finish": {
+          const checkin = this.store.checkinById(e.checkinId);
+          const person = checkin ? this.store.personById(checkin.personId) : undefined;
+          if (!checkin || !person || checkin.status !== "open") break;
+          try {
+            await this.finish(person, checkin);
+          } catch (err) {
+            // The closing line did go out. It needs no chase; the note is tried again when the chat is next closed.
+            this.log(`Could not write the note for ${person.email}`, err);
+            this.store.set(`midchase:${checkin.id}`, "1");
+          }
+          break;
+        }
+        case "openAsk": {
+          const checkin = this.store.openCheckin(e.personId, e.date);
+          this.beginAsk(checkin);
+          this.store.set(`via:${checkin.id}`, "");
+          this.store.set(`topic:${checkin.id}`, e.topic);
+          this.store.set(`kind:${checkin.id}`, e.round);
+          ids.push(this.store.addMessage(checkin.id, "bot", edited ?? e.text));
+          this.store.set(`round:${checkin.id}:${e.round}`, "1");
+          break;
+        }
+        case "groupAsk": {
+          for (const ask of e.asks) {
+            const checkin = this.store.openCheckin(ask.personId, e.date);
+            this.beginAsk(checkin);
+            ids.push(this.store.addMessage(checkin.id, "bot", edited ?? e.text));
+            this.store.set(`via:${checkin.id}`, String(e.groupId));
+            this.store.set(`kind:${checkin.id}`, e.round);
+            this.store.set(`round:${checkin.id}:${e.round}`, "1");
+            this.store.set(`topic:${checkin.id}`, ask.topic);
+          }
+          // Start reading from this ask, unless the group is already being read:
+          // then carry on from where the reading had got to, so nothing is skipped.
+          if (!this.store.get(`gasked:${e.groupId}`)) this.store.set(`gcursor:${e.groupId}`, "");
+          this.store.set(`gasked:${e.groupId}`, this.now().toISOString());
+          this.store.set(`gchased:${e.groupId}`, "");
+          break;
+        }
+        case "depAsk": {
+          // Their answer is a check-in like any other, about this piece of work.
+          const existing = this.store.checkin(e.helperId, e.date);
+          if (existing?.status === "open") break;
+          const checkin = this.store.openCheckin(e.helperId, e.date);
+          this.beginAsk(checkin);
+          this.store.set(`via:${checkin.id}`, e.groupId ? String(e.groupId) : "");
+          this.store.set(`kind:${checkin.id}`, "update");
+          this.store.set(`topic:${checkin.id}`, e.topic);
+          ids.push(this.store.addMessage(checkin.id, "bot", edited ?? e.text));
+          break;
+        }
+      }
+    }
+    return ids;
+  }
+
+  /** True while the draft named under `key` is still waiting and under three hours old. A stale key is cleared. */
+  private isWaiting(key: string): boolean {
+    const id = Number(this.store.get(key) || 0);
+    if (!id) return false;
+    const draft = this.store.draft(id);
+    if (draft?.status === "waiting" && this.now().getTime() - Date.parse(draft.at) <= 3 * 3_600_000) return true;
+    this.store.set(key, "");
+    return false;
+  }
+
+  /** Close drafts nobody acted on within three hours, as if skipped. */
+  private async expireDrafts(): Promise<void> {
+    for (const d of this.store.staleDrafts(new Date(this.now().getTime() - 3 * 3_600_000).toISOString())) {
+      this.store.setDraftStatus(d.id, "expired");
+      const out = JSON.parse(d.payload) as Outgoing;
+      await this.applyEffects(out.onSkip);
+      if (out.waitKey && this.store.get(out.waitKey) === String(d.id)) this.store.set(out.waitKey, "");
+    }
   }
 
   /** On approve-first: today only, after being added, or always if set so. */
@@ -521,7 +674,7 @@ export class Engine {
     }
   }
 
-  private async queueDraft(out: Outgoing): Promise<void> {
+  private async queueDraft(out: Outgoing): Promise<number> {
     const id = this.store.addDraft(out.chatId, JSON.stringify(out), out.label, this.now().toISOString());
     const text = shown(out);
     await this.toSender(`Draft for ${out.label}, not sent yet: "${text}". Send **draft send ${id}** or **draft skip ${id}**.`, {
@@ -538,6 +691,7 @@ export class Engine {
         { type: "Action.Submit", title: "Skip", data: { cmd: "draftSkip", id } },
       ],
     });
+    return id;
   }
 
   /** Blockers and pain points from the last seven days, for spotting what keeps coming up. */
@@ -560,8 +714,11 @@ export class Engine {
       const now = this.localNow(hours?.zone ?? this.tz);
       const friday = new Date(`${date}T12:00:00Z`).getUTCDay() === 5;
       if (!friday || now.minutes < (hours ? hours.end : 18 * 60)) return "";
+      // At most one try every 30 minutes if writing it fails.
+      const tried = this.store.get("weeklytry");
+      if (tried && this.now().getTime() - Date.parse(tried) < 30 * 60_000) return "";
+      this.store.set("weeklytry", this.now().toISOString());
     }
-    this.store.set("weekly", date);
     const day = new Date(`${date}T12:00:00Z`).getUTCDay() || 7; // Monday = 1
     const from = new Date(Date.parse(`${date}T00:00:00Z`) - (day - 1) * 86_400_000).toISOString().slice(0, 10);
     const people = this.store.nominees().filter((p) => !this.isAdmin(p));
@@ -570,13 +727,19 @@ export class Engine {
     // Real figures for the week from TalentFlow, when connected.
     const weekFacts = new Map<number, string>();
     if (this.ats) {
-      for (const p of people) {
-        try {
-          weekFacts.set(p.id, describeCounts(await this.ats.stats(p.email, `${from}T00:00:00Z`, this.now().toISOString())));
-        } catch (err) {
-          this.log(`Could not read TalentFlow for ${p.email}`, err);
-        }
-      }
+      // Everyone at once, and never more than ten seconds in all, so a slow ATS cannot hold up the minute's other jobs.
+      const ats = this.ats;
+      const fromIso = this.localMidnightIso(from);
+      const all = Promise.all(
+        people.map(async (p) => {
+          try {
+            weekFacts.set(p.id, describeCounts(await ats.stats(p.email, fromIso, this.now().toISOString())));
+          } catch (err) {
+            this.log(`Could not read TalentFlow for ${p.email}`, err);
+          }
+        }),
+      );
+      await Promise.race([all, new Promise((resolve) => setTimeout(resolve, 10_000))]);
     }
     const rows = people.map((p) => {
       const checkins = this.store.checkinsBetween(p.id, from, date);
@@ -597,11 +760,21 @@ export class Engine {
     try {
       const report = await this.brain.weeklyReport({ from, to: date, material: rows.join("\n\n") });
       await this.notifyAdmins(report);
+      if (!force) this.store.set("weekly", date);
       return report;
     } catch (err) {
       this.log("Could not write the weekly report", err);
       return "";
     }
+  }
+
+  /** Midnight at the start of a YYYY-MM-DD day in the bot's timezone, as an ISO time in UTC. */
+  private localMidnightIso(date: string): string {
+    const now = this.now();
+    let offset = this.localNow().minutes - (now.getUTCHours() * 60 + now.getUTCMinutes());
+    if (offset > 720) offset -= 1440;
+    if (offset < -720) offset += 1440;
+    return new Date(Date.parse(`${date}T00:00:00Z`) - offset * 60_000).toISOString();
   }
 
   /** A copy of the database every day, keeping two weeks. */
@@ -668,7 +841,14 @@ export class Engine {
   private isAway(person: Person): boolean {
     const date = this.today();
     if (this.holidayToday()) return true;
-    if (this.store.get(`oof:${person.id}`) === date) return true;
+    // Out of office now, by the time ranges read from Outlook.
+    const oof = this.store.get(`oof:${person.id}`) || "";
+    if (oof.startsWith("[")) {
+      const now = this.now().toISOString();
+      if ((JSON.parse(oof) as [string, string][]).some(([start, end]) => start <= now && now < end)) return true;
+    } else if (oof === date) {
+      return true;
+    }
     const until = this.store.get(`leave:${person.id}`) || "";
     return !!until && until >= date;
   }
@@ -688,8 +868,7 @@ export class Engine {
         start.toISOString(),
         new Date(start.getTime() + 10 * 3_600_000).toISOString(),
       );
-      const date = this.today();
-      for (const p of people) this.store.set(`oof:${p.id}`, away.get(p.email) ? date : "");
+      for (const p of people) this.store.set(`oof:${p.id}`, JSON.stringify(away.get(p.email) ?? []));
     } catch (err) {
       this.log("Could not read out-of-office from Outlook", err);
     }
@@ -783,10 +962,17 @@ export class Engine {
     const want = name.trim().toLowerCase();
     if (!want) return undefined;
     const people = this.store.nominees();
-    return (
-      people.find((p) => displayName(p).toLowerCase() === want) ??
-      people.find((p) => displayName(p).toLowerCase().split(/\s+/)[0] === want.split(/\s+/)[0]) ??
-      people.find((p) => p.email.split("@")[0]!.split(".")[0] === want.split(/\s+/)[0])
+    // Only a match that can be only one person: a full name, else a first name or email
+    // name that nobody else shares. Anything else is left alone rather than guessed.
+    const only = (list: Person[]) => (list.length === 1 ? list[0] : undefined);
+    const first = want.split(/\s+/)[0];
+    const full = people.filter((p) => displayName(p).toLowerCase() === want);
+    if (full.length) return only(full);
+    if (want.includes(" ")) return undefined; // a full name that is not one of ours, e.g. someone at the client
+    return only(
+      people.filter(
+        (p) => displayName(p).toLowerCase().split(/\s+/)[0] === first || p.email.split("@")[0]!.split(".")[0] === first,
+      ),
     );
   }
 
@@ -818,27 +1004,19 @@ export class Engine {
       const group = this.store.groups().find((g) => g.id === shared);
       const userId = this.store.get(`aadOf:${helper.id}`);
       this.store.set(`depchase:${item.id}`, date);
+      const topic = `${ownerName} is waiting on them for "${item.title}". Find out when it will be ready.`;
+      // Where it goes decides where the answer is read: the group only if they can be tagged there.
+      const inGroup = !!group && !!userId;
+      if (!inGroup && !helper.chatId) continue;
+      const out: Outgoing = inGroup
+        ? { chatId: group!.chatId, text, mentions: [{ userId: userId!, name: displayName(helper) }], label: `${displayName(helper)} in ${group!.name}` }
+        : { chatId: helper.chatId!, text: text.replace("{@0} ", ""), label: displayName(helper) };
+      out.effects = [{ kind: "depAsk", helperId: helper.id, date, groupId: inGroup ? group!.id : 0, text: shown(out), topic }];
       try {
-        if (group && userId) {
-          await this.sendAsSender({ chatId: group.chatId, text, mentions: [{ userId, name: displayName(helper) }], label: `${displayName(helper)} in ${group.name}` });
-        } else if (helper.chatId) {
-          await this.sendAsSender({ chatId: helper.chatId, text: text.replace("{@0} ", ""), label: displayName(helper) });
-        } else {
-          continue;
-        }
+        await this.sendAsSender(out);
       } catch (err) {
         this.log(`Could not ask ${helper.email} about ${item.title}`, err);
         continue;
-      }
-      // Their answer is a check-in like any other, about this piece of work.
-      const existing = this.store.checkin(helper.id, date);
-      if (!existing || existing.status !== "open") {
-        const checkin = this.store.openCheckin(helper.id, date);
-        this.beginAsk(checkin);
-        this.store.set(`via:${checkin.id}`, group ? String(group.id) : "");
-        this.store.set(`kind:${checkin.id}`, "update");
-        this.store.set(`topic:${checkin.id}`, `${ownerName} is waiting on them for "${item.title}". Find out when it will be ready.`);
-        this.store.addMessage(checkin.id, "bot", shown({ chatId: "", text, mentions: [{ userId: userId ?? "", name: displayName(helper) }], label: "" }));
       }
       chased++;
     }
@@ -1182,6 +1360,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
   /** Send today's opening question. Returns false if the person cannot be reached or already has one. */
   async startCheckin(person: Person, force = false, topic = "", round: Round = this.roundNow()): Promise<boolean> {
     if (this.paused) return false;
+    if (this.isWaiting(`pwait:${person.id}`)) return false; // an opening is already waiting for approval
     if (!this.address(person)) return false;
     if (this.isAway(person)) return false;
     const date = this.today();
@@ -1190,23 +1369,31 @@ So you know how it's used: your answers are summarised each day for the CTO and 
 
     await this.refreshMemory(person);
     await this.refreshAtsFacts(person);
+    // The opening is written against a provisional record, which is then put back:
+    // the ask itself is recorded only when the message really goes out.
+    const keys = ["askmark", "via", "topic", "kind", "takeover", "midchase", "lastwhere"];
+    const before = existing ? keys.map((k) => [k, this.store.get(`${k}:${existing.id}`) ?? ""] as const) : [];
     const checkin = this.store.openCheckin(person.id, date);
     this.beginAsk(checkin);
     this.store.set(`via:${checkin.id}`, "");
     this.store.set(`topic:${checkin.id}`, topic);
     this.store.set(`kind:${checkin.id}`, round);
+    let reply: string;
     try {
-      const turn = await this.brain.nextTurn(this.context(person, checkin, false, false, true));
-      // Deliver first, record second: the record must only show what was really sent.
-      await this.say(person, turn.reply);
-      this.store.addMessage(checkin.id, "bot", turn.reply);
-      this.store.set(`round:${checkin.id}:${round}`, "1");
-    } catch (err) {
-      // Nothing reached the person, so leave today free for another attempt.
-      if (existing) this.store.setCheckinStatus(checkin.id, existing.status);
-      else this.store.discardEmptyCheckin(checkin.id);
-      throw err;
+      reply = (await this.brain.nextTurn(this.context(person, checkin, false, false, true))).reply;
+    } finally {
+      if (existing) {
+        this.store.setCheckinStatus(checkin.id, existing.status);
+        for (const [k, v] of before) this.store.set(`${k}:${existing.id}`, v);
+        if (existing.reminded) this.store.markReminded(existing.id);
+      } else {
+        this.store.discardEmptyCheckin(checkin.id);
+      }
     }
+    await this.say(person, reply, {
+      waitKey: `pwait:${person.id}`,
+      effects: [{ kind: "openAsk", personId: person.id, date, text: reply, round, topic }],
+    });
     return true;
   }
 
@@ -1331,6 +1518,8 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     if (this.store.get(`takeover:${checkin.id}`)) return;
     // Paused, or outside office hours: what they said is kept, and nothing is sent back.
     if (this.paused || !this.inOfficeHours()) return;
+    // A reply is waiting for approval: what they say now is recorded, and answered after that.
+    if (this.isWaiting(`draftwait:${checkin.id}`)) return;
 
     if (!this.config.humanDelay) {
       const draft = await this.draftReply(person, checkin, { text, fromGroup, messageId, ids: [recordId] });
@@ -1362,6 +1551,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     const checkin = this.store.checkin(personId, this.today());
     if (!person || !checkin || checkin.id !== checkinId || checkin.status !== "open") return null;
     if (this.store.get(`takeover:${checkin.id}`) || this.paused || !this.inOfficeHours()) return null;
+    if (this.isWaiting(`draftwait:${checkin.id}`)) return null;
     return { person, checkin };
   }
 
@@ -1424,33 +1614,36 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     const { turn, incoming } = draft;
     // They wrote again while this was being "typed": the newer round will answer everything.
     if (this.store.messages(checkin.id).filter((m) => m.role === "user").length !== draft.userCount) return;
+    // Recording it, and closing the conversation when this was the last word, happen only
+    // once it has really gone out (straight away, or when its draft is sent).
+    const follows: Effect[] = [{ kind: "record", checkinId: checkin.id, text: turn.reply }];
+    if (turn.done) follows.push({ kind: "finish", checkinId: checkin.id });
     try {
       // Answer where they wrote. In a group that means in the group, tagged,
       // unless this reply has to stay out of it.
       const inGroup =
         incoming.fromGroup &&
         !turn.private &&
-        (await this.sayInGroup(person, checkin, turn.reply, { id: incoming.messageId, text: incoming.text }));
-      if (!inGroup) await this.say(person, turn.reply);
-      this.store.set(`lastwhere:${checkin.id}`, inGroup ? "group" : "direct");
-      if (incoming.fromGroup && !inGroup) {
-        // Their one-to-one chat is watched only from this private message on, so
-        // nothing said there earlier is mistaken for part of the check-in.
-        this.store.set(`cursor:${checkin.id}`, new Date(this.now().getTime() - 3000).toISOString());
+        (await this.sayInGroup(person, checkin, turn.reply, { id: incoming.messageId, text: incoming.text }, [
+          { kind: "kv", key: `lastwhere:${checkin.id}`, value: "group" },
+          ...follows,
+        ]));
+      if (!inGroup) {
+        const group = incoming.fromGroup ? this.store.groups().find((g) => String(g.id) === this.store.get(`via:${checkin.id}`)) : undefined;
+        await this.say(person, turn.reply, {
+          waitKey: `draftwait:${checkin.id}`,
+          // A private follow-up to a group conversation is covered by the group's approve-first.
+          alsoApprove: group?.chatId,
+          effects: [
+            { kind: "kv", key: `lastwhere:${checkin.id}`, value: "direct" },
+            ...(incoming.fromGroup ? [{ kind: "cursor" as const, checkinId: checkin.id }] : []),
+            ...follows,
+          ],
+        });
       }
-      this.store.addMessage(checkin.id, "bot", turn.reply);
     } catch (err) {
       this.log(`Check-in reply failed for ${person.email}`, err);
       await this.replyFailed(person);
-      return;
-    }
-    if (!turn.done) return;
-    try {
-      await this.finish(person, checkin);
-    } catch (err) {
-      // The closing line did go out. It needs no chase; the note is tried again when the chat is next closed.
-      this.log(`Could not write the note for ${person.email}`, err);
-      this.store.set(`midchase:${checkin.id}`, "1");
     }
   }
 
@@ -1473,7 +1666,8 @@ So you know how it's used: your answers are summarised each day for the CTO and 
    * said from here on, and flags left by the earlier round are cleared.
    */
   private beginAsk(checkin: Checkin): void {
-    this.store.set(`askmark:${checkin.id}`, String(this.store.messages(checkin.id).length));
+    // Everything after the last message so far belongs to this ask.
+    this.store.set(`askmark:${checkin.id}`, String(this.store.messages(checkin.id).at(-1)?.id ?? 0));
     for (const flag of ["takeover", "midchase", "lastwhere"]) this.store.set(`${flag}:${checkin.id}`, "");
     this.store.resetReminded(checkin.id);
     const waiting = this.pending.get(checkin.id);
@@ -1483,7 +1677,8 @@ So you know how it's used: your answers are summarised each day for the CTO and 
 
   /** The messages of a check-in since it was last asked. */
   private sinceAsk(checkinId: number): ChatMessage[] {
-    return this.store.messages(checkinId).slice(Number(this.store.get(`askmark:${checkinId}`) || 0));
+    const mark = Number(this.store.get(`askmark:${checkinId}`) || 0);
+    return this.store.messages(checkinId).filter((m) => (m.id ?? 0) > mark);
   }
 
   /** Close a check-in nobody answered: back to "completed" if an earlier round today already produced a note. */
@@ -1552,7 +1747,14 @@ So you know how it's used: your answers are summarised each day for the CTO and 
    * with them tagged in front. False if that is not possible (no group, or
    * the person cannot be tagged), so the caller can fall back to one to one.
    */
-  private async sayInGroup(person: Person, checkin: Checkin, text: string, replyingTo?: { id: string; text: string }): Promise<boolean> {
+  private async sayInGroup(
+    person: Person,
+    checkin: Checkin,
+    text: string,
+    replyingTo?: { id: string; text: string },
+    effects: Effect[] = [],
+    onSkip: Effect[] = [],
+  ): Promise<boolean> {
     const group = this.store.groups().find((g) => String(g.id) === this.store.get(`via:${checkin.id}`));
     const userId = this.store.get(`aadOf:${person.id}`);
     if (!group || !userId || !this.direct) return false;
@@ -1577,6 +1779,9 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       quote: layout === "tagOnly" ? undefined : quote,
       label: `${name} in ${group.name}`,
       recorded: text,
+      effects,
+      onSkip,
+      waitKey: `draftwait:${checkin.id}`,
     });
     return true;
   }
@@ -1609,13 +1814,17 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       if (minMinutes > 0 && this.now().getTime() - lastAt < minMinutes * 60_000) continue;
       const person = this.store.personById(checkin.personId);
       if (!person?.nominated || !this.address(person) || this.isAway(person)) continue;
+      if (this.isWaiting(`draftwait:${checkin.id}`)) continue;
       try {
         const nudge = this.nudgeText("followup");
+        const follows: Effect[] = [
+          { kind: "record", checkinId: checkin.id, text: nudge },
+          { kind: "kv", key: `midchase:${checkin.id}`, value: "1" },
+        ];
+        const onSkip: Effect[] = [{ kind: "kv", key: `midchase:${checkin.id}`, value: "1" }];
         const inGroup =
-          this.store.get(`lastwhere:${checkin.id}`) === "group" && (await this.sayInGroup(person, checkin, nudge));
-        if (!inGroup) await this.say(person, nudge);
-        this.store.addMessage(checkin.id, "bot", nudge);
-        this.store.set(`midchase:${checkin.id}`, "1");
+          this.store.get(`lastwhere:${checkin.id}`) === "group" && (await this.sayInGroup(person, checkin, nudge, undefined, follows, onSkip));
+        if (!inGroup) await this.say(person, nudge, { effects: follows, onSkip, waitKey: `draftwait:${checkin.id}` });
         chased++;
       } catch (err) {
         this.log(`Could not chase ${person.email}`, err);
@@ -1684,12 +1893,16 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         if (this.sinceAsk(checkin.id).some((m) => m.role === "user")) {
           return `${name} is in the middle of replying. Their summary will appear here when the conversation finishes.`;
         }
+        if (this.isWaiting(`draftwait:${checkin.id}`)) return `A message to ${name} is already waiting for your approval.`;
         const nudge = this.nudgeText();
-        await this.say(target, nudge);
-        this.store.addMessage(checkin.id, "bot", nudge);
-        this.store.markReminded(checkin.id);
-        return `Asked ${name} again.`;
+        const result = await this.say(target, nudge, {
+          effects: [{ kind: "record", checkinId: checkin.id, text: nudge }, { kind: "reminded", checkinId: checkin.id }],
+          onSkip: [{ kind: "reminded", checkinId: checkin.id }],
+          waitKey: `draftwait:${checkin.id}`,
+        });
+        return result === "held" ? `Drafted a reminder to ${name} for your approval.` : `Asked ${name} again.`;
       }
+      if (this.isWaiting(`pwait:${target.id}`)) return `A message to ${name} is already waiting for your approval.`;
       await this.startCheckin(target, true, topic);
       return `Asked ${name} for an update. Their summary will appear here when the conversation finishes.`;
     });
@@ -1798,6 +2011,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     round: Round = this.roundNow(),
   ): Promise<{ asked: number; message: string }> {
     if (this.paused) return { asked: 0, message: `Paused: nothing was posted in ${group.name}. Send **resume** first.` };
+    if (this.isWaiting(`gwait:${group.id}`)) return { asked: 0, message: `A message for ${group.name} is already waiting for your approval.` };
     const date = this.today();
     const due = (await this.syncGroup(group)).filter((p) => {
       // Admins in the group see the question like everyone else, but are not
@@ -1897,30 +2111,29 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         ...(alsoTag.length ? [`${alsoTag.map((_, i) => name(tagged.length + i)).join(" ")} please share your update.`] : []),
       ].join("\n");
     const text = lines((i) => `@${displayName(mentioned[i]!.person)}`); // as it reads, for our record
-    await this.sendAsSender({
+    const result = await this.sendAsSender({
       chatId: group.chatId,
       text: lines((i) => `{@${i}}`),
       mentions: mentioned.map((t) => ({ userId: t.userId, name: displayName(t.person) })),
       label: group.name,
+      waitKey: `gwait:${group.id}`,
+      effects: [
+        {
+          kind: "groupAsk",
+          groupId: group.id,
+          date,
+          text,
+          round,
+          asks: due.map((person) => {
+            const own = tagged.find((t) => t.person.id === person.id)?.question;
+            return { personId: person.id, topic: [topic, own ? `In the group they were asked directly: "${own}"` : ""].filter(Boolean).join("\n") };
+          }),
+        },
+      ],
     });
-    for (const person of due) {
-      const checkin = this.store.openCheckin(person.id, date);
-      this.beginAsk(checkin);
-      this.store.addMessage(checkin.id, "bot", text);
-      this.store.set(`via:${checkin.id}`, String(group.id));
-      this.store.set(`kind:${checkin.id}`, round);
-      this.store.set(`round:${checkin.id}:${round}`, "1");
-      const own = tagged.find((t) => t.person.id === person.id)?.question;
-      this.store.set(
-        `topic:${checkin.id}`,
-        [topic, own ? `In the group they were asked directly: "${own}"` : ""].filter(Boolean).join("\n"),
-      );
+    if (result === "held") {
+      return { asked: 0, message: `Drafted the message for **${group.name}** (${due.length} people) for your approval: "${text}"` };
     }
-    // Start reading from this ask, unless the group is already being read:
-    // then carry on from where the reading had got to, so nothing is skipped.
-    if (!this.store.get(`gasked:${group.id}`)) this.store.set(`gcursor:${group.id}`, "");
-    this.store.set(`gasked:${group.id}`, this.now().toISOString());
-    this.store.set(`gchased:${group.id}`, "");
     return {
       asked: due.length,
       message: `Posted in **${group.name}** (${due.length} people): "${text}"\n\nSummaries will appear here as each person finishes.`,
@@ -1964,37 +2177,46 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     const date = this.today();
     for (const { group, askedAt } of this.listeningGroups()) {
       const minutes = (this.now().getTime() - Date.parse(askedAt)) / 60_000;
-      const silent = this.store.groupMembers(group.id).filter((p) => {
+      const unanswered = this.store.groupMembers(group.id).filter((p) => {
         const c = this.store.checkin(p.id, date);
-        return (
-          !this.isAway(p) &&
-          c?.status === "open" &&
-          this.store.get(`via:${c.id}`) === String(group.id) &&
-          !this.sinceAsk(c.id).some((m) => m.role === "user")
-        );
+        return c?.status === "open" && this.store.get(`via:${c.id}`) === String(group.id) && !this.sinceAsk(c.id).some((m) => m.role === "user");
       });
+      const silent = unanswered.filter((p) => !this.isAway(p));
 
-      if (silent.length && !this.store.get(`gchased:${group.id}`) && minutes >= this.config.chaseAfterMinutes && this.inOfficeHours()) {
+      if (
+        silent.length &&
+        !this.store.get(`gchased:${group.id}`) &&
+        !this.isWaiting(`gchasewait:${group.id}`) &&
+        minutes >= this.config.chaseAfterMinutes &&
+        this.inOfficeHours()
+      ) {
         const nudge = this.nudgeText();
         const mentions = silent
           .map((p) => ({ userId: this.store.get(`aadOf:${p.id}`) ?? "", name: displayName(p) }))
           .filter((m) => m.userId);
+        const effects: Effect[] = [{ kind: "kv", key: `gchased:${group.id}`, value: "1" }];
+        for (const p of silent) {
+          const c = this.store.checkin(p.id, date)!;
+          effects.push({ kind: "record", checkinId: c.id, text: nudge }, { kind: "reminded", checkinId: c.id });
+        }
         try {
-          await this.sendAsSender({ chatId: group.chatId, text: nudge, mentions, label: group.name });
-          this.store.set(`gchased:${group.id}`, "1");
-          for (const p of silent) {
-            const c = this.store.checkin(p.id, date)!;
-            this.store.addMessage(c.id, "bot", nudge);
-            this.store.markReminded(c.id);
-          }
+          await this.sendAsSender({
+            chatId: group.chatId,
+            text: nudge,
+            mentions,
+            label: group.name,
+            effects,
+            onSkip: [{ kind: "kv", key: `gchased:${group.id}`, value: "1" }],
+            waitKey: `gchasewait:${group.id}`,
+          });
         } catch (err) {
           this.log(`Could not chase in ${group.name}`, err);
         }
       }
 
       if (minutes >= this.config.groupWindowMinutes) {
-        // Stop reading the group. Whoever said nothing is marked as not having replied.
-        for (const p of silent) this.closeUnanswered(this.store.checkin(p.id, date)!);
+        // Stop reading the group. Whoever said nothing (on leave or not) is marked as not having replied.
+        for (const p of unanswered) this.closeUnanswered(this.store.checkin(p.id, date)!);
         // Follow-ups happen in the group, so keep reading it until every conversation from this ask is closed.
         const stillTalking = this.store.groupMembers(group.id).some((p) => {
           const c = this.store.checkin(p.id, date);
@@ -2272,6 +2494,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     await this.noteProgress();
     await this.refreshTrackers();
     await this.pushSentLog();
+    await this.expireDrafts();
     await this.chaseDependencies();
     await this.escalate();
     await this.refreshLeave();
@@ -2699,11 +2922,14 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       if (minMinutes > 0 && this.now().getTime() - sentAt < minMinutes * 60_000) continue;
       const person = this.store.personById(checkin.personId);
       if (!person?.nominated || this.isAway(person)) continue;
+      if (this.isWaiting(`draftwait:${checkin.id}`)) continue;
       try {
         const nudge = this.nudgeText();
-        await this.say(person, nudge);
-        this.store.addMessage(checkin.id, "bot", nudge);
-        this.store.markReminded(checkin.id);
+        await this.say(person, nudge, {
+          effects: [{ kind: "record", checkinId: checkin.id, text: nudge }, { kind: "reminded", checkinId: checkin.id }],
+          onSkip: [{ kind: "reminded", checkinId: checkin.id }],
+          waitKey: `draftwait:${checkin.id}`,
+        });
         nudged++;
       } catch (err) {
         this.log(`Could not remind ${person.email}`, err);
@@ -2888,7 +3114,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
             return await reply(`Teams would not let me delete it. Please delete it yourself in the chat with ${message.label}.`);
           }
           this.store.markSentDeleted(message.id);
-          this.store.rewriteBotText(this.today(), message.text, null);
+          this.store.deleteMessages(message.recordIds);
           return await reply(`Deleted: "${message.text}" (${message.label}).`);
         }
 
@@ -2900,28 +3126,45 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           if (draft.status !== "waiting") return await reply(`That draft was already ${draft.status}.`);
           const out = JSON.parse(draft.payload) as Outgoing;
           const original = shown(out);
+          const release = () => {
+            if (out.waitKey && this.store.get(out.waitKey) === String(draft.id)) this.store.set(out.waitKey, "");
+          };
           if (m[1]!.toLowerCase() === "skip") {
+            // Nothing was recorded for it, so there is nothing to undo; only stop it being drafted again.
             this.store.setDraftStatus(draft.id, "skipped");
-            for (const t of new Set([original, out.text, out.recorded ?? ""])) if (t) this.store.rewriteBotText(this.today(), t, null);
+            await this.applyEffects(out.onSkip);
+            release();
             return await reply(`Skipped. Nothing was sent to ${draft.label}.`);
           }
           if (this.paused) return await reply("Paused: send **resume** first.");
           if (this.now().getTime() - Date.parse(draft.at) > 3 * 3_600_000) {
             this.store.setDraftStatus(draft.id, "expired");
+            await this.applyEffects(out.onSkip);
+            release();
             return await reply("That draft is more than three hours old, so I have not sent it.");
           }
           const edited = m[3]!.trim();
           let final = out;
+          let recordAs: string | undefined;
           if (edited && edited !== original) {
             // Keep a tag only where its "@Name" is still in the text.
             const mentions = (out.mentions ?? []).filter((x) => edited.includes(`@${x.name}`));
             let text = edited;
             mentions.forEach((x, i) => (text = text.replace(`@${x.name}`, `{@${i}}`)));
             final = { ...out, text, mentions };
-            for (const t of new Set([original, out.text, out.recorded ?? ""])) if (t) this.store.rewriteBotText(this.today(), t, edited);
+            recordAs = edited;
           }
-          await this.sendNow(final);
+          // Claimed before sending, so a second press (or the other admin) cannot send it twice.
+          this.store.setDraftStatus(draft.id, "sending");
+          try {
+            await this.sendNow(final, recordAs);
+          } catch (err) {
+            this.store.setDraftStatus(draft.id, "waiting");
+            this.log("Could not send a draft", err);
+            return await reply("Teams did not take it. The draft is still waiting; try again in a moment.");
+          }
           this.store.setDraftStatus(draft.id, "sent");
+          release();
           return await reply(`Sent to ${draft.label}.`);
         }
 

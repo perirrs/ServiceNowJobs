@@ -2146,7 +2146,7 @@ test("blocked two days or overdue three days goes to the admins once, with a sug
 test("people out of office, on leave or on a holiday are not asked or chased", async () => {
   const g = groupSetup();
   const direct = (g.engine as unknown as { direct: Record<string, unknown> }).direct;
-  direct.awayBetween = async () => new Map([[PRIYA, true]]);
+  direct.awayBetween = async () => new Map([[PRIYA, [["2026-11-16T00:00:00Z", "2026-11-17T00:00:00Z"]]]]);
   await g.engine.handleMessage(g.cto, "add group Recruitment Team");
   await g.engine.refreshLeave();
   await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
@@ -2293,4 +2293,151 @@ test("if TalentFlow cannot be reached the check-in goes ahead without figures", 
   await t.engine.handleMessage(t.id(CTO), "ask priya");
   assert.equal(t.brain.turns.at(-1)!.facts, undefined);
   assert.equal(t.to(PRIYA).length > 0, true);
+});
+
+// ---------- held drafts: nothing counts until it has really gone out ----------
+
+function draftIds(admin: string[]): number[] {
+  return admin.flatMap((m) => [...m.matchAll(/draft send (\d+)/g)].map((x) => Number(x[1])));
+}
+
+test("a group ask held for approval opens nothing; replies are not taken as answers until it is sent", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "approve Recruitment Team");
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  assert.match(g.admin.at(-1)!, /Drafted the message for \*\*Recruitment Team\*\*/);
+  const priya = g.store.personByEmail(PRIYA)!;
+  assert.equal(g.store.checkin(priya.id, "2026-11-16"), undefined); // nothing opened
+  assert.equal(g.engine.listeningGroups().length, 0);
+
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  assert.match(g.admin.at(-1)!, /already waiting for your approval/); // no second draft
+
+  const [id] = draftIds(g.admin);
+  await g.engine.handleMessage(g.cto, `draft skip ${id}`);
+  assert.equal(g.store.checkin(priya.id, "2026-11-16"), undefined);
+  assert.equal(g.engine.listeningGroups().length, 0);
+  await g.engine.handleGroupReply("u-priya", "random chat", "m1", g.store.groups()[0]!.id);
+  assert.equal(g.brain.turns.length, 0);
+
+  // Sent this time: now it is recorded and the group is read.
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  const second = draftIds(g.admin).at(-1)!;
+  await g.engine.handleMessage(g.cto, `draft send ${second}`);
+  assert.equal(g.store.checkin(priya.id, "2026-11-16")!.status, "open");
+  assert.equal(g.engine.listeningGroups().length, 1);
+});
+
+test("a private follow-up to a group on approve-first is held too, and the conversation waits for it", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team"); // sent: not on approve yet
+  await g.engine.handleMessage(g.cto, "approve Recruitment Team");
+  g.brain.doneAfterUserMessages = 99;
+  g.brain.privateNext = true;
+  await g.engine.handleGroupReply("u-priya", "was unwell", "m1");
+  assert.equal(g.sent.filter((s) => s.to === `chat-${PRIYA}`).length, 0); // held, not sent one to one
+  const priya = g.store.personByEmail(PRIYA)!;
+  const checkin = g.store.checkin(priya.id, "2026-11-16")!;
+  assert.ok(!g.store.messages(checkin.id).some((m) => m.text === "Private question"));
+
+  const turns = g.brain.turns.length;
+  await g.engine.handleGroupReply("u-priya", "also the deck is late", "m2");
+  assert.equal(g.brain.turns.length, turns); // recorded, not answered while the reply waits
+  assert.equal(await g.engine.chaseFollowUps(0), 0);
+
+  const id = draftIds(g.admin).at(-1)!;
+  await g.engine.handleMessage(g.cto, `draft send ${id}`);
+  assert.equal(g.sent.at(-1)!.to, `chat-${PRIYA}`);
+  assert.ok(g.store.messages(checkin.id).some((m) => m.role === "bot" && m.text === "Private question"));
+});
+
+test("a skipped chase is not drafted again, and a draft cannot be sent twice", async () => {
+  const t = setup({ personal: true });
+  await t.engine.handleInstall(t.id(CTO));
+  await t.engine.handleMessage(t.id(CTO), `add ${PRIYA}`);
+  await t.engine.handleMessage(t.id(CTO), "ask priya");
+  await t.engine.handleMessage(t.id(CTO), "approve priya");
+  assert.equal(await t.engine.runReminders(0), 1);
+  assert.equal(await t.engine.runReminders(0), 0); // waiting: not drafted again
+  const id = draftIds(t.to(CTO)).at(-1)!;
+  await t.engine.handleMessage(t.id(CTO), `draft skip ${id}`);
+  assert.equal(await t.engine.runReminders(0), 0); // skipped counts as reminded
+  await t.engine.handleMessage(t.id(CTO), `draft send ${id}`);
+  assert.match(t.to(CTO).at(-1)!, /already skipped/);
+});
+
+test("unsend removes exactly what that message wrote into the record", async () => {
+  const t = setup({ personal: true });
+  await t.engine.handleInstall(t.id(CTO));
+  const direct = (t.engine as unknown as { direct: Record<string, unknown> }).direct;
+  let n = 0;
+  const realSend = direct.send as (...a: unknown[]) => Promise<void>;
+  direct.send = async (...a: unknown[]) => {
+    await realSend(...a);
+    return `m${++n}`;
+  };
+  direct.unsend = async () => undefined;
+  await t.engine.handleMessage(t.id(CTO), `add ${PRIYA}`);
+  await t.engine.handleMessage(t.id(CTO), "add ravi@acme.test");
+  await t.engine.handleMessage(t.id(CTO), "ask all");
+  await t.engine.runReminders(0); // the same chase text can go to both
+  const priya = t.store.personByEmail(PRIYA)!;
+  const ravi = t.store.personByEmail("ravi@acme.test")!;
+  const priyaRows = t.store.messages(t.store.checkin(priya.id, "2026-11-16")!.id).map((m) => m.id);
+  const chaseToPriya = t.store.sentSince("").find((m) => m.recordIds.length && m.recordIds.every((id) => priyaRows.includes(id)) && t.store.messages(t.store.checkin(priya.id, "2026-11-16")!.id).find((x) => x.id === m.recordIds[0])!.text === t.store.messages(t.store.checkin(priya.id, "2026-11-16")!.id).at(-1)!.text)!;
+  const raviBefore = t.store.messages(t.store.checkin(ravi.id, "2026-11-16")!.id).length;
+  await t.engine.handleMessage(t.id(CTO), `unsend ${chaseToPriya.id}`);
+  assert.ok(!t.store.messages(t.store.checkin(priya.id, "2026-11-16")!.id).some((m) => chaseToPriya.recordIds.includes(m.id!)));
+  assert.equal(t.store.messages(t.store.checkin(ravi.id, "2026-11-16")!.id).length, raviBefore); // untouched
+});
+
+test("a dependency chase sent one to one is read one to one", async () => {
+  const t = trackerSetup();
+  await t.engine.handleMessage(t.cto, "add group Recruitment Team");
+  const ravi = t.store.personByEmail("ravi@acme.test")!;
+  const priya = t.store.personByEmail(PRIYA)!;
+  t.store.upsertPerson(PRIYA, { chatId: `chat-${PRIYA}` });
+  t.store.set(`aadOf:${priya.id}`, ""); // cannot be tagged in the group
+  const id = t.store.addItem(ravi.id, "Website content", "blocked", "waiting", "2026-11-15");
+  t.store.setItemFlow(id, "blocked", "Priya", "2026-11-15");
+  assert.equal(await t.engine.chaseDependencies(), 1);
+  assert.equal(t.sent.at(-1)!.to, `chat-${PRIYA}`);
+  const checkin = t.store.checkin(priya.id, "2026-11-16")!;
+  assert.equal(t.store.get(`via:${checkin.id}`), "");
+  assert.ok(t.engine.openDirectCheckins().some((c) => c.person.id === priya.id));
+});
+
+test("a colleague is chased only when the name can be only one person", async () => {
+  const t = trackerSetup();
+  await t.engine.handleMessage(t.cto, "add group Recruitment Team");
+  t.store.upsertPerson("priya.k@acme.test", { name: "Priya Kumar" });
+  t.store.setNominated(t.store.personByEmail("priya.k@acme.test")!.id, true);
+  const ravi = t.store.personByEmail("ravi@acme.test")!;
+  const a = t.store.addItem(ravi.id, "Copy", "blocked", "w", "2026-11-15");
+  t.store.setItemFlow(a, "blocked", "Priya", "2026-11-15"); // two Priyas
+  const b = t.store.addItem(ravi.id, "Signoff", "blocked", "w", "2026-11-15");
+  t.store.setItemFlow(b, "blocked", "Rahul Sharma", "2026-11-15"); // someone at the client
+  assert.equal(await t.engine.chaseDependencies(), 0);
+});
+
+test("out of office counts only while it lasts", async () => {
+  const g = groupSetup();
+  const direct = (g.engine as unknown as { direct: Record<string, unknown> }).direct;
+  direct.awayBetween = async () => new Map([[PRIYA, [["2026-11-16T20:00:00Z", "2026-11-16T23:00:00Z"]]]]);
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.refreshLeave();
+  await g.engine.handleMessage(g.cto, "ask priya"); // 17:00: not away yet
+  assert.match(g.admin.at(-1)!, /Asked Priya Rao/);
+});
+
+test("asking for the weekly report by hand does not cancel Friday's", async () => {
+  const t = setup();
+  await onboard(t);
+  t.setDate("2026-11-20T10:00:00Z");
+  await t.engine.handleMessage(t.id(CTO), "weekly");
+  t.setDate("2026-11-20T18:30:00Z");
+  await t.engine.runWeekly();
+  assert.equal(t.brain.weeklyInputs.length, 2);
 });
