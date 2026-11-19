@@ -77,6 +77,8 @@ const ADMIN_HELP = `**Daily Check-in: what you can type**
 - **leave** priya until 2026-11-25 (or **today**, or **off**): I will not ask or chase them. People out of office in Outlook are skipped automatically.
 - **holiday** 2026-12-25 Christmas: nobody is asked that day. **holidays** lists them.
 - Before a meeting with people I follow, you get a short brief on each of them; after it, action items agreed in the meeting chat go on the tracker.
+- **weekly**: the week's report now (plan against done, what keeps coming up). It also arrives on Fridays after office hours.
+- **usage**: what the AI has cost each day this week. Today's figure is also on the board.
 - **pause**: stop sending anything to anyone, at once. **resume** starts again.
 - **board** (or **menu**): the team board, with who has replied, who is blocked, and buttons for everything below
 - **add** name@company.com: start asking someone for updates. I first read your whole chat history with them and put their work on the tracker.
@@ -231,6 +233,14 @@ function shown(out: Outgoing): string {
 
 /** Whole days from one YYYY-MM-DD date to another. */
 const daysBetween = (from: string, to: string) => Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
+
+/** Dollars per million tokens, input and output. */
+const PRICES: Record<string, [number, number]> = {
+  "claude-haiku-5-5": [0.1, 0.5],
+  "claude-sonnet-5-5": [2, 10],
+  "claude-opus-5-5": [4, 20],
+  "claude-fable-5-2": [8, 40],
+};
 
 const clamp = (n: number, low: number, high: number) => Math.min(high, Math.max(low, n));
 /** Plus or minus a quarter, so replies do not arrive like clockwork. */
@@ -526,6 +536,89 @@ export class Engine {
         { type: "Action.Submit", title: "Skip", data: { cmd: "draftSkip", id } },
       ],
     });
+  }
+
+  /** Blockers and pain points from the last seven days, for spotting what keeps coming up. */
+  private recentIssues(): string {
+    const since = new Date(Date.parse(`${this.today()}T00:00:00Z`) - 6 * 86_400_000).toISOString().slice(0, 10);
+    const lines: string[] = [];
+    for (const n of this.store.notesSince(since)) {
+      const person = this.store.personById(n.personId);
+      for (const x of [...n.blockers, ...n.painPoints]) lines.push(`- ${n.date} ${person ? displayName(person) : "?"}: ${x}`);
+    }
+    return lines.slice(0, 80).join("\n");
+  }
+
+  /** The Friday report. Runs once on Fridays after office hours (or 18:00), or whenever asked. */
+  async runWeekly(force = false): Promise<string> {
+    const date = this.today();
+    if (!force) {
+      if (this.store.get("weekly") === date) return "";
+      const hours = this.officeHours();
+      const now = this.localNow(hours?.zone ?? this.tz);
+      const friday = new Date(`${date}T12:00:00Z`).getUTCDay() === 5;
+      if (!friday || now.minutes < (hours ? hours.end : 18 * 60)) return "";
+    }
+    this.store.set("weekly", date);
+    const day = new Date(`${date}T12:00:00Z`).getUTCDay() || 7; // Monday = 1
+    const from = new Date(Date.parse(`${date}T00:00:00Z`) - (day - 1) * 86_400_000).toISOString().slice(0, 10);
+    const people = this.store.nominees().filter((p) => !this.isAdmin(p));
+    if (!people.length) return "";
+
+    const rows = people.map((p) => {
+      const checkins = this.store.checkinsBetween(p.id, from, date);
+      const notes = this.store.notesSince(from).filter((n) => n.personId === p.id);
+      const planned = notes.reduce((sum, n) => sum + (n.planToday?.length ?? 0), 0);
+      const active = this.store.activeItems(p.id);
+      return [
+        `# ${displayName(p)}${p.profile ? ` (${p.profile})` : ""}`,
+        `Replied on ${new Set(checkins.filter((c) => c.replied).map((c) => c.date)).size} of ${new Set(checkins.map((c) => c.date)).size} days asked.`,
+        `Planned in the mornings: ${planned} things. Finished this week: ${this.store.doneSince(p.id, from).map((i) => i.title).join("; ") || "none recorded"}.`,
+        `Overdue now: ${active.filter((i) => i.due && i.due < date).map((i) => i.title).join("; ") || "none"}. Blocked now: ${active.filter((i) => i.status === "blocked").map((i) => `${i.title}${i.waitingOn ? ` (waiting on ${i.waitingOn})` : ""}`).join("; ") || "none"}.`,
+        notes.length ? `Notes:\n${notes.map((n) => `## ${n.date}\n${renderNote(n)}`).join("\n")}` : "No notes this week.",
+      ].join("\n");
+    });
+    try {
+      const report = await this.brain.weeklyReport({ from, to: date, material: rows.join("\n\n") });
+      await this.notifyAdmins(report);
+      return report;
+    } catch (err) {
+      this.log("Could not write the weekly report", err);
+      return "";
+    }
+  }
+
+  /** A copy of the database every day, keeping two weeks. */
+  private backupDaily(): void {
+    const date = this.today();
+    if (this.store.get("backupday") === date) return;
+    this.store.set("backupday", date);
+    try {
+      this.store.backup(date);
+    } catch (err) {
+      this.log("Could not back up the database", err);
+    }
+  }
+
+  /** Tokens used by the AI, kept per day and per model. */
+  recordUsage(model: string, input: number, output: number): void {
+    const key = `usage:${this.today()}:${model}`;
+    const [i, o] = (this.store.get(key) || "0,0").split(",").map(Number);
+    this.store.set(key, `${(i ?? 0) + input},${(o ?? 0) + output}`);
+  }
+
+  /** "≈ $0.04 (claude-haiku-5-5 210k in, 12k out)" for a day. */
+  private usageLine(date: string): string {
+    const rows = this.store.keys(`usage:${date}:`).map((k) => {
+      const model = k.slice(`usage:${date}:`.length);
+      const [i, o] = (this.store.get(k) || "0,0").split(",").map(Number);
+      const [pi, po] = PRICES[model] ?? [2, 10];
+      return { model, i: i ?? 0, o: o ?? 0, cost: ((i ?? 0) * pi + (o ?? 0) * po) / 1_000_000 };
+    });
+    if (!rows.length) return "";
+    const k = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
+    const total = rows.reduce((sum, r) => sum + r.cost, 0);
+    return `≈ $${total.toFixed(2)} (${rows.map((r) => `${r.model.replace("claude-", "")} ${k(r.i)} in, ${k(r.o)} out`).join(" · ")})`;
   }
 
   /** A public holiday today, by name, or "". */
@@ -2142,6 +2235,8 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     await this.escalate();
     await this.refreshLeave();
     await this.meetingCycle();
+    await this.runWeekly();
+    this.backupDaily();
     await this.refreshBoards();
 
     type Job = [string, () => Promise<unknown>];
@@ -2399,6 +2494,8 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     }
 
     // The general settings: green when switched on, grey when off.
+    const usage = this.usageLine(this.today());
+    if (usage) body.push({ type: "TextBlock", text: `AI use today: ${usage}`, wrap: true, size: "Small", isSubtle: true, spacing: "Large", separator: true });
     const hours = this.officeHours();
     body.push({
       type: "TextBlock",
@@ -2606,7 +2703,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     });
 
     const text = people.length
-      ? await this.brain.digest(date, people)
+      ? await this.brain.digest(date, people, this.recentIssues())
       : `**Daily digest: ${date}**\n\nNobody is nominated yet. Send **nominate name@company.com** to add someone.`;
     this.store.saveDigest(date, text);
 
@@ -2647,7 +2744,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     const arg = rest.trim();
     let verb = verbRaw.toLowerCase().replace(/[:,]$/, "");
     // "list" alone is a command; "list who is blocked" is a question.
-    if (["help", "hi", "hello", "menu", "board", "refresh", "list", "digest", "pause", "resume"].includes(verb) && arg) verb = "";
+    if (["help", "hi", "hello", "menu", "board", "refresh", "list", "digest", "pause", "resume", "weekly", "usage", "sent"].includes(verb) && arg) verb = "";
     if (verb === "office") {
       verb = "hours";
     }
@@ -2842,6 +2939,23 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           }
           this.store.set(`holiday:${m[2]}`, m[1] ? "" : m[3]!.trim() || "Holiday");
           return await reply(m[1] ? `${m[2]} is no longer a holiday.` : `${m[2]} is a holiday (${m[3]!.trim() || "Holiday"}): nobody is asked or chased that day.`);
+        }
+
+        case "weekly": {
+          await reply("Putting this week's report together. It will arrive here shortly.");
+          const report = await this.runWeekly(true);
+          if (!report) await reply("There was nothing to report on yet.");
+          return;
+        }
+
+        case "usage": {
+          const lines: string[] = [];
+          for (let i = 0; i < 7; i++) {
+            const d = new Date(Date.parse(`${this.today()}T00:00:00Z`) - i * 86_400_000).toISOString().slice(0, 10);
+            const line = this.usageLine(d);
+            if (line) lines.push(`- ${d}: ${line}`);
+          }
+          return await reply(lines.length ? `**AI use, last 7 days**\n${lines.join("\n")}` : "No AI use recorded yet.");
         }
 
         case "pause":

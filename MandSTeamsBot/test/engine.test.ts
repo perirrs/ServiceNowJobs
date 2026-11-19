@@ -22,6 +22,7 @@ const config: Config = {
   maxBotTurns: 3,
   dataDir: ":memory:",
   model: "fake",
+  smartModel: "fake-smart",
   sendAsUser: false,
   pollSeconds: 20,
   discloseAutomation: true,
@@ -77,7 +78,14 @@ class FakeBrain implements Brain {
     this.noteCalls.push(ctx);
     return this.nextNote;
   }
-  async digest(_date: string, people: DigestPerson[]): Promise<string> {
+  digestRecent: string[] = [];
+  weeklyInputs: { from: string; to: string; material: string }[] = [];
+  async weeklyReport(input: { from: string; to: string; material: string }) {
+    this.weeklyInputs.push(input);
+    return "WEEKLY";
+  }
+  async digest(_date: string, people: DigestPerson[], recent = ""): Promise<string> {
+    this.digestRecent.push(recent);
     this.digestCalls.push(people);
     return "DIGEST";
   }
@@ -2190,4 +2198,65 @@ test("before a meeting you get a brief; after it, action items in its chat go on
   await g.engine.meetingCycle(); // within ten minutes: nothing again
   assert.equal(g.admin.length, before);
   void toCto;
+});
+
+// ---------- weekly report, recurring issues, AI use, backups ----------
+
+test("the digest is given the week's blockers and pain points, to spot what keeps coming up", async () => {
+  const t = setup();
+  await onboard(t);
+  await t.engine.runCheckins();
+  t.brain.nextNote = {
+    note: { summary: "x", progressVsTargets: "", blockers: ["Client portal down"], painPoints: ["Slow VPN"], helpNeeded: [], followUpTomorrow: [] },
+    items: [],
+  };
+  await t.engine.handleMessage(t.id(PRIYA), "portal down again");
+  await t.engine.runDigest();
+  assert.match(t.brain.digestRecent.at(-1)!, /2026-11-16 priya: Client portal down/);
+  assert.match(t.brain.digestRecent.at(-1)!, /Slow VPN/);
+});
+
+test("the weekly report goes out on Friday after hours, once, with plan against done", async () => {
+  const t = setup();
+  await onboard(t);
+  const priya = t.store.personByEmail(PRIYA)!;
+  t.store.addItem(priya.id, "Client deck", "done", "sent", "2026-11-17");
+  t.setDate("2026-11-19T18:30:00Z"); // Thursday
+  await t.engine.runWeekly();
+  assert.equal(t.brain.weeklyInputs.length, 0);
+  t.setDate("2026-11-20T18:30:00Z"); // Friday evening
+  await t.engine.runWeekly();
+  await t.engine.runWeekly();
+  assert.equal(t.brain.weeklyInputs.length, 1);
+  assert.equal(t.brain.weeklyInputs[0]!.from, "2026-11-16");
+  assert.match(t.brain.weeklyInputs[0]!.material, /Finished this week: Client deck/);
+  assert.equal(t.to(CTO).at(-1), "WEEKLY");
+});
+
+test("AI use is counted per day and model, and shown with a cost", async () => {
+  const t = setup();
+  await t.engine.handleInstall(t.id(CTO));
+  t.engine.recordUsage("claude-haiku-5-5", 200_000, 10_000);
+  t.engine.recordUsage("claude-sonnet-5-5", 10_000, 2_000);
+  await t.engine.handleMessage(t.id(CTO), "usage");
+  // 0.2M x $0.10 + 0.01M x $0.50 + 0.01M x $2 + 0.002M x $10 = 0.02 + 0.005 + 0.02 + 0.02
+  assert.match(t.to(CTO).at(-1)!, /2026-11-16: ≈ \$0\.07 \(haiku-5-5 200k in, 10k out · sonnet-5-5 10k in, 2k out\)/);
+});
+
+test("a daily backup is made and only the last two weeks are kept", async () => {
+  const { mkdtempSync, readdirSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const path = await import("node:path");
+  const dir = mkdtempSync(path.join(tmpdir(), "mands-"));
+  try {
+    const store = new Store(dir);
+    store.set("x", "1");
+    for (let d = 1; d <= 16; d++) store.backup(`2026-11-${String(d).padStart(2, "0")}`);
+    const files = readdirSync(path.join(dir, "backups")).sort();
+    assert.equal(files.length, 14);
+    assert.equal(files[0], "mands-2026-11-03.db");
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

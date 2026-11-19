@@ -114,7 +114,9 @@ export interface AdminAction {
 export interface Brain {
   nextTurn(ctx: CheckinContext): Promise<Turn>;
   writeNote(ctx: CheckinContext): Promise<NoteResult>;
-  digest(date: string, people: DigestPerson[]): Promise<string>;
+  digest(date: string, people: DigestPerson[], recent?: string): Promise<string>;
+  /** The Friday report: plan against done, by person, and what keeps coming up. */
+  weeklyReport(input: { from: string; to: string; material: string }): Promise<string>;
   answer(question: string, material: string): Promise<string>;
   /** Read a chat history once and describe how the sender writes to this person. */
   learnRapport(
@@ -332,7 +334,7 @@ Two or three sentences on the overall picture.
 
 **No update today** Who did not respond, and who has not yet connected to the bot.
 
-Stay with what the notes say. Point out patterns across people and across days when the evidence is there, and say plainly when something is your reading rather than something a person stated. Do not rate people or speculate about their attitude.`;
+Stay with what the notes say. Point out patterns across people and across days when the evidence is there: when the same problem shows up from several people, or for several days in the 7-day section, put it under Needs your attention as something to fix once; and say plainly when something is your reading rather than something a person stated. Do not rate people or speculate about their attitude.`;
 }
 
 function answerSystem(company: string): string {
@@ -484,6 +486,11 @@ type Effort = "low" | "medium" | "high";
 export class ClaudeBrain implements Brain {
   private client: Anthropic;
 
+  /** The stronger model for the digest, weekly report, tracker building and questions. Defaults to the main one. */
+  smartModel?: string;
+  /** Told the tokens used by every call, for the running total on the board. */
+  onUsage?: (model: string, input: number, output: number) => void;
+
   constructor(
     private model: string,
     private company: string,
@@ -493,6 +500,12 @@ export class ClaudeBrain implements Brain {
     private disclose = true,
   ) {
     this.client = client ?? new Anthropic();
+  }
+
+  private count(model: string, usage: { input_tokens?: number | null; output_tokens?: number | null; cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null } | undefined) {
+    if (!usage || !this.onUsage) return;
+    const input = (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+    this.onUsage(model, input, usage.output_tokens ?? 0);
   }
 
   async nextTurn(ctx: CheckinContext): Promise<Turn> {
@@ -580,7 +593,7 @@ export class ClaudeBrain implements Brain {
     return { note, items };
   }
 
-  async digest(date: string, people: DigestPerson[]): Promise<string> {
+  async digest(date: string, people: DigestPerson[], recent = ""): Promise<string> {
     const sections = people.map((p) => {
       const status =
         p.missing === "not_connected"
@@ -597,8 +610,9 @@ export class ClaudeBrain implements Brain {
     });
     return this.text(
       digestSystem(this.company),
-      `Date: ${date}\n\n${sections.join("\n\n")}`,
+      `Date: ${date}\n\n${sections.join("\n\n")}${recent ? `\n\n# Blockers and pain points raised in the last 7 days\n${recent}` : ""}`,
       "high",
+      true,
     );
   }
 
@@ -752,6 +766,7 @@ Leave out work that was finished more than 14 days ago, and anything that has la
       ],
       TrackerSchema,
       "medium",
+      true,
     );
     return out.entries;
   }
@@ -782,11 +797,31 @@ Write it as plain notes, no preamble.`,
     );
   }
 
+  async weeklyReport(input: { from: string; to: string; material: string }): Promise<string> {
+    return this.text(
+      `You write the Friday report for the CTO and CEO of ${this.company}, covering ${input.from} to ${input.to}. It is sent as a Teams chat message: bold section titles and short bullets, no headings or tables.
+
+**Week of ${input.from}: summary**: two or three sentences on how the week went.
+
+**Plan against done**: one line per person, using the figures given (days they replied out of days asked, items finished, items planned, overdue and blocked now). State the figures; add a few words only where the notes explain them.
+
+**Keeps coming up**: problems that appeared from more than one person, or on more than one day, with who raised them and when. These are the things worth fixing once rather than chasing every day. Leave this section out if there are none.
+
+**For next week**: the three or four things that most need a decision or a conversation.
+
+Use only the figures and notes given. Do not rate people or guess at reasons or attitude.`,
+      input.material,
+      "high",
+      true,
+    );
+  }
+
   async answer(question: string, material: string): Promise<string> {
     return this.text(
       answerSystem(this.company),
       `${material}\n\n---\nQuestion from leadership: ${question}`,
       "medium",
+      true,
     );
   }
 
@@ -795,15 +830,18 @@ Write it as plain notes, no preamble.`,
     messages: Anthropic.Beta.BetaMessageParam[],
     schema: S,
     effort: Effort,
+    smart = false,
   ): Promise<z.infer<S>> {
+    const model = smart ? (this.smartModel ?? this.model) : this.model;
     const response = await this.client.beta.messages.parse({
-      model: this.model,
+      model,
       max_tokens: 16000,
-      ...fallbackParams(this.model),
+      ...fallbackParams(model),
       system,
       messages,
       output_config: { effort, format: betaZodOutputFormat(schema) },
     });
+    this.count(model, response.usage);
     if (response.stop_reason === "refusal") {
       throw new Error(`Claude declined the request (${response.stop_details?.category ?? "no category"})`);
     }
@@ -813,15 +851,17 @@ Write it as plain notes, no preamble.`,
     return response.parsed_output;
   }
 
-  private async text(system: string, content: string, effort: Effort): Promise<string> {
+  private async text(system: string, content: string, effort: Effort, smart = false): Promise<string> {
+    const model = smart ? (this.smartModel ?? this.model) : this.model;
     const response = await this.client.beta.messages.create({
-      model: this.model,
+      model,
       max_tokens: 16000,
-      ...fallbackParams(this.model),
+      ...fallbackParams(model),
       system,
       messages: [{ role: "user", content }],
       output_config: { effort },
     });
+    this.count(model, response.usage);
     if (response.stop_reason === "refusal") {
       throw new Error(`Claude declined the request (${response.stop_details?.category ?? "no category"})`);
     }

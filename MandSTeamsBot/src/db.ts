@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -220,7 +220,11 @@ export class Store {
   private db: DatabaseSync;
 
   /** Pass ":memory:" for tests. */
+  /** Where the database file lives; empty for an in-memory store. */
+  private dir = "";
+
   constructor(dataDirOrMemory: string) {
+    if (dataDirOrMemory !== ":memory:") this.dir = dataDirOrMemory;
     if (dataDirOrMemory === ":memory:") {
       this.db = new DatabaseSync(":memory:");
     } else {
@@ -622,6 +626,39 @@ export class Store {
       if (newText === null) this.db.prepare("DELETE FROM messages WHERE id = ?").run(id);
       else this.db.prepare("UPDATE messages SET text = ? WHERE id = ?").run(newText, id);
     }
+  }
+
+  // ---- backups and weekly figures ----
+
+  /** A consistent copy of the database in DATA_DIR/backups, keeping the last `keep`. Returns the file, or "" in memory. */
+  backup(date: string, keep = 14): string {
+    if (!this.dir) return "";
+    const folder = path.join(this.dir, "backups");
+    mkdirSync(folder, { recursive: true });
+    const file = path.join(folder, `mands-${date}.db`);
+    if (!existsSync(file)) this.db.exec(`VACUUM INTO '${file.replace(/'/g, "''")}'`);
+    const old = readdirSync(folder).filter((f) => /^mands-\d{4}-\d{2}-\d{2}\.db$/.test(f)).sort().slice(0, -keep);
+    for (const f of old) rmSync(path.join(folder, f));
+    return file;
+  }
+
+  /** Items this person finished on or after `date`. */
+  doneSince(personId: number, date: string): WorkItem[] {
+    return this.db
+      .prepare("SELECT * FROM items WHERE person_id = ? AND status = 'done' AND last_seen >= ?")
+      .all(personId, date)
+      .map(toItem);
+  }
+
+  /** Check-ins of this person between two dates, with whether they replied. */
+  checkinsBetween(personId: number, from: string, to: string): { date: string; replied: boolean }[] {
+    return this.db
+      .prepare(
+        `SELECT c.date, EXISTS(SELECT 1 FROM messages m WHERE m.checkin_id = c.id AND m.role = 'user') AS replied
+         FROM checkins c WHERE c.person_id = ? AND c.date BETWEEN ? AND ?`,
+      )
+      .all(personId, from, to)
+      .map((r) => ({ date: r.date as string, replied: r.replied === 1 }));
   }
 
   // ---- small persistent flags and cursors ----

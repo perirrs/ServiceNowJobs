@@ -8,6 +8,8 @@ export interface Config {
   maxBotTurns: number;
   dataDir: string;
   model: string;
+  /** The stronger model for the jobs where quality matters most: the digest, the weekly report, tracker building, questions. */
+  smartModel: string;
   /** Send check-ins from a signed-in person's own Teams account instead of from the bot. */
   sendAsUser: boolean;
   pollSeconds: number;
@@ -43,6 +45,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     maxBotTurns: Number(env.MAX_BOT_TURNS ?? 6),
     dataDir: env.DATA_DIR ?? "./data",
     model: env.CLAUDE_MODEL ?? "claude-opus-5-5",
+    smartModel: env.CLAUDE_SMART_MODEL ?? "claude-sonnet-5-5",
     sendAsUser: env.SEND_AS_USER === "true",
     pollSeconds: Math.max(10, Number(env.POLL_SECONDS ?? 20)),
     discloseAutomation: env.DISCLOSE_AUTOMATION !== "false",

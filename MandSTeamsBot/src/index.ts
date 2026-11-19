@@ -80,6 +80,7 @@ if (config.sendAsUser) {
 }
 
 const brain = new ClaudeBrain(config.model, config.companyName, undefined, direct?.senderName, config.discloseAutomation);
+brain.smartModel = config.smartModel;
 const engine = new Engine(
   store,
   brain,
@@ -252,6 +253,7 @@ if (graph) {
 await app.start(config.port);
 console.log(`Check-in bot running. Admins: ${config.adminEmails.join(", ")}. Timezone ${config.timezone}.`);
 
+brain.onUsage = (model, input, output) => engine.recordUsage(model, input, output);
 await engine.announceStart();
 
 // One-off manual trigger: `node dist/index.js --checkin-now` asks everyone
