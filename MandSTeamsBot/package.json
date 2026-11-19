@@ -1,0 +1,30 @@
+{
+  "name": "mands-teams-bot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI daily check-in bot for Microsoft Teams: asks nominated people for updates, remembers open items, and sends leadership a daily digest.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
+    "start": "node --env-file-if-exists=.env dist/index.js",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "simulate": "tsx --env-file-if-exists=.env src/simulate.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.10.0",
+    "@microsoft/teams.api": "^2.2.1",
+    "@microsoft/teams.apps": "^2.2.1",
+    "node-cron": "^4.6.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.19/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.19",
+  "version": "1.0.0",
+  "id": "REPLACE_WITH_CLIENT_ID",
+  "developer": {
+    "name": "REPLACE_WITH_COMPANY_NAME",
+    "websiteUrl": "https://REPLACE_WITH_YOUR_DOMAIN",
+    "privacyUrl": "https://REPLACE_WITH_YOUR_DOMAIN/privacy",
+    "termsOfUseUrl": "https://REPLACE_WITH_YOUR_DOMAIN/terms"
+  },
+  "name": {
+    "short": "Daily Check-in",
+    "full": "Daily Check-in Assistant"
+  },
+  "description": {
+    "short": "A quick end-of-day update, summarised for leadership.",
+    "full": "Each working day the assistant asks nominated team members for a short update on their work, follows up on items left open from earlier days, and sends the CTO and CEO a summary of progress, blockers and where help is needed."
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "accentColor": "#2B5797",
+  "bots": [
+    {
+      "botId": "REPLACE_WITH_CLIENT_ID",
+      "scopes": ["personal"],
+      "supportsFiles": false,
+      "isNotificationOnly": false
+    }
+  ],
+  "permissions": ["identity", "messageTeamMembers"],
+  "validDomains": []
+}
