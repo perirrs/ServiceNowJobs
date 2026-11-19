@@ -16,13 +16,15 @@ const config: Config = {
   companyName: "Acme",
   timezone: "UTC",
   checkinCron: "",
-  reminderCron: "",
+  chaseAfterMinutes: 45,
   digestCron: "",
   maxBotTurns: 3,
   dataDir: ":memory:",
   model: "fake",
   sendAsUser: false,
   pollSeconds: 20,
+  discloseAutomation: true,
+  idleCloseMinutes: 30,
 };
 
 /** Scripted stand-in for Claude that records what it was shown. */
@@ -37,6 +39,7 @@ class FakeBrain implements Brain {
   };
   doneAfterUserMessages = 1;
   failNextTurn = false;
+  handoverNext = false;
 
   async nextTurn(ctx: CheckinContext): Promise<Turn> {
     if (this.failNextTurn) {
@@ -44,6 +47,10 @@ class FakeBrain implements Brain {
       throw new Error("boom");
     }
     this.turns.push(ctx);
+    if (this.handoverNext) {
+      this.handoverNext = false;
+      return { reply: "", done: false, handover: true };
+    }
     const userMessages = ctx.history.filter((m) => m.role === "user").length;
     const done = ctx.finalTurn || userMessages >= this.doneAfterUserMessages;
     return { reply: done ? "Thanks, that's all." : `Question ${ctx.history.length}`, done };
@@ -62,7 +69,7 @@ class FakeBrain implements Brain {
   }
 }
 
-function setup(opts: { direct?: boolean } = {}) {
+function setup(opts: { direct?: boolean; personal?: boolean } = {}) {
   const store = new Store(":memory:");
   const brain = new FakeBrain();
   const sent: { to: string; text: string }[] = [];
@@ -71,10 +78,10 @@ function setup(opts: { direct?: boolean } = {}) {
     store,
     brain,
     { send: async (to, text) => void sent.push({ to, text }) },
-    config,
+    opts.personal ? { ...config, discloseAutomation: false } : config,
     () => date,
     () => undefined,
-    opts.direct
+    opts.direct || opts.personal
       ? {
           senderName: "Sujith",
           connect: async (email) => ({ conversationId: `chat-${email}`, name: "Priya Rao" }),
@@ -204,7 +211,7 @@ test("if Claude fails mid-chat the message is kept and reaches the digest note",
   await t.engine.runCheckins();
   t.brain.failNextTurn = true;
   await t.engine.handleMessage(t.id(PRIYA), "important update");
-  assert.match(t.to(PRIYA).at(-1)!, /recorded/);
+  assert.match(t.to(PRIYA).at(-1)!, /trouble replying/);
 
   await t.engine.runDigest();
   assert.ok(t.brain.noteCalls[0]!.history.some((m) => m.text === "important update"));
@@ -396,4 +403,104 @@ test("if the opening message cannot be delivered, nothing is recorded and a retr
   failing = false;
   assert.equal((await engine.runCheckins()).sent, 1);
   assert.equal(store.messages(store.checkin(priya.id, "2026-11-16")!.id).length, 1);
+});
+
+// ---------- writing as the sender, with no mention of automation ----------
+
+test("personal mode: nominating sends the colleague nothing", async () => {
+  const t = setup({ personal: true });
+  await t.engine.handleInstall(t.id(CTO));
+  await t.engine.handleMessage(t.id(CTO), `nominate ${PRIYA}`);
+  assert.equal(t.sent.filter((s) => s.to === `chat-${PRIYA}`).length, 0);
+  assert.match(t.to(CTO).at(-1)!, /Nothing has been sent to them yet/);
+});
+
+test("personal mode: a handover silences the assistant and alerts the admin with what was said", async () => {
+  const t = setup({ personal: true });
+  await t.engine.handleInstall(t.id(CTO));
+  await t.engine.handleMessage(t.id(CTO), `nominate ${PRIYA}`);
+  const priya = t.store.personByEmail(PRIYA)!;
+  await t.engine.runCheckins();
+  const toPriya = () => t.sent.filter((s) => s.to === `chat-${PRIYA}`).length;
+  const before = toPriya();
+
+  t.brain.handoverNext = true;
+  await t.engine.handleDirectReply(priya.id, "is this a bot?");
+  assert.equal(toPriya(), before);
+  assert.match(t.to(CTO).at(-1)!, /needs a personal reply[\s\S]*is this a bot\?/);
+
+  // Still quiet afterwards, but what they say is kept.
+  await t.engine.handleDirectReply(priya.id, "anyway, 2 submissions done");
+  assert.equal(toPriya(), before);
+  assert.equal(t.store.messages(t.store.checkin(priya.id, "2026-11-16")!.id).filter((m) => m.role === "user").length, 2);
+});
+
+test("personal mode: a failed reply never tells the colleague about a system problem", async () => {
+  const t = setup({ personal: true });
+  await t.engine.handleInstall(t.id(CTO));
+  await t.engine.handleMessage(t.id(CTO), `nominate ${PRIYA}`);
+  const priya = t.store.personByEmail(PRIYA)!;
+  await t.engine.runCheckins();
+  const before = t.sent.filter((s) => s.to === `chat-${PRIYA}`).length;
+  t.brain.failNextTurn = true;
+  await t.engine.handleDirectReply(priya.id, "update");
+  assert.equal(t.sent.filter((s) => s.to === `chat-${PRIYA}`).length, before);
+  assert.match(t.to(CTO).at(-1)!, /could not reply/);
+});
+
+test("the chase waits for the configured time, goes once, and is recorded", async () => {
+  const t = setup({ personal: true });
+  await t.engine.handleInstall(t.id(CTO));
+  await t.engine.handleMessage(t.id(CTO), `nominate ${PRIYA}`);
+  const priya = t.store.personByEmail(PRIYA)!;
+  await t.engine.runCheckins();
+
+  // Messages are stamped with the real clock, so "now" in 2026-11-16 is before they were sent.
+  assert.equal(await t.engine.runReminders(45), 0);
+  const checkin = t.store.checkin(priya.id, "2026-11-16")!;
+  assert.equal(await t.engine.runReminders(0), 1);
+  assert.equal(await t.engine.runReminders(0), 0);
+  assert.equal(t.store.messages(checkin.id).at(-1)!.text, "Any update? Please share when you can.");
+});
+
+// ---------- summaries reach the admin without being asked ----------
+
+test("when a conversation finishes, that person's summary is posted to the admin", async () => {
+  const t = setup();
+  await onboard(t);
+  await t.engine.runCheckins();
+  await t.engine.handleMessage(t.id(PRIYA), "sent 3 submissions");
+  assert.match(t.to(CTO).at(-1)!, /Update from priya[\s\S]*Did things\./);
+});
+
+test("a conversation that goes quiet is closed and summarised; one with no reply is left open", async () => {
+  const t = setup();
+  await onboard(t);
+  await t.engine.runCheckins();
+  assert.equal(await t.engine.closeIdle(0), 0); // nobody has replied yet
+
+  t.brain.doneAfterUserMessages = 99; // the assistant keeps asking, the person stops answering
+  await t.engine.handleMessage(t.id(PRIYA), "half an update");
+  assert.equal(await t.engine.closeIdle(30), 0); // too soon
+  assert.equal(await t.engine.closeIdle(0), 1);
+  assert.equal(t.store.checkin(t.store.personByEmail(PRIYA)!.id, "2026-11-16")!.status, "completed");
+  assert.match(t.to(CTO).at(-1)!, /Update from priya/);
+});
+
+test("a question to the bot can see today's conversation while it is still in progress", async () => {
+  const t = setup();
+  await onboard(t);
+  await t.engine.runCheckins();
+  t.brain.doneAfterUserMessages = 99;
+  await t.engine.handleMessage(t.id(PRIYA), "client rejected two profiles");
+  await t.engine.handleMessage(t.id(CTO), "summary from today?");
+  assert.match(t.brain.questions.at(-1)!.material, /still in progress[\s\S]*client rejected two profiles/);
+});
+
+test("'ask <name> ...' runs a check-in for that person", async () => {
+  const t = setup();
+  await onboard(t);
+  await t.engine.handleMessage(t.id(CTO), "ask priya for what are the updates this week");
+  assert.equal(t.brain.turns.length, 1);
+  assert.match(t.to(CTO).at(-1)!, /Asked priya for an update/);
 });

@@ -93,6 +93,23 @@ export class Engine {
     return todayIn(this.config.timezone, this.now());
   }
 
+  /** Sending as a real person without mentioning automation: write and behave as that person would. */
+  private get personal(): boolean {
+    return !!this.direct && !this.config.discloseAutomation;
+  }
+
+  private async notifyAdmins(text: string): Promise<void> {
+    for (const email of this.config.adminEmails) {
+      const admin = this.store.personByEmail(email);
+      if (!admin?.conversationId) continue;
+      try {
+        for (const part of chunk(text)) await this.messenger.send(admin.conversationId, part);
+      } catch (err) {
+        this.log(`Could not notify ${email}`, err);
+      }
+    }
+  }
+
   private isAdmin(person: Person): boolean {
     return this.config.adminEmails.includes(person.email);
   }
@@ -288,18 +305,30 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       const botTurns = this.store.messages(checkin.id).filter((m) => m.role === "bot").length;
       const finalTurn = botTurns >= this.config.maxBotTurns - 1;
       const turn = await this.brain.nextTurn(this.context(person, checkin, finalTurn));
+      if (turn.handover || !turn.reply) {
+        // Something only a person should answer: go quiet here and tell the admins.
+        this.store.set(`takeover:${checkin.id}`, "1");
+        await this.notifyAdmins(
+          `**${displayName(person)} needs a personal reply.** They wrote: "${text}"\n\nI have stopped replying in that chat for today. Anything else they say is still recorded for the note.`,
+        );
+        return;
+      }
       await this.say(person, turn.reply);
       this.store.addMessage(checkin.id, "bot", turn.reply);
       if (turn.done) await this.finish(person, checkin);
     } catch (err) {
       this.log(`Check-in reply failed for ${person.email}`, err);
       // The message is already stored, so it still reaches tonight's note.
-      await this.say(person, "Thanks, I've recorded that. I had trouble replying just now, so if there's more to add, send it and I'll pick it up.");
+      if (this.personal) {
+        await this.notifyAdmins(`I could not reply to ${displayName(person)} just now (their message is saved). The server log has the details.`);
+      } else {
+        await this.say(person, "Noted. I had trouble replying just now, so if there is more to add, send it and I will pick it up.");
+      }
     }
   }
 
   /** Turn the day's conversation into a note and update the person's open items. */
-  private async finish(person: Person, checkin: Checkin): Promise<void> {
+  private async finish(person: Person, checkin: Checkin, announce = true): Promise<void> {
     const ctx = this.context(person, checkin);
     const { note, items } = await this.brain.writeNote(ctx);
     this.store.saveNote(checkin, note);
@@ -312,6 +341,38 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       }
     }
     this.store.setCheckinStatus(checkin.id, "completed");
+    if (announce) {
+      await this.notifyAdmins(
+        `**Update from ${displayName(person)}** (${checkin.date})\n\n${renderNote(note)}\n\n**Open items**\n${renderItems(this.store.activeItems(person.id))}`,
+      );
+    }
+  }
+
+  /**
+   * Close conversations that have gone quiet: if the person has replied at
+   * least once and nothing has been said for `idleMinutes`, write the note
+   * and post the summary rather than waiting for the evening digest.
+   */
+  async closeIdle(idleMinutes: number): Promise<number> {
+    let closed = 0;
+    for (const checkin of this.store.checkinsOn(this.today())) {
+      if (checkin.status !== "open") continue;
+      const messages = this.store.messages(checkin.id);
+      if (!messages.some((m) => m.role === "user")) continue;
+      const lastAt = Date.parse(`${messages.at(-1)!.at.replace(" ", "T")}Z`);
+      if (idleMinutes > 0 && this.now().getTime() - lastAt < idleMinutes * 60_000) continue;
+      const person = this.store.personById(checkin.personId);
+      if (!person) continue;
+      try {
+        await this.enqueue(person.id, async () => {
+          if (this.store.checkin(person.id, checkin.date)?.status === "open") await this.finish(person, checkin);
+        });
+        closed++;
+      } catch (err) {
+        this.log(`Could not close check-in for ${person.email}`, err);
+      }
+    }
+    return closed;
   }
 
   // ---------- scheduled jobs ----------
@@ -333,16 +394,27 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     return { sent, unreachable };
   }
 
-  /** One gentle nudge to anyone who has not answered today's opening question. */
-  async runReminders(): Promise<number> {
+  /**
+   * One chase, and only one, to anyone who has not answered today's opening
+   * question within `minMinutes` of it being sent.
+   */
+  async runReminders(minMinutes = 0): Promise<number> {
     let nudged = 0;
     for (const checkin of this.store.checkinsOn(this.today())) {
       if (checkin.status !== "open" || checkin.reminded) continue;
-      if (this.store.messages(checkin.id).some((m) => m.role === "user")) continue;
+      if (this.store.get(`takeover:${checkin.id}`)) continue;
+      const messages = this.store.messages(checkin.id);
+      if (!messages.length || messages.some((m) => m.role === "user")) continue;
+      const sentAt = Date.parse(`${messages[0]!.at.replace(" ", "T")}Z`);
+      if (minMinutes > 0 && this.now().getTime() - sentAt < minMinutes * 60_000) continue;
       const person = this.store.personById(checkin.personId);
       if (!person?.nominated) continue;
       try {
-        await this.say(person, "A quick nudge on today's check-in, whenever you have two minutes. A few lines is plenty.");
+        const nudge = this.personal
+          ? "Any update? Please share when you can."
+          : "A quick reminder on today's check-in. A line or two is enough.";
+        await this.say(person, nudge);
+        this.store.addMessage(checkin.id, "bot", nudge);
         this.store.markReminded(checkin.id);
         nudged++;
       } catch (err) {
@@ -366,7 +438,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         continue;
       }
       try {
-        await this.enqueue(person.id, () => this.finish(person, checkin));
+        await this.enqueue(person.id, () => this.finish(person, checkin, false));
       } catch (err) {
         this.log(`Could not write note for ${person.email}`, err);
       }
@@ -458,13 +530,15 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           const person = this.store.upsertPerson(email, chat);
           this.store.setNominated(person.id, true);
           if (person.conversationId) {
-            await this.say(person, this.welcomeText(person));
+            if (!this.personal) await this.say(person, this.welcomeText(person));
             this.store.set(awaitingKey, String(person.id));
             return await reply(
               `${displayName(person)} is nominated. ${
-                this.direct
-                  ? "A heads-up explaining the automated check-ins has gone to them from your account. No update has been asked for yet."
-                  : "I've told them how the check-ins work."
+                this.personal
+                  ? "Nothing has been sent to them yet."
+                  : this.direct
+                    ? "A heads-up explaining the automated check-ins has gone to them from your account. No update has been asked for yet."
+                    : "I've told them how the check-ins work."
               }\n\nNow tell me about their role: reply with their role, responsibilities and targets in your own words, and I'll phrase the daily questions around it.`,
             );
           }
@@ -530,6 +604,29 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           );
         }
 
+        case "ask": {
+          // "ask mahanth for an update": a check-in now for whoever is named.
+          const words = arg.toLowerCase().split(/[^a-z0-9@.]+/).filter((w) => w.length > 2);
+          const named = this.store
+            .nominees()
+            .filter((p) => words.some((w) => p.email === w || p.email.split("@")[0]!.split(".").includes(w) || (p.name ?? "").toLowerCase().split(/\s+/).includes(w)));
+          if (named.length !== 1) {
+            return await reply(
+              named.length
+                ? `That matches several people: ${named.map((p) => p.email).join(", ")}. Use **checkin** with the full email.`
+                : "I could not tell who you mean. Use **checkin name@company.com**, or **list** to see who is nominated.",
+            );
+          }
+          const target = named[0]!;
+          if (!target.conversationId) return await reply(`${displayName(target)} is not connected yet.`);
+          const started = await this.enqueue(target.id, () => this.startCheckin(target, true));
+          return await reply(
+            started
+              ? `Asked ${displayName(target)} for an update. Their summary will appear here when the conversation finishes.`
+              : `${displayName(target)} has already been asked today and has not finished replying. Their summary will appear here when they do.`,
+          );
+        }
+
         case "checkin": {
           if (!arg || arg.toLowerCase() === "all") {
             const { sent, unreachable } = await this.runCheckins();
@@ -583,14 +680,31 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     const notes = this.store.notesSince(since);
     const sections = this.store.nominees().map((p) => {
       const mine = notes.filter((n) => n.personId === p.id);
+      const today = this.store.checkin(p.id, this.today());
+      const live =
+        today?.status === "open"
+          ? this.store
+              .messages(today.id)
+              .map((m) => `${m.role === "bot" ? "Asked" : displayName(p)}: ${m.text}`)
+              .join("\n")
+          : "";
       return [
         `# ${displayName(p)} (${p.email})`,
         `Role and targets: ${p.profile ?? "(not provided)"}`,
         `Open items:\n${renderItems(this.store.activeItems(p.id))}`,
+        live
+          ? `## Today's conversation, still in progress (not yet summarised)\n${live}`
+          : today?.status === "no_response"
+            ? "## Today: asked, no reply"
+            : !today
+              ? "## Today: not asked yet"
+              : "",
         mine.length
           ? mine.map((n) => `## ${n.date}\n${renderNote(n)}`).join("\n\n")
-          : "(no check-in notes in the last 14 days)",
-      ].join("\n\n");
+          : "(no finished check-in notes in the last 14 days)",
+      ]
+        .filter(Boolean)
+        .join("\n\n");
     });
     return `Today is ${this.today()}. Notes cover the last 14 days.\n\n${sections.join("\n\n")}`;
   }

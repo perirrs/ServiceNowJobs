@@ -15,7 +15,6 @@ if (!config.adminEmails.length) {
 }
 for (const [name, expr] of [
   ["CHECKIN_CRON", config.checkinCron],
-  ["REMINDER_CRON", config.reminderCron],
   ["DIGEST_CRON", config.digestCron],
 ] as const) {
   if (!cron.validate(expr)) {
@@ -60,10 +59,13 @@ if (config.sendAsUser) {
       await g.send(chatId, text);
     },
   };
-  console.log(`Check-ins will be sent from ${me.name} <${me.email}>'s Teams account.`);
+  console.log(
+    `Check-ins will be sent from ${me.name} <${me.email}>'s Teams account` +
+      (config.discloseAutomation ? "." : ", written as that person with no mention of automation."),
+  );
 }
 
-const brain = new ClaudeBrain(config.model, config.companyName, undefined, direct?.senderName);
+const brain = new ClaudeBrain(config.model, config.companyName, undefined, direct?.senderName, config.discloseAutomation);
 const engine = new Engine(
   store,
   brain,
@@ -152,7 +154,12 @@ function schedule(name: string, expr: string, job: () => Promise<unknown>): void
 }
 
 schedule("check-ins", config.checkinCron, () => engine.runCheckins());
-schedule("reminders", config.reminderCron, () => engine.runReminders());
+// One chase to anyone who has not replied within CHASE_AFTER_MINUTES of being asked.
+// Also close and summarise conversations that have gone quiet.
+setInterval(() => {
+  engine.runReminders(config.chaseAfterMinutes).catch((err) => console.error("[chase] failed", err));
+  engine.closeIdle(config.idleCloseMinutes).catch((err) => console.error("[idle close] failed", err));
+}, 60_000);
 schedule("digest", config.digestCron, () => engine.runDigest());
 
 if (graph) {

@@ -11,7 +11,9 @@ A Microsoft Teams bot that talks to each person you nominate at the end of every
 5. **It sends leadership a digest** (7:30 pm by default): what needs attention first, a few lines per person, the exact questions to ask each person, and who gave no update.
 6. **You can ask it things** at any time: "who has been blocked for more than two days?", "how is Ravi doing against his targets this fortnight?"
 
-People who have not replied get one nudge an hour later. Anyone nominated can also message the bot at any time to add to their update.
+People who have not replied get one chase message after `CHASE_AFTER_MINUTES` (default 45). When a person's conversation finishes, or goes quiet for `IDLE_CLOSE_MINUTES` (default 30) after they have replied, their summary is posted to the admins straight away, ahead of the evening digest.
+
+Messages to staff are kept to one short line in very simple English, with no names and no "thanks", so they read naturally for people whose first language is not English.
 
 ### Admin commands
 
@@ -66,6 +68,8 @@ How it behaves:
 - The assistant only reads and replies in a chat while that day's check-in is open. Before the opening question and after it closes, the chat is ordinary conversation and is left alone.
 - If you type in a chat yourself during an open check-in, the assistant stays quiet there for the rest of the day. What the colleague says is still recorded for the note.
 - Replies are picked up by polling (`POLL_SECONDS`, default 20), so expect a short delay.
+
+With `DISCLOSE_AUTOMATION=false` the assistant instead writes as you in the first person and never mentions automation: no heads-up is sent on nomination. It does not claim to be human either. If a colleague asks whether the messages are automated, asks for a decision only you can give, or raises something personal, it stops replying in that chat and alerts you in the bot chat so that you answer yourself. Check what your local law and your staff policies require before using this setting; in some places people must be told when they are dealing with an AI system.
 
 Setup:
 

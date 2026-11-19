@@ -4,7 +4,8 @@ export interface Config {
   companyName: string;
   timezone: string;
   checkinCron: string;
-  reminderCron: string;
+  /** Minutes to wait for a reply before sending the one chase message. */
+  chaseAfterMinutes: number;
   digestCron: string;
   maxBotTurns: number;
   dataDir: string;
@@ -12,6 +13,13 @@ export interface Config {
   /** Send check-ins from a signed-in person's own Teams account instead of from the bot. */
   sendAsUser: boolean;
   pollSeconds: number;
+  /** Minutes of silence after which a conversation with replies is closed and summarised. */
+  idleCloseMinutes: number;
+  /**
+   * In send-as-user mode: true tells colleagues the check-in is automated;
+   * false writes as the sender in the first person and never mentions automation.
+   */
+  discloseAutomation: boolean;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -26,13 +34,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     companyName: env.COMPANY_NAME ?? "the company",
     timezone: env.TIMEZONE ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
     checkinCron: env.CHECKIN_CRON ?? "0 17 * * 1-5",
-    reminderCron: env.REMINDER_CRON ?? "0 18 * * 1-5",
+    chaseAfterMinutes: Number(env.CHASE_AFTER_MINUTES ?? 45),
     digestCron: env.DIGEST_CRON ?? "30 19 * * 1-5",
     maxBotTurns: Number(env.MAX_BOT_TURNS ?? 6),
     dataDir: env.DATA_DIR ?? "./data",
     model: env.CLAUDE_MODEL ?? "claude-opus-5-5",
     sendAsUser: env.SEND_AS_USER === "true",
     pollSeconds: Math.max(10, Number(env.POLL_SECONDS ?? 20)),
+    discloseAutomation: env.DISCLOSE_AUTOMATION !== "false",
+    idleCloseMinutes: Number(env.IDLE_CLOSE_MINUTES ?? 30),
   };
 }
 
