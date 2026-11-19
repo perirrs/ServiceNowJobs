@@ -14,7 +14,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsx --test test/*.test.ts",
     "signin": "tsx --env-file-if-exists=.env src/signin.ts",
-    "simulate": "tsx --env-file-if-exists=.env src/simulate.ts"
+    "simulate": "tsx --env-file-if-exists=.env src/simulate.ts",
+    "base44": "tsx --env-file-if-exists=.env src/base44-explore.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.10.0",
