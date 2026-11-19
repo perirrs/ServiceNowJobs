@@ -52,6 +52,8 @@ export interface WorkItem {
   lastSeen: string;
   /** The date this is due (YYYY-MM-DD), when the person gave one. */
   due: string | null;
+  /** How far along it is, 0 to 100, when known. */
+  progress: number | null;
 }
 
 /** The structured note the AI writes at the end of each person's check-in. */
@@ -168,6 +170,7 @@ function toItem(r: Row): WorkItem {
     firstSeen: r.first_seen as string,
     lastSeen: r.last_seen as string,
     due: (r.due as string | null) || null,
+    progress: typeof r.progress === "number" ? (r.progress as number) : null,
   };
 }
 
@@ -197,6 +200,7 @@ export class Store {
     if (!columns.some((c) => c.name === "chat_id")) this.db.exec("ALTER TABLE people ADD COLUMN chat_id TEXT");
     const itemColumns = this.db.prepare("PRAGMA table_info(items)").all();
     if (!itemColumns.some((c) => c.name === "due")) this.db.exec("ALTER TABLE items ADD COLUMN due TEXT");
+    if (!itemColumns.some((c) => c.name === "progress")) this.db.exec("ALTER TABLE items ADD COLUMN progress INTEGER");
   }
 
   close(): void {
@@ -410,23 +414,50 @@ export class Store {
       .map(toItem);
   }
 
-  addItem(personId: number, title: string, status: ItemStatus, update: string, date: string, due = ""): void {
+  addItem(
+    personId: number,
+    title: string,
+    status: ItemStatus,
+    update: string,
+    date: string,
+    due = "",
+    progress: number | null = null,
+  ): void {
     this.db
       .prepare(
-        `INSERT INTO items (person_id, title, status, last_update, first_seen, last_seen, due)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO items (person_id, title, status, last_update, first_seen, last_seen, due, progress)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(personId, title, status, update, date, date, due || null);
+      .run(personId, title, status, update, date, date, due || null, progress);
+  }
+
+  /** An item of this person's with this title, ignoring case and spacing. */
+  itemByTitle(personId: number, title: string): WorkItem | undefined {
+    const want = title.trim().toLowerCase().replace(/\s+/g, " ");
+    return this.db
+      .prepare("SELECT * FROM items WHERE person_id = ?")
+      .all(personId)
+      .map(toItem)
+      .find((i) => i.title.trim().toLowerCase().replace(/\s+/g, " ") === want);
   }
 
   /** Returns false if the item does not belong to this person, so the AI cannot touch others' items. */
-  updateItem(personId: number, itemId: number, status: ItemStatus, update: string, date: string, due = ""): boolean {
+  updateItem(
+    personId: number,
+    itemId: number,
+    status: ItemStatus,
+    update: string,
+    date: string,
+    due = "",
+    progress: number | null = null,
+  ): boolean {
     const res = this.db
       .prepare(
-        // A due date is only replaced when a new one is given.
-        "UPDATE items SET status = ?, last_update = ?, last_seen = ?, due = COALESCE(?, due) WHERE id = ? AND person_id = ?",
+        // A due date or progress figure is only replaced when a new one is given.
+        `UPDATE items SET status = ?, last_update = ?, last_seen = ?, due = COALESCE(?, due), progress = COALESCE(?, progress)
+         WHERE id = ? AND person_id = ?`,
       )
-      .run(status, update, date, due || null, itemId, personId);
+      .run(status, update, date, due || null, progress, itemId, personId);
     return res.changes > 0;
   }
 

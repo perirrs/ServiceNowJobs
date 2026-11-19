@@ -95,6 +95,12 @@ class FakeBrain implements Brain {
   }
   groupAsks: { groupName: string; topic: string; members: { name: string; role: string }[] }[] = [];
   nextGroupQuestions: { name: string; question: string }[] = [];
+  trackerEntries: { person: string; title: string; status: "open" | "blocked" | "done" | "dropped"; due: string; progress: number; doneSoFar: string }[] = [];
+  trackerInputs: { transcript: string }[] = [];
+  async extractTracker(input: { transcript: string }) {
+    this.trackerInputs.push(input);
+    return this.trackerEntries;
+  }
   async composeGroupAsk(input: { groupName: string; topic: string; memory: string; members: { name: string; role: string; memory: string }[] }) {
     this.groupAsks.push(input);
     return { opening: input.topic ? `Hi team, ${input.topic}?` : "", questions: this.nextGroupQuestions };
@@ -1694,7 +1700,7 @@ test("no tracker is posted until there is something to show; then one table, edi
   assert.equal(t.created[0]!.chat, "g-rec");
   const html = t.created[0]!.html;
   assert.match(html, /<b>Team tracker<\/b>/);
-  assert.match(html, /<td>Priya<\/td><td>Client deck &lt;v2&gt;<\/td><td>14 Nov<\/td><td>🔴 Overdue<\/td>/);
+  assert.match(html, /<td>Priya<\/td><td>Client deck &lt;v2&gt;<\/td><td>14 Nov<\/td><td>-<\/td><td>🔴 Overdue<\/td>/);
   assert.match(html, /<td>Ravi<\/td><td>No items yet<\/td>/);
 
   await t.engine.refreshTrackers(); // nothing changed: nothing sent
@@ -1705,7 +1711,7 @@ test("no tracker is posted until there is something to show; then one table, edi
   await t.engine.refreshTrackers();
   assert.equal(t.created.length, 1); // still one message
   assert.equal(t.updated.at(-1)!.id, "trk-1");
-  assert.match(t.updated.at(-1)!.html, /Landing page<\/td><td>-<\/td><td>🟠 Blocked/);
+  assert.match(t.updated.at(-1)!.html, /Landing page<\/td><td>-<\/td><td>-<\/td><td>🟠 Blocked/);
 });
 
 test("if the table cannot be edited, a fresh one is posted at most once a day", async () => {
@@ -1814,4 +1820,48 @@ test("the group message is given each person's tracker items to work from", asyn
   await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
   const raviBrief = g.brain.groupAsks.at(-1)!.members.find((m) => m.name === "Ravi Kumar") as { memory?: string };
   assert.match(raviBrief.memory ?? "", /On the tracker:[\s\S]*TalentFlow app[\s\S]*OVERDUE/);
+});
+
+// ---------- building a tracker from the whole chat history ----------
+
+test("a tracker is built from the group's history: items by person, progress and what is done, pinned", async () => {
+  const t = trackerSetup();
+  const direct = (t.engine as unknown as { direct: Record<string, unknown> }).direct;
+  direct.history = async () => [
+    { fromSender: true, from: "Sujith", text: "status of the website?", at: "2026-11-10T09:00:00Z" },
+    { fromSender: false, from: "Ravi Kumar", text: "80% done, live by friday", at: "2026-11-10T09:05:00Z" },
+    { fromSender: true, from: "Sujith", text: "Team tracker · updated ...", at: "2026-11-11T09:00:00Z" },
+  ];
+  await t.engine.handleMessage(t.cto, "add group Recruitment Team");
+  t.brain.trackerEntries = [
+    { person: "Ravi Kumar", title: "Website", status: "open", due: "2026-11-14", progress: 80, doneSoFar: "80% done, live by Friday (10 Nov)" },
+    { person: "Priya", title: "LinkedIn posts", status: "done", due: "", progress: -1, doneSoFar: "posted" },
+    { person: "Nobody Here", title: "Ghost task", status: "open", due: "", progress: -1, doneSoFar: "" },
+  ];
+  t.brain.nextActions = [{ type: "build_tracker", target: "Recruitment Team", text: "" }];
+  await t.engine.handleMessage(t.cto, "build a tracker for the Recruitment Team group from the whole chat and track it daily");
+
+  // The tracker table itself is not fed back in as history.
+  assert.doesNotMatch(t.brain.trackerInputs[0]!.transcript, /Team tracker/);
+  assert.match(t.brain.trackerInputs[0]!.transcript, /2026-11-10 Ravi Kumar: 80% done, live by friday/);
+
+  const ravi = t.store.personByEmail("ravi@acme.test")!;
+  assert.deepEqual(
+    t.store.activeItems(ravi.id).map((i) => [i.title, i.due, i.progress]),
+    [["Website", "2026-11-14", 80]],
+  );
+  const html = t.created.at(-1)!.html;
+  assert.match(html, /<th>Progress<\/th><th>Status<\/th><th>Done so far<\/th>/);
+  assert.match(html, /Website<\/td><td>14 Nov<\/td><td>▰▰▰▰▱ 80%<\/td><td>🔴 Overdue<\/td><td>80% done, live by Friday \(10 Nov\)/);
+  assert.match(html, /LinkedIn posts<\/td><td>-<\/td><td>▰▰▰▰▰ 100%<\/td><td>✅ Done/);
+  assert.doesNotMatch(html, /Ghost task/);
+  assert.match(t.admin.at(-1)!, /Built the tracker for \*\*Recruitment Team\*\*[\s\S]*Ravi Kumar: 1/);
+
+  // Built again: the same work is updated, not added twice.
+  t.brain.trackerEntries = [{ person: "Ravi", title: "website", status: "open", due: "", progress: 90, doneSoFar: "90%" }];
+  await t.engine.handleMessage(t.cto, "tracker build Recruitment Team");
+  assert.deepEqual(
+    t.store.activeItems(ravi.id).map((i) => [i.title, i.due, i.progress]),
+    [["Website", "2026-11-14", 90]],
+  );
 });

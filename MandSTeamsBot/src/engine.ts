@@ -66,6 +66,7 @@ const ADMIN_HELP = `**Daily Check-in: what you can type**
 - **board** (or **menu**): the team board, with who has replied, who is blocked, and buttons for everything below
 - **add** name@company.com: start asking someone for updates
 - **remove** name: stop asking them (their notes are kept)
+- **tracker build** Group Name: go through the group's whole chat history and build its tracker: each piece of work by person, what is done so far, progress and due date.
 - **tracker** Group Name: post (or refresh) the tracker table in that group: who is doing what, due dates and status, pinned at the top and kept up to date by me. **tracker Group Name off** stops it.
 - **add group** Group Name: follow a Teams group chat. Updates are asked for in the group, and follow-up questions stay there with the person tagged; only something that should not be said in front of the group goes to them one to one. **ask group** Name asks now, **remove group** Name stops.
 - **ask** name: ask them for an update right now. **ask all** asks everyone.
@@ -211,6 +212,13 @@ interface Draft {
 }
 
 /** A date the model gave, kept only if it really is YYYY-MM-DD. */
+/** A progress figure the model gave, kept only if it is 0 to 100; done is always 100. */
+const validProgress = (value: number | undefined, status: string): number | null =>
+  status === "done" ? 100 : typeof value === "number" && value >= 0 && value <= 100 ? Math.round(value) : null;
+
+/** "▰▰▰▱▱ 60%" */
+const progressBar = (p: number) => `${"▰".repeat(Math.round(p / 20))}${"▱".repeat(5 - Math.round(p / 20))} ${p}%`;
+
 const validDate = (value: string | undefined) => (value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : "");
 
 export class Engine {
@@ -875,9 +883,9 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     for (const change of items) {
       const updated =
         change.itemId != null &&
-        this.store.updateItem(person.id, change.itemId, change.status, change.update, checkin.date, validDate(change.due));
+        this.store.updateItem(person.id, change.itemId, change.status, change.update, checkin.date, validDate(change.due), validProgress(change.progress, change.status));
       if (!updated) {
-        this.store.addItem(person.id, change.title, change.status, change.update, checkin.date, validDate(change.due));
+        this.store.addItem(person.id, change.title, change.status, change.update, checkin.date, validDate(change.due), validProgress(change.progress, change.status));
       }
     }
     this.store.set(`noted:${checkin.id}`, String(this.store.messages(checkin.id).filter((m) => m.role === "user").length));
@@ -1345,7 +1353,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         const name = esc((p.name ?? p.email).split(" ")[0]!);
         const items = this.store.trackerItems(p.id, date).slice(0, 8);
         rows += items.length;
-        if (!items.length) return `<tr><td>${name}</td><td>No items yet</td><td>-</td><td>-</td></tr>`;
+        if (!items.length) return `<tr><td>${name}</td><td>No items yet</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>`;
         return items
           .map((i, n) => {
             const status =
@@ -1358,15 +1366,73 @@ So you know how it's used: your answers are summarised each day for the CTO and 
                     : i.due === date
                       ? "🟡 Due today"
                       : "🔵 In progress";
-            return `<tr><td>${n === 0 ? name : ""}</td><td>${esc(i.title)}</td><td>${i.due ? day(i.due) : "-"}</td><td>${status}</td></tr>`;
+            const progress = i.status === "done" ? 100 : i.progress;
+            const latest = i.lastUpdate.length > 90 ? `${i.lastUpdate.slice(0, 89).trimEnd()}…` : i.lastUpdate;
+            return `<tr><td>${n === 0 ? name : ""}</td><td>${esc(i.title)}</td><td>${i.due ? day(i.due) : "-"}</td><td>${progress === null ? "-" : progressBar(progress)}</td><td>${status}</td><td>${esc(latest)}</td></tr>`;
           })
           .join("");
       })
       .join("");
     return {
       rows,
-      html: `<table><tr><th>Who</th><th>Item</th><th>Due</th><th>Status</th></tr>${body}</table>`,
+      html: `<table><tr><th>Who</th><th>Item</th><th>Due</th><th>Progress</th><th>Status</th><th>Done so far</th></tr>${body}</table>`,
     };
+  }
+
+  /**
+   * Read a group's whole chat history and put every piece of work in it on
+   * the tracker, by person: what is done so far, progress and due date.
+   * Items already tracked are updated rather than duplicated.
+   */
+  private async buildTracker(group: Group): Promise<string> {
+    if (!this.direct?.history || !this.direct.createTracker) {
+      return "Building a tracker needs messages to be sent from your own Teams account.";
+    }
+    if (this.paused) return `Paused: nothing was posted in ${group.name}. Send **resume** first.`;
+    const date = this.today();
+    const members = (await this.syncGroup(group)).filter((p) => !this.isAdmin(p));
+    if (!members.length) return `I found nobody in ${group.name} to track.`;
+
+    const lines = (await this.direct.history(group.chatId, 2000)).filter(
+      (m) => !(m.fromSender && m.text.startsWith("Team tracker")),
+    );
+    const transcript = lines
+      .map((m) => `${m.at.slice(0, 10)} ${m.fromSender ? this.direct!.senderName : m.from || "Someone"}: ${m.text.slice(0, 400)}`)
+      .join("\n");
+    const entries = await this.brain.extractTracker({
+      groupName: group.name,
+      today: date,
+      transcript,
+      people: members.map((p) => ({
+        name: displayName(p),
+        role: p.profile ?? "",
+        memory: this.store.get(`rapport:${p.id}`) || "",
+      })),
+    });
+
+    const counts = new Map<number, number>();
+    for (const entry of entries) {
+      const wanted = entry.person.trim().toLowerCase();
+      const person =
+        members.find((p) => displayName(p).toLowerCase() === wanted) ??
+        members.find((p) => displayName(p).toLowerCase().split(/\s+/)[0] === wanted.split(/\s+/)[0]);
+      if (!person || !entry.title.trim()) continue;
+      const due = validDate(entry.due);
+      const progress = validProgress(entry.progress, entry.status);
+      const existing = this.store.itemByTitle(person.id, entry.title);
+      if (existing) this.store.updateItem(person.id, existing.id, entry.status, entry.doneSoFar, date, due, progress);
+      else this.store.addItem(person.id, entry.title.trim(), entry.status, entry.doneSoFar, date, due, progress);
+      counts.set(person.id, (counts.get(person.id) ?? 0) + 1);
+    }
+
+    this.store.set(`trackeroff:${group.id}`, "");
+    this.store.set(`trackerhash:${group.id}`, "");
+    await this.refreshTrackers(group);
+    const posted = !!this.store.get(`tracker:${group.id}`);
+    const summary = members.map((p) => `- ${displayName(p)}: ${counts.get(p.id) ?? 0}`).join("\n");
+    return posted
+      ? `Built the tracker for **${group.name}** from ${lines.length} messages of its chat history, and pinned it at the top of that chat.\n\nItems found:\n${summary}\n\nI keep it up to date as people reply, and the morning and evening messages follow up on what is due or overdue on it.`
+      : `I read ${lines.length} messages of ${group.name} and found:\n${summary}\n\nbut could not post the tracker there. The server log has the details.`;
   }
 
   /**
@@ -1989,6 +2055,12 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           return await this.showBoard(admin);
 
         case "tracker": {
+          if (/^(build|rebuild)\b/i.test(arg)) {
+            const group = this.resolveGroup(arg.replace(/^(build|rebuild)\s+/i, "").replace(/^(for\s+)?(the\s+)?group\s+/i, "").trim());
+            if (typeof group === "string") return await reply(group);
+            await reply(`Reading the whole chat history of ${group.name}. This takes a minute.`);
+            return await reply(await this.buildTracker(group));
+          }
           const off = /\boff$/i.test(arg);
           const on = /\bon$/i.test(arg);
           const group = this.resolveGroup(arg.replace(/\b(off|on)$/i, "").replace(/^group\s+/i, "").trim());
@@ -2382,6 +2454,16 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         case "board":
           await command(action.type);
           break;
+        case "build_tracker": {
+          const group = this.resolveGroup(target);
+          if (typeof group === "string") {
+            await reply(group);
+          } else {
+            await reply(`Reading the whole chat history of ${group.name}. This takes a minute.`);
+            await reply(await this.buildTracker(group));
+          }
+          break;
+        }
         case "question":
           if (!this.store.nominees().length) {
             await reply("There are no notes yet because nobody is added. Send **add name@company.com** or **add group Group Name**, or **help** for everything you can type.");
