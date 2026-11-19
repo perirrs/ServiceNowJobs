@@ -61,7 +61,14 @@ const engine = new Engine(
   {
     send: async (conversationId, text) => void (await app.send(conversationId, text)),
     sendCard: async (conversationId, card) =>
-      void (await app.send(conversationId, {
+      (
+        await app.send(conversationId, {
+          type: "message",
+          attachments: [{ contentType: "application/vnd.microsoft.card.adaptive", content: card }],
+        })
+      ).id,
+    updateCard: async (conversationId, messageId, card) =>
+      void (await app.api.conversations.updateActivity(conversationId, messageId, {
         type: "message",
         attachments: [{ contentType: "application/vnd.microsoft.card.adaptive", content: card }],
       })),

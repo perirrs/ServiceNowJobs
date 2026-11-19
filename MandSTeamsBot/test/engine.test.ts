@@ -589,30 +589,84 @@ test("'add' and 'delete' work as plain words for nominate and remove", async () 
   assert.equal(t.store.nominees().length, 0);
 });
 
-test("menu buttons turn into the right commands, and the menu card lists people with buttons", async () => {
+test("board buttons turn into the right commands", () => {
   assert.equal(cardToCommand({ cmd: "add", newEmail: " a@b.co " }), "add a@b.co");
   assert.equal(cardToCommand({ cmd: "ask", who: "a@b.co" }), "ask a@b.co");
   assert.equal(cardToCommand({ cmd: "remove", who: "a@b.co" }), "remove a@b.co");
+  assert.equal(cardToCommand({ cmd: "details", who: "a@b.co" }), "report a@b.co");
   assert.equal(cardToCommand({ cmd: "askAll" }), "ask all");
   assert.equal(cardToCommand({ cmd: "schedule", time: "17:30" }), "schedule 17:30");
   assert.equal(cardToCommand({ cmd: "scheduleOff" }), "schedule off");
-  assert.equal(cardToCommand({ something: "else" }), "menu");
+  assert.equal(cardToCommand({ something: "else" }), "board");
+});
 
+/** An engine whose messenger records cards sent and edited. */
+function boardSetup() {
   const store = new Store(":memory:");
-  const cards: Record<string, unknown>[] = [];
+  const brain = new FakeBrain();
+  const sentCards: Record<string, unknown>[] = [];
+  const edits: { id: string; json: string }[] = [];
   const engine = new Engine(
     store,
-    new FakeBrain(),
-    { send: async () => undefined, sendCard: async (_to, card) => void cards.push(card) },
+    brain,
+    {
+      send: async () => undefined,
+      sendCard: async (_to, card) => {
+        sentCards.push(card);
+        return `msg-${sentCards.length}`;
+      },
+      updateCard: async (_to, id, card) => void edits.push({ id, json: JSON.stringify(card) }),
+    },
     config,
     () => new Date("2026-11-16T17:00:00Z"),
     () => undefined,
   );
-  const cto: Identity = { teamsUserId: "t", conversationId: "c", lookupEmail: async () => CTO };
-  await engine.handleMessage(cto, `add ${PRIYA}`);
-  await engine.handleMessage(cto, "menu");
-  const json = JSON.stringify(cards.at(-1));
+  const id = (email: string): Identity => ({ teamsUserId: `t-${email}`, conversationId: `c-${email}`, name: email.split("@")[0], lookupEmail: async () => email });
+  return { store, brain, engine, id, sentCards, edits };
+}
+
+test("the board groups people by where they stand, with a chat link and buttons for each", async () => {
+  const b = boardSetup();
+  await b.engine.handleMessage(b.id(CTO), `add ${PRIYA}`);
+  await b.engine.handleInstall(b.id(PRIYA));
+  await b.engine.handleMessage(b.id(CTO), "board");
+  let json = JSON.stringify(b.sentCards.at(-1));
+  assert.match(json, /Not asked today \(1\)/);
+  assert.match(json, /l\/chat\/0\/0\?users=priya%40acme\.test/);
   assert.match(json, /"cmd":"ask","who":"priya@acme\.test"/);
-  assert.match(json, /"cmd":"remove","who":"priya@acme\.test"/);
-  assert.match(json, /"id":"newEmail"/);
+  assert.match(json, /"cmd":"details","who":"priya@acme\.test"/);
+
+  // Asked: the same message is edited in place, and she moves to "no reply yet".
+  await b.engine.handleMessage(b.id(CTO), "ask priya");
+  assert.equal(b.edits.at(-1)!.id, "msg-1");
+  assert.match(b.edits.at(-1)!.json, /Asked, no reply yet \(1\)/);
+
+  // She reports a blocker: she moves to the top group and the blocker text shows.
+  b.brain.nextNote = {
+    note: { summary: "Portal down.", progressVsTargets: "", blockers: ["Client portal is down"], painPoints: [], helpNeeded: [], followUpTomorrow: [] },
+    items: [],
+  };
+  await b.engine.handleMessage(b.id(PRIYA), "portal is down, could not submit");
+  json = b.edits.at(-1)!.json;
+  assert.match(json, /Has a blocker \(1\)/);
+  assert.match(json, /Client portal is down/);
+});
+
+test("the board is not edited when nothing has changed", async () => {
+  const b = boardSetup();
+  await b.engine.handleMessage(b.id(CTO), "board");
+  await b.engine.tick();
+  await b.engine.tick();
+  assert.equal(b.edits.length, 0);
+});
+
+test("a handover puts the person in 'needs you personally' with what they wrote", async () => {
+  const b = boardSetup();
+  await b.engine.handleMessage(b.id(CTO), `add ${PRIYA}`);
+  await b.engine.handleInstall(b.id(PRIYA));
+  await b.engine.handleMessage(b.id(CTO), "board");
+  await b.engine.handleMessage(b.id(CTO), "ask priya");
+  b.brain.handoverNext = true;
+  await b.engine.handleMessage(b.id(PRIYA), "can I take leave on friday");
+  assert.match(b.edits.at(-1)!.json, /Needs you personally \(1\)[\s\S]*can I take leave on friday/);
 });

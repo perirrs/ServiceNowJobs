@@ -1,7 +1,7 @@
 {
   "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.19/MicrosoftTeams.schema.json",
   "manifestVersion": "1.19",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "id": "7a68de71-0c2f-4fe8-9fe0-a273cbe28f63",
   "developer": {
     "name": "Mergen Corporates Pvt Ltd",
@@ -25,11 +25,49 @@
   "bots": [
     {
       "botId": "7a68de71-0c2f-4fe8-9fe0-a273cbe28f63",
-      "scopes": ["personal"],
+      "scopes": [
+        "personal"
+      ],
       "supportsFiles": false,
-      "isNotificationOnly": false
+      "isNotificationOnly": false,
+      "commandLists": [
+        {
+          "scopes": [
+            "personal"
+          ],
+          "commands": [
+            {
+              "title": "board",
+              "description": "Who has replied, who is blocked, and all the buttons"
+            },
+            {
+              "title": "ask all",
+              "description": "Ask everyone for an update now"
+            },
+            {
+              "title": "digest",
+              "description": "Today's summary of everyone"
+            },
+            {
+              "title": "list",
+              "description": "Everyone added and where they stand"
+            },
+            {
+              "title": "schedule",
+              "description": "Show or set the automatic asking time"
+            },
+            {
+              "title": "help",
+              "description": "Everything you can type"
+            }
+          ]
+        }
+      ]
     }
   ],
-  "permissions": ["identity", "messageTeamMembers"],
+  "permissions": [
+    "identity",
+    "messageTeamMembers"
+  ],
   "validDomains": []
 }

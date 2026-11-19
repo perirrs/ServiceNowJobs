@@ -7,8 +7,10 @@ import type { Checkin, Person, Store } from "./db.js";
 /** Sends a chat message to a Teams conversation. Implemented by teams.ts, faked in tests. */
 export interface Messenger {
   send(conversationId: string, text: string): Promise<void>;
-  /** Send an Adaptive Card. Optional: without it the menu falls back to text. */
-  sendCard?(conversationId: string, card: Record<string, unknown>): Promise<void>;
+  /** Send an Adaptive Card and return the new message's id. Optional: without it the board falls back to text. */
+  sendCard?(conversationId: string, card: Record<string, unknown>): Promise<string | void>;
+  /** Replace the card in a message sent earlier. */
+  updateCard?(conversationId: string, messageId: string, card: Record<string, unknown>): Promise<void>;
 }
 
 /**
@@ -35,7 +37,7 @@ export interface Identity {
 
 const ADMIN_HELP = `**Daily Check-in: what you can type**
 
-- **menu**: buttons for everything below
+- **board** (or **menu**): the team board, with who has replied, who is blocked, and buttons for everything below
 - **add** name@company.com: start asking someone for updates
 - **remove** name: stop asking them (their notes are kept)
 - **ask** name: ask them for an update right now. **ask all** asks everyone.
@@ -80,12 +82,16 @@ export function cardToCommand(value: unknown): string {
       return "digest";
     case "list":
       return "list";
+    case "details":
+      return `report ${str("who")}`;
+    case "refresh":
+      return "refresh";
     case "schedule":
       return `schedule ${str("time")}`;
     case "scheduleOff":
       return "schedule off";
     default:
-      return "menu";
+      return "board";
   }
 }
 
@@ -269,6 +275,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
 
     if (this.isAdmin(person)) {
       await this.enqueue(person.id, () => this.handleAdmin(person, text.trim()));
+      await this.refreshBoards();
       return;
     }
     if (!person.nominated) {
@@ -283,6 +290,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       return;
     }
     await this.enqueue(person.id, () => this.handleUpdate(person, text.trim()));
+    await this.refreshBoards();
   }
 
   // ---------- the check-in conversation ----------
@@ -332,12 +340,13 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       const checkin = this.store.checkin(person.id, this.today());
       if (checkin?.status === "open") await this.handleUpdate(person, text.trim());
     });
+    await this.refreshBoards();
   }
 
   /** The sender typed in the chat themselves: the assistant stays quiet there for the rest of the day. */
   manualTakeover(personId: number): void {
     const checkin = this.store.checkin(personId, this.today());
-    if (checkin?.status === "open") this.store.set(`takeover:${checkin.id}`, "1");
+    if (checkin?.status === "open") this.store.set(`takeover:${checkin.id}`, "manual");
   }
 
   /** People whose check-in is open today and who are reached through the direct channel. */
@@ -367,7 +376,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       const turn = await this.brain.nextTurn(this.context(person, checkin, finalTurn));
       if (turn.handover || !turn.reply) {
         // Something only a person should answer: go quiet here and tell the admins.
-        this.store.set(`takeover:${checkin.id}`, "1");
+        this.store.set(`takeover:${checkin.id}`, "handover");
         await this.notifyAdmins(
           `**${displayName(person)} needs a personal reply.** They wrote: "${text}"\n\nI have stopped replying in that chat for today. Anything else they say is still recorded for the note.`,
         );
@@ -498,6 +507,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
   async tick(): Promise<void> {
     await this.runReminders(this.config.chaseAfterMinutes);
     await this.closeIdle(this.config.idleCloseMinutes);
+    await this.refreshBoards();
 
     const { date, minutes, weekend } = this.localNow();
     if (weekend) return;
@@ -517,68 +527,146 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     }
   }
 
-  // ---------- the button menu ----------
+  // ---------- the status board ----------
 
-  private menuCard(): Record<string, unknown> {
+  /** A stored message time (UTC) shown as HH:MM in the configured timezone. */
+  private clock(at: string): string {
+    return new Intl.DateTimeFormat("en-GB", {
+      timeZone: this.config.timezone,
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(new Date(`${at.replace(" ", "T")}Z`));
+  }
+
+  /**
+   * One card showing where everyone stands today, most urgent first, with the
+   * controls underneath. It is edited in place as things change, so a pinned
+   * copy stays current.
+   */
+  private boardCard(): Record<string, unknown> {
     const date = this.today();
     const nominees = this.store.nominees();
+    const todaysNotes = new Map(this.store.notesOn(date).map((n) => [n.personId, n]));
+    const clip = (text: string, max = 120) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text);
     const submit = (title: string, data: Record<string, unknown>) => ({ type: "Action.Submit", title, data });
-    const rows = nominees.slice(0, 20).map((p) => {
-      const c = this.store.checkin(p.id, date);
-      const status = !this.address(p)
-        ? "not connected"
-        : !c
-          ? "not asked today"
-          : c.status === "completed"
-            ? "update received"
-            : c.status === "no_response"
-              ? "no reply"
-              : "asked, waiting";
-      return {
-        type: "ColumnSet",
-        separator: true,
-        columns: [
-          {
-            type: "Column",
-            width: "stretch",
-            verticalContentAlignment: "Center",
-            items: [
-              { type: "TextBlock", text: displayName(p), weight: "Bolder", wrap: true },
-              { type: "TextBlock", text: `${p.email} · ${status}`, isSubtle: true, spacing: "None", wrap: true, size: "Small" },
-            ],
-          },
-          {
-            type: "Column",
-            width: "auto",
-            items: [
-              {
-                type: "ActionSet",
-                actions: [submit("Ask now", { cmd: "ask", who: p.email }), submit("Remove", { cmd: "remove", who: p.email })],
-              },
-            ],
-          },
-        ],
-      };
+
+    const groups = [
+      { title: "Needs you personally", color: "Attention" },
+      { title: "Has a blocker", color: "Attention" },
+      { title: "Asked, no reply yet", color: "Warning" },
+      { title: "Replying now", color: "Accent" },
+      { title: "Update received", color: "Good" },
+      { title: "Not asked today", color: "Default" },
+    ];
+
+    const placed = nominees.slice(0, 30).map((person) => {
+      const checkin = this.store.checkin(person.id, date);
+      const messages = checkin ? this.store.messages(checkin.id) : [];
+      const lastFromThem = messages.filter((m) => m.role === "user").at(-1);
+      const note = todaysNotes.get(person.id);
+      const blockedItem = this.store.activeItems(person.id).find((i) => i.status === "blocked");
+
+      if (!this.address(person)) return { group: 5, person, line: "Not connected in Teams yet." };
+      if (checkin?.status === "open" && this.store.get(`takeover:${checkin.id}`) === "handover") {
+        return { group: 0, person, line: `They wrote: "${clip(lastFromThem?.text ?? "", 100)}"` };
+      }
+      if (note?.blockers.length) return { group: 1, person, line: clip(note.blockers.join("; ")) };
+      if (checkin?.status === "open") {
+        if (lastFromThem) return { group: 3, person, line: `${this.clock(lastFromThem.at)}: "${clip(lastFromThem.text, 100)}"` };
+        return {
+          group: 2,
+          person,
+          line: `Asked at ${this.clock(messages[0]?.at ?? "")}${checkin.reminded ? ", chased once" : ""}.`,
+        };
+      }
+      if (checkin?.status === "no_response") return { group: 2, person, line: "Asked today, did not reply." };
+      if (note) return { group: 4, person, line: clip(note.summary) };
+      if (blockedItem) return { group: 1, person, line: clip(`Still blocked: ${blockedItem.title}. ${blockedItem.lastUpdate}`) };
+      const last = this.store.recentNotes(person.id, 1)[0];
+      return { group: 5, person, line: last ? `Last update ${last.date}: ${clip(last.summary, 90)}` : "No updates yet." };
     });
+
+    const body: Record<string, unknown>[] = [
+      { type: "TextBlock", text: "Team board", weight: "Bolder", size: "Large" },
+      {
+        type: "TextBlock",
+        spacing: "None",
+        isSubtle: true,
+        wrap: true,
+        text: nominees.length
+          ? groups
+              .map((g, i) => ({ g, n: placed.filter((r) => r.group === i).length }))
+              .filter((x) => x.n)
+              .map((x) => `${x.n} ${x.g.title.toLowerCase()}`)
+              .join(" · ")
+          : "Nobody added yet. Use Add person below.",
+      },
+    ];
+
+    groups.forEach((group, index) => {
+      const rows = placed.filter((r) => r.group === index);
+      if (!rows.length) return;
+      body.push({
+        type: "TextBlock",
+        text: `${group.title} (${rows.length})`,
+        weight: "Bolder",
+        color: group.color,
+        spacing: "Large",
+        separator: true,
+      });
+      for (const { person, line } of rows) {
+        body.push({
+          type: "Container",
+          spacing: "Small",
+          items: [
+            { type: "TextBlock", text: displayName(person), weight: "Bolder", wrap: true },
+            { type: "TextBlock", text: line, wrap: true, maxLines: 2, spacing: "None", isSubtle: true },
+            {
+              type: "ActionSet",
+              spacing: "Small",
+              actions: [
+                {
+                  type: "Action.OpenUrl",
+                  title: "Open chat",
+                  url: `https://teams.microsoft.com/l/chat/0/0?users=${encodeURIComponent(person.email)}`,
+                },
+                submit("Ask now", { cmd: "ask", who: person.email }),
+                submit("Details", { cmd: "details", who: person.email }),
+                submit("Remove", { cmd: "remove", who: person.email }),
+              ],
+            },
+          ],
+        });
+      }
+    });
+
+    body.push({
+      type: "TextBlock",
+      text: this.scheduleStatus().replace(/\*\*/g, ""),
+      wrap: true,
+      isSubtle: true,
+      size: "Small",
+      spacing: "Large",
+      separator: true,
+    });
+
     return {
       type: "AdaptiveCard",
       $schema: "http://adaptivecards.io/schemas/adaptive-card.json",
       version: "1.4",
-      body: [
-        { type: "TextBlock", text: "Daily Check-in", weight: "Bolder", size: "Medium" },
-        { type: "TextBlock", text: this.scheduleStatus().replace(/\*\*/g, ""), wrap: true, isSubtle: true },
-        {
-          type: "TextBlock",
-          text: nominees.length ? `People (${nominees.length})` : "Nobody added yet. Add someone below.",
-          weight: "Bolder",
-          spacing: "Medium",
-        },
-        ...rows,
-        { type: "Input.Text", id: "newEmail", placeholder: "name@company.com", label: "Add a person", spacing: "Medium" },
-      ],
+      body,
       actions: [
-        submit("Add person", { cmd: "add" }),
         submit("Ask everyone now", { cmd: "askAll" }),
+        {
+          type: "Action.ShowCard",
+          title: "Add person",
+          card: {
+            type: "AdaptiveCard",
+            body: [{ type: "Input.Text", id: "newEmail", placeholder: "name@company.com", label: "Their work email" }],
+            actions: [submit("Add", { cmd: "add" })],
+          },
+        },
         submit("Digest now", { cmd: "digest" }),
         {
           type: "Action.ShowCard",
@@ -589,15 +677,41 @@ So you know how it's used: your answers are summarised each day for the CTO and 
             actions: [submit("Save time", { cmd: "schedule" }), submit("Turn off", { cmd: "scheduleOff" })],
           },
         },
+        submit("Refresh", { cmd: "refresh" }),
       ],
     };
   }
 
-  private async showMenu(admin: Person): Promise<void> {
-    if (admin.conversationId && this.messenger.sendCard) {
-      await this.messenger.sendCard(admin.conversationId, this.menuCard());
-    } else {
+  /** What each admin's board last showed, so it is only edited when something changed. */
+  private shownBoards = new Map<number, string>();
+
+  /** Post a fresh board to this admin. It becomes the one that is kept up to date. */
+  private async showBoard(admin: Person): Promise<void> {
+    if (!admin.conversationId || !this.messenger.sendCard) {
       await this.sayAdmin(admin, ADMIN_HELP);
+      return;
+    }
+    const card = this.boardCard();
+    const id = await this.messenger.sendCard(admin.conversationId, card);
+    if (id) this.store.set(`board:${admin.id}`, id);
+    this.shownBoards.set(admin.id, JSON.stringify(card));
+  }
+
+  /** Bring every admin's board up to date, editing the existing message in place. */
+  async refreshBoards(): Promise<void> {
+    if (!this.messenger.updateCard) return;
+    const card = this.boardCard();
+    const json = JSON.stringify(card);
+    for (const email of this.config.adminEmails) {
+      const admin = this.store.personByEmail(email);
+      const messageId = admin ? this.store.get(`board:${admin.id}`) : undefined;
+      if (!admin?.conversationId || !messageId || this.shownBoards.get(admin.id) === json) continue;
+      try {
+        await this.messenger.updateCard(admin.conversationId, messageId, card);
+        this.shownBoards.set(admin.id, json);
+      } catch (err) {
+        this.log(`Could not refresh the board for ${email}`, err);
+      }
     }
   }
 
@@ -721,7 +835,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     const arg = rest.trim();
     let verb = verbRaw.toLowerCase().replace(/[:,]$/, "");
     // "list" alone is a command; "list who is blocked" is a question.
-    if (["help", "hi", "hello", "menu", "list", "digest"].includes(verb) && arg) verb = "";
+    if (["help", "hi", "hello", "menu", "board", "refresh", "list", "digest"].includes(verb) && arg) verb = "";
     if (verb === "add") verb = "nominate";
     if (verb === "delete") verb = "remove";
     if (verb === "checkin") verb = "ask";
@@ -734,7 +848,12 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         case "hi":
         case "hello":
         case "menu":
-          return await this.showMenu(admin);
+        case "board":
+          return await this.showBoard(admin);
+
+        case "refresh":
+          // Nothing to say: the board is brought up to date after every command.
+          return;
 
         case "schedule": {
           const digest = /^digest\b/i.test(arg);
