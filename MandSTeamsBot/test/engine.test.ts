@@ -6,7 +6,7 @@ Math.random = () => 0;
 import type { AdminAction, Brain, CheckinContext, DigestPerson, NoteResult, Turn } from "../src/ai.js";
 import type { Config } from "../src/config.js";
 import { Store } from "../src/db.js";
-import { cardToCommand, chunk, Engine, parseTime } from "../src/engine.js";
+import { cardToCommand, chunk, Engine, parseTime, takeZone } from "../src/engine.js";
 import type { Identity } from "../src/engine.js";
 
 const CTO = "cto@acme.test";
@@ -597,7 +597,7 @@ test("nothing is asked automatically until a schedule is set; then it runs once 
   assert.equal(t.brain.turns.length, 0);
 
   await t.engine.handleMessage(t.id(CTO), "schedule 5pm");
-  assert.match(t.to(CTO).at(-1)!, /automatically at \*\*17:00\*\*/);
+  assert.match(t.to(CTO).at(-1)!, /automatically at \*\*17:00 UTC\*\*/);
   await t.engine.tick();
   await t.engine.tick();
   assert.equal(t.brain.turns.length, 1);
@@ -1075,7 +1075,7 @@ test("a person with a time of their own is asked then, and left out of the gener
   await t.engine.handleInstall(t.id("ravi@acme.test"));
   await t.engine.handleMessage(t.id(CTO), "schedule 17:00");
   await t.engine.handleMessage(t.id(CTO), "schedule priya evening 18:00");
-  assert.match(t.to(CTO).at(-1)!, /priya will be asked automatically at \*\*18:00\*\* \(end-of-day update\)/);
+  assert.match(t.to(CTO).at(-1)!, /priya will be asked automatically at \*\*18:00 UTC\*\* \(end-of-day update\)/);
 
   await t.engine.tick(); // 17:00: the general evening time
   assert.deepEqual(t.brain.turns.map((x) => x.person.email), ["ravi@acme.test"]);
@@ -1093,7 +1093,7 @@ test("a group can have a time of its own, and '5 pm' with a space is understood"
   const g = groupSetup();
   await g.engine.handleMessage(g.cto, "add group Recruitment Team");
   await g.engine.handleMessage(g.cto, "schedule Recruitment Team 5 pm");
-  assert.match(g.admin.at(-1)!, /Recruitment Team will be asked automatically at \*\*17:00\*\*/);
+  assert.match(g.admin.at(-1)!, /Recruitment Team will be asked automatically at \*\*17:00 UTC\*\*/);
   await g.engine.tick();
   assert.deepEqual(g.sent.map((s) => s.to), ["g-rec"]);
 });
@@ -1106,18 +1106,23 @@ test("the board shows what is switched on in green, and each person has a time p
   assert.match(json, /OFF · No morning plan message/);
   assert.match(json, /OFF · No end-of-day message/);
   assert.doesNotMatch(json, /"color":"Good"/);
-  assert.match(json, /"cmd":"scheduleFor","who":"priya@acme\.test","field":"p\d+m","slot":"morning"/);
+  assert.match(json, /"cmd":"scheduleFor","who":"priya@acme\.test","field":"p\d+m","zoneField":"p\d+mz","slot":"morning"/);
   assert.equal(cardToCommand({ cmd: "scheduleFor", who: PRIYA, field: "p2e", slot: "evening", p2e: "17:30" }), `schedule ${PRIYA} evening 17:30`);
   assert.equal(cardToCommand({ cmd: "scheduleFor", who: "", field: "allm", slot: "morning", allm: "09:30" }), "schedule morning 09:30");
+  assert.equal(
+    cardToCommand({ cmd: "scheduleFor", who: "", field: "allm", zoneField: "allmz", slot: "morning", allm: "09:30", allmz: "Asia/Kolkata" }),
+    "schedule morning 09:30 Asia/Kolkata",
+  );
   assert.equal(cardToCommand({ cmd: "scheduleFor", who: PRIYA, field: "p2", p2: "10:30" }), `schedule ${PRIYA} 10:30`);
   assert.equal(cardToCommand({ cmd: "scheduleOffFor", who: PRIYA }), `schedule ${PRIYA} off`);
 
   await b.engine.handleMessage(b.id(CTO), "schedule 17:00");
   await b.engine.handleMessage(b.id(CTO), `schedule ${PRIYA} 10:30`);
   json = b.edits.at(-1)!.json;
-  assert.match(json, /"text":"ON · End of day: everyone is asked at 17:00, Monday to Friday"[^}]*"color":"Good"/);
-  assert.match(json, /"text":"ON · Morning 10:30, Monday to Friday","color":"Good"/);
-  assert.match(json, /"title":"Times: Morning 10:30"/);
+  assert.match(json, /"text":"ON · End of day: everyone is asked at 17:00 UTC, Monday to Friday"[^}]*"color":"Good"/);
+  assert.match(json, /"text":"ON · Morning 10:30 UTC, Monday to Friday","color":"Good"/);
+  assert.match(json, /"title":"Times: Morning 10:30 UTC"/);
+  assert.match(json, /"type":"Input.ChoiceSet","id":"p\d+mz","label":"Timezone"/);
 });
 
 // ---------- tagging people in the group with their own question ----------
@@ -1581,8 +1586,8 @@ test("morning asks for the plan, evening reviews it, both on the same day, and t
   await onboard(t);
   await t.engine.handleMessage(t.id(CTO), "schedule morning 09:30");
   await t.engine.handleMessage(t.id(CTO), "schedule evening 17:30");
-  assert.match(t.to(CTO).at(-1)!, /Morning plan: everyone is asked automatically at \*\*09:30\*\*/);
-  assert.match(t.to(CTO).at(-1)!, /End-of-day update: everyone is asked automatically at \*\*17:30\*\*/);
+  assert.match(t.to(CTO).at(-1)!, /Morning plan: everyone is asked automatically at \*\*09:30 UTC\*\*/);
+  assert.match(t.to(CTO).at(-1)!, /End-of-day update: everyone is asked automatically at \*\*17:30 UTC\*\*/);
 
   t.setDate("2026-11-17T09:30:00Z");
   await t.engine.tick();
@@ -1929,7 +1934,7 @@ test("outside office hours replies are recorded but not answered; inside they ar
   await onboard(t);
   t.brain.doneAfterUserMessages = 99;
   await t.engine.handleMessage(t.id(CTO), "hours 9 to 5"); // means 09:00-17:00
-  assert.match(t.to(CTO).at(-1)!, /Office hours: \*\*09:00 to 17:00\*\*/);
+  assert.match(t.to(CTO).at(-1)!, /Office hours: \*\*09:00 to 17:00 UTC\*\*/);
   t.setDate("2026-11-16T10:00:00Z");
   await t.engine.handleMessage(t.id(CTO), "ask priya");
   const toPriya = () => t.to(PRIYA).length;
@@ -1975,4 +1980,40 @@ test("the timezone can be set from the chat, and office hours are read in it", a
   assert.match(t.to(CTO).at(-1)!, /do not know the timezone/);
   await t.engine.handleMessage(t.id(CTO), "hours off");
   assert.match(t.to(CTO).at(-1)!, /No office hours are set/);
+});
+
+// ---------- a timezone on each schedule ----------
+
+test("a timezone is taken out of a phrase only when it is clearly one", () => {
+  assert.deepEqual(takeZone("morning 09:30 India"), { rest: "morning 09:30", zone: "Asia/Kolkata" });
+  assert.deepEqual(takeZone("priya evening 6pm UK time"), { rest: "priya evening 6pm", zone: "Europe/London" });
+  assert.deepEqual(takeZone("09:30 Asia/Dubai"), { rest: "09:30", zone: "Asia/Dubai" });
+  assert.deepEqual(takeZone("santosh morning 10:00"), { rest: "santosh morning 10:00", zone: "" });
+});
+
+test("each schedule runs in its own timezone, whatever the bot's own is", async () => {
+  const t = setup();
+  await onboard(t);
+  await t.engine.handleMessage(t.id(CTO), "schedule morning 09:30 India"); // 04:00 UTC
+  assert.match(t.to(CTO).at(-1)!, /\*\*09:30 India time\*\*/);
+  await t.engine.handleMessage(t.id(CTO), "schedule priya evening 18:00 UK");
+  assert.match(t.to(CTO).at(-1)!, /\*\*18:00 UK time\*\*/);
+
+  t.setDate("2026-11-17T04:00:00Z"); // 09:30 in India
+  await t.engine.tick();
+  assert.equal(t.brain.turns.at(-1)?.round, "plan");
+  assert.equal(t.brain.turns.length, 1);
+});
+
+test("office hours can carry their own timezone too", async () => {
+  const t = setup();
+  await onboard(t);
+  await t.engine.handleMessage(t.id(CTO), "hours 09:30-18:30 India");
+  assert.match(t.to(CTO).at(-1)!, /09:30 to 18:30 India time/);
+  t.setDate("2026-11-16T05:00:00Z"); // 10:30 in India
+  await t.engine.handleMessage(t.id(CTO), "hours");
+  assert.match(t.to(CTO).at(-1)!, /It is office hours now/);
+  t.setDate("2026-11-16T14:00:00Z"); // 19:30 in India
+  await t.engine.handleMessage(t.id(CTO), "hours");
+  assert.match(t.to(CTO).at(-1)!, /outside office hours now/);
 });

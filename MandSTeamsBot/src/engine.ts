@@ -78,7 +78,7 @@ const ADMIN_HELP = `**Daily Check-in: what you can type**
 - **list**: everyone you have added and where they stand today
 - **report** name: their recent notes and open items
 - **digest**: today's summary of everyone, right now
-- **schedule morning 09:30** and **schedule evening 17:30**: the two daily messages, Monday to Friday. The morning one asks each person what they will work on today; the evening one checks what happened with that plan and what is blocking them. **schedule off** stops both, **schedule morning off** one of them, and **schedule** alone shows the settings.
+- **schedule morning 09:30 India** and **schedule evening 17:30 India**: add a timezone (India, UK, Dubai, US...) to any time; without one, my own timezone is used. the two daily messages, Monday to Friday. The morning one asks each person what they will work on today; the evening one checks what happened with that plan and what is blocking them. **schedule off** stops both, **schedule morning off** one of them, and **schedule** alone shows the settings.
 - **schedule digest 19:30**: send the daily digest automatically at that time. **schedule digest off** stops it.
 - **schedule priya morning 10:00**: give one person, or one group, a time of their own for that message instead of the general one. **schedule priya off** removes theirs.
 
@@ -135,7 +135,7 @@ export function cardToCommand(value: unknown): string {
     case "scheduleOff":
       return "schedule off";
     case "scheduleFor":
-      return ["schedule", str("who"), str("slot"), str(str("field"))].filter(Boolean).join(" ");
+      return ["schedule", str("who"), str("slot"), str(str("field")), str(str("zoneField"))].filter(Boolean).join(" ");
     case "scheduleOffFor":
       return ["schedule", str("who"), "off"].filter(Boolean).join(" ");
     default:
@@ -221,18 +221,56 @@ const validProgress = (value: number | undefined, status: string): number | null
 /** "▰▰▰▱▱ 60%" */
 const progressBar = (p: number) => `${"▰".repeat(Math.round(p / 20))}${"▱".repeat(5 - Math.round(p / 20))} ${p}%`;
 
+const ZONE_TABLE: Record<string, string> = {
+  india: "Asia/Kolkata", ist: "Asia/Kolkata", kolkata: "Asia/Kolkata", hyderabad: "Asia/Kolkata", bangalore: "Asia/Kolkata",
+  bengaluru: "Asia/Kolkata", mumbai: "Asia/Kolkata", delhi: "Asia/Kolkata", chennai: "Asia/Kolkata",
+  uk: "Europe/London", london: "Europe/London", gmt: "Europe/London", bst: "Europe/London", england: "Europe/London",
+  dubai: "Asia/Dubai", uae: "Asia/Dubai", gst: "Asia/Dubai",
+  us: "America/New_York", usa: "America/New_York", est: "America/New_York", "new york": "America/New_York",
+  singapore: "Asia/Singapore", sgt: "Asia/Singapore",
+};
+const ZONE_WORDS = new Set(Object.keys(ZONE_TABLE));
+
+/** The timezones offered on the board, with plain names. */
+const ZONE_CHOICES = [
+  { zone: "Asia/Kolkata", label: "India time" },
+  { zone: "Europe/London", label: "UK time" },
+  { zone: "Asia/Dubai", label: "Dubai time" },
+  { zone: "Asia/Singapore", label: "Singapore time" },
+  { zone: "America/New_York", label: "US Eastern time" },
+  { zone: "UTC", label: "UTC" },
+];
+
+/** "Asia/Kolkata" -> "India time"; anything else -> "Asia/Tokyo time". */
+export function zoneLabel(zone: string): string {
+  return ZONE_CHOICES.find((z) => z.zone === zone)?.label ?? `${zone} time`;
+}
+
+/**
+ * Take a timezone out of a phrase: "morning 09:30 India" -> { rest: "morning 09:30", zone: "Asia/Kolkata" }.
+ * Only clear zone words count (India, IST, UK, Dubai...) or names with a slash, so a person's name is never taken for one.
+ */
+export function takeZone(text: string): { rest: string; zone: string } {
+  const words = text.split(/\s+/).filter(Boolean);
+  for (let size = 2; size >= 1; size--) {
+    for (let i = 0; i + size <= words.length; i++) {
+      const candidate = words.slice(i, i + size).join(" ").replace(/^\(|\)$|,$/g, "");
+      const plain = candidate.toLowerCase().replace(/\s+time$/, "");
+      if (!ZONE_WORDS.has(plain) && !candidate.includes("/") && plain !== "utc") continue;
+      const zone = parseZone(plain === "utc" ? "UTC" : candidate.includes("/") ? candidate : plain);
+      if (!zone) continue;
+      return { rest: [...words.slice(0, i), ...words.slice(i + size)].join(" "), zone };
+    }
+  }
+  return { rest: text.trim(), zone: "" };
+}
+
 /** "India", "IST", "uk", "Asia/Dubai" -> an IANA timezone name, or null. */
 export function parseZone(input: string): string | null {
   const plain = input.trim().toLowerCase();
-  const known: Record<string, string> = {
-    india: "Asia/Kolkata", ist: "Asia/Kolkata", kolkata: "Asia/Kolkata", hyderabad: "Asia/Kolkata", bangalore: "Asia/Kolkata",
-    bengaluru: "Asia/Kolkata", mumbai: "Asia/Kolkata", delhi: "Asia/Kolkata", chennai: "Asia/Kolkata",
-    uk: "Europe/London", london: "Europe/London", gmt: "Europe/London", bst: "Europe/London", england: "Europe/London",
-    dubai: "Asia/Dubai", uae: "Asia/Dubai", gst: "Asia/Dubai",
-    us: "America/New_York", usa: "America/New_York", est: "America/New_York", "new york": "America/New_York",
-    singapore: "Asia/Singapore", sgt: "Asia/Singapore",
-  };
+  const known = ZONE_TABLE;
   const zone = known[plain] ?? input.trim();
+  if (plain === "utc") return "UTC";
   try {
     new Intl.DateTimeFormat("en-GB", { timeZone: zone });
     return zone;
@@ -304,11 +342,17 @@ export class Engine {
   }
 
   /** Office hours as minutes from midnight, or null when the bot may speak at any time. */
-  private officeHours(): { start: number; end: number; text: string } | null {
+  private officeHours(): { start: number; end: number; zone: string; text: string } | null {
     const value = this.store.get("hours") || "";
-    const m = /^(\d\d):(\d\d)-(\d\d):(\d\d)$/.exec(value);
+    const m = /^(\d\d):(\d\d)-(\d\d):(\d\d)(?:@(.+))?$/.exec(value);
     if (!m) return null;
-    return { start: Number(m[1]) * 60 + Number(m[2]), end: Number(m[3]) * 60 + Number(m[4]), text: value.replace("-", " to ") };
+    const zone = m[5] || this.tz;
+    return {
+      start: Number(m[1]) * 60 + Number(m[2]),
+      end: Number(m[3]) * 60 + Number(m[4]),
+      zone,
+      text: `${m[1]}:${m[2]} to ${m[3]}:${m[4]} ${zoneLabel(zone)}`,
+    };
   }
 
   /**
@@ -319,7 +363,7 @@ export class Engine {
   private inOfficeHours(): boolean {
     const hours = this.officeHours();
     if (!hours) return true;
-    const { minutes, weekend } = this.localNow();
+    const { minutes, weekend } = this.localNow(hours.zone);
     if (weekend) return false;
     return hours.start <= hours.end
       ? minutes >= hours.start && minutes < hours.end
@@ -1608,9 +1652,9 @@ So you know how it's used: your answers are summarised each day for the CTO and 
 
   // ---------- the schedule, kept in the database and set from the chat ----------
 
-  private localNow(): { date: string; minutes: number; weekend: boolean } {
+  private localNow(zone: string = this.tz): { date: string; minutes: number; weekend: boolean } {
     const parts = new Intl.DateTimeFormat("en-GB", {
-      timeZone: this.tz,
+      timeZone: zone,
       hour: "2-digit",
       minute: "2-digit",
       hour12: false,
@@ -1618,7 +1662,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     }).formatToParts(this.now());
     const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
     return {
-      date: this.today(),
+      date: todayIn(zone, this.now()),
       minutes: (Number(get("hour")) % 24) * 60 + Number(get("minute")),
       weekend: ["Sat", "Sun"].includes(get("weekday")),
     };
@@ -1627,19 +1671,26 @@ So you know how it's used: your answers are summarised each day for the CTO and 
   private hoursStatus(): string {
     const hours = this.officeHours();
     return hours
-      ? `Office hours: **${hours.text}**, Monday to Friday (${this.tz} time). Outside them I send nothing to anyone, but I still record what people write. ${this.inOfficeHours() ? "It is office hours now." : "It is outside office hours now, so I am quiet."}`
+      ? `Office hours: **${hours.text}**, Monday to Friday. Outside them I send nothing to anyone, but I still record what people write. ${this.inOfficeHours() ? "It is office hours now." : "It is outside office hours now, so I am quiet."}`
       : `No office hours are set: I may message people at any time (${this.tz} time). Set them with **hours 09:30-18:30**.`;
   }
 
+  /** "09:30" or "09:30@Asia/Kolkata" as shown to a person: "09:30 India time". */
+  private showTime(setting: string | undefined): string {
+    if (!setting) return "";
+    const [time, zone] = setting.split("@") as [string, string | undefined];
+    return `${time} ${zoneLabel(zone || this.tz)}`;
+  }
+
   private scheduleStatus(): string {
-    const morning = this.store.get("schedule:morning");
-    const evening = this.store.get("schedule:evening");
-    const digest = this.store.get("schedule:digest");
+    const morning = this.showTime(this.store.get("schedule:morning"));
+    const evening = this.showTime(this.store.get("schedule:evening"));
+    const digest = this.showTime(this.store.get("schedule:digest"));
     return [
       morning ? `Morning plan: everyone is asked automatically at **${morning}**.` : "",
       evening ? `End-of-day update: everyone is asked automatically at **${evening}**.` : "",
       morning || evening
-        ? `Monday to Friday, ${this.tz} time.${morning && evening ? "" : ` No ${morning ? "end-of-day" : "morning"} message is set.`}`
+        ? `Monday to Friday.${morning && evening ? "" : ` No ${morning ? "end-of-day" : "morning"} message is set.`}`
         : "No automatic asking: updates are only requested when you say **ask**.",
       digest ? `Daily digest at **${digest}**.` : "No automatic digest: send **digest** when you want one.",
     ]
@@ -1689,8 +1740,6 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     await this.refreshTrackers();
     await this.refreshBoards();
 
-    const { date, minutes, weekend } = this.localNow();
-    if (weekend) return;
     type Job = [string, () => Promise<unknown>];
     const jobs: Job[] = [
       ["morning", () => this.runCheckins("morning")],
@@ -1709,8 +1758,12 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         ),
     ];
     for (const [kind, job] of jobs) {
-      const at = this.store.get(`schedule:${kind}`);
-      if (!at) continue;
+      const setting = this.store.get(`schedule:${kind}`);
+      if (!setting) continue;
+      // Each schedule runs in its own timezone, or the bot's when none was given.
+      const [at, zone] = setting.split("@") as [string, string | undefined];
+      const { date, minutes, weekend } = this.localNow(zone || this.tz);
+      if (weekend) continue;
       const due = Number(at.slice(0, 2)) * 60 + Number(at.slice(3));
       // A ten-minute window, so a restart just after the time still runs it, once.
       if (minutes < due || minutes > due + 10 || this.store.get(`ran:${kind}`) === date) continue;
@@ -1762,9 +1815,11 @@ So you know how it's used: your answers are summarised each day for the CTO and 
 
     // A time of their own, in green, for a person or group that has one.
     const times = (prefix: string) => ({
-      morning: this.store.get(`schedule:${prefix}morning`) || "",
-      evening: this.store.get(`schedule:${prefix}evening`) || "",
+      morning: this.showTime(this.store.get(`schedule:${prefix}morning`)),
+      evening: this.showTime(this.store.get(`schedule:${prefix}evening`)),
     });
+    const rawTime = (prefix: string, slot: string) => (this.store.get(`schedule:${prefix}${slot}`) || "").split("@")[0];
+    const zoneOf = (prefix: string, slot: string) => (this.store.get(`schedule:${prefix}${slot}`) || "").split("@")[1] || this.tz;
     const timesText = (t: { morning: string; evening: string }) =>
       [t.morning && `Morning ${t.morning}`, t.evening && `Evening ${t.evening}`].filter(Boolean).join(" · ");
     const scheduleLine = (prefix: string) => {
@@ -1773,6 +1828,14 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         ? [{ type: "TextBlock", text: `ON · ${timesText(t)}, Monday to Friday`, color: "Good", weight: "Bolder", size: "Small", spacing: "None", wrap: true }]
         : [];
     };
+    // A choice of timezone beside each time.
+    const zonePicker = (id: string, current: string) => ({
+      type: "Input.ChoiceSet",
+      id,
+      label: "Timezone",
+      value: current,
+      choices: [...new Set([current, ...ZONE_CHOICES.map((z) => z.zone)])].map((zone) => ({ title: zoneLabel(zone), value: zone })),
+    });
     // A button that opens the two time pickers, morning and evening. `who` is empty for everyone.
     const timePicker = (field: string, who: string, prefix: string, title = "") => {
       const t = times(prefix);
@@ -1782,12 +1845,14 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         card: {
           type: "AdaptiveCard",
           body: [
-            { type: "Input.Time", id: `${field}m`, label: "Morning: ask for the plan for the day", ...(t.morning ? { value: t.morning } : {}) },
-            { type: "Input.Time", id: `${field}e`, label: "Evening: ask for the end-of-day update", ...(t.evening ? { value: t.evening } : {}) },
+            { type: "Input.Time", id: `${field}m`, label: "Morning: ask for the plan for the day", ...(rawTime(prefix, "morning") ? { value: rawTime(prefix, "morning") } : {}) },
+            zonePicker(`${field}mz`, zoneOf(prefix, "morning")),
+            { type: "Input.Time", id: `${field}e`, label: "Evening: ask for the end-of-day update", ...(rawTime(prefix, "evening") ? { value: rawTime(prefix, "evening") } : {}) },
+            zonePicker(`${field}ez`, zoneOf(prefix, "evening")),
           ],
           actions: [
-            submit("Save morning", { cmd: "scheduleFor", who, field: `${field}m`, slot: "morning" }),
-            submit("Save evening", { cmd: "scheduleFor", who, field: `${field}e`, slot: "evening" }),
+            submit("Save morning", { cmd: "scheduleFor", who, field: `${field}m`, zoneField: `${field}mz`, slot: "morning" }),
+            submit("Save evening", { cmd: "scheduleFor", who, field: `${field}e`, zoneField: `${field}ez`, slot: "evening" }),
             submit("Turn off", { cmd: "scheduleOffFor", who }),
           ],
         },
@@ -1933,7 +1998,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     body.push({
       type: "TextBlock",
       text: hours
-        ? `ON · Office hours ${hours.text}, Monday to Friday (${this.tz})${this.inOfficeHours() ? "" : " · quiet now"}`
+        ? `ON · Office hours ${hours.text}, Monday to Friday${this.inOfficeHours() ? "" : " · quiet now"}`
         : `OFF · No office hours: I may message people at any time (${this.tz})`,
       wrap: true,
       size: "Small",
@@ -1947,7 +2012,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     body.push(
       {
         type: "TextBlock",
-        text: morningAt ? `ON · Morning plan: everyone is asked at ${morningAt}, Monday to Friday` : "OFF · No morning plan message",
+        text: morningAt ? `ON · Morning plan: everyone is asked at ${this.showTime(morningAt)}, Monday to Friday` : "OFF · No morning plan message",
         wrap: true,
         size: "Small",
         spacing: "Large",
@@ -1956,7 +2021,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       },
       {
         type: "TextBlock",
-        text: eveningAt ? `ON · End of day: everyone is asked at ${eveningAt}, Monday to Friday` : "OFF · No end-of-day message",
+        text: eveningAt ? `ON · End of day: everyone is asked at ${this.showTime(eveningAt)}, Monday to Friday` : "OFF · No end-of-day message",
         wrap: true,
         size: "Small",
         spacing: "None",
@@ -1964,7 +2029,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       },
       {
         type: "TextBlock",
-        text: digestAt ? `ON · Daily digest at ${digestAt}` : "OFF · No automatic digest",
+        text: digestAt ? `ON · Daily digest at ${this.showTime(digestAt)}` : "OFF · No automatic digest",
         wrap: true,
         size: "Small",
         spacing: "None",
@@ -2231,7 +2296,9 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         }
 
         case "hours": {
-          const value = arg.toLowerCase().trim();
+          // A timezone can be given with the hours: "hours 09:30-18:30 India".
+          const { rest: hoursText, zone: hoursZone } = takeZone(arg);
+          const value = hoursText.toLowerCase().trim();
           if (!value) return await reply(this.hoursStatus());
           if (/^(off|none|any|always|24\/7|anytime)$/.test(value)) {
             this.store.set("hours", "");
@@ -2247,7 +2314,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           if (!start || !end || start === end) {
             return await reply("I did not understand those hours. Try **hours 09:30-18:30**, or **hours off** to allow any time.");
           }
-          this.store.set("hours", `${start}-${end}`);
+          this.store.set("hours", `${start}-${end}${hoursZone ? `@${hoursZone}` : ""}`);
           return await reply(this.hoursStatus());
         }
 
@@ -2288,6 +2355,10 @@ So you know how it's used: your answers are summarised each day for the CTO and 
             slot = named;
             return false;
           });
+          // A timezone can be given anywhere: "schedule morning 09:30 India".
+          const taken = takeZone(words.join(" "));
+          const zone = taken.zone;
+          words = taken.rest.split(/\s+/).filter(Boolean);
           if (!words.length) return await reply(this.scheduleStatus());
 
           // The time (or "off") is the last word, or the last two ("5 pm"). Anything before it names a person or group.
@@ -2328,14 +2399,15 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           // With no "morning" or "evening" given, a time before noon is the morning message.
           const chosen: Slot = slot || slotOf(time);
           const name = digest ? "digest" : `${prefix}${chosen}`;
-          this.store.set(`schedule:${name}`, time);
+          this.store.set(`schedule:${name}`, zone ? `${time}@${zone}` : time);
           // A time that has already passed today starts tomorrow, rather than firing at once.
-          if (this.localNow().minutes > Number(time.slice(0, 2)) * 60 + Number(time.slice(3))) {
-            this.store.set(`ran:${name}`, this.today());
+          const there = this.localNow(zone || this.tz);
+          if (there.minutes > Number(time.slice(0, 2)) * 60 + Number(time.slice(3))) {
+            this.store.set(`ran:${name}`, there.date);
           }
           if (!label) return await reply(this.scheduleStatus());
           return await reply(
-            `${label} will be asked automatically at **${time}** (${SLOT_LABEL[chosen]}), Monday to Friday, instead of at the general time.`,
+            `${label} will be asked automatically at **${this.showTime(this.store.get(`schedule:${name}`))}** (${SLOT_LABEL[chosen]}), Monday to Friday, instead of at the general time.`,
           );
         }
 
