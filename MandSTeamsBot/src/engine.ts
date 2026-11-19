@@ -571,6 +571,46 @@ So you know how it's used: your answers are summarised each day for the CTO and 
   }
 
   /**
+   * True when the person has replied before, the assistant then asked
+   * something, and they have not answered or been chased about it yet.
+   */
+  private awaitingFollowUp(checkin: Checkin, messages: { role: "bot" | "user" }[]): boolean {
+    return (
+      messages.at(-1)?.role === "bot" &&
+      messages.some((m) => m.role === "user") &&
+      !this.store.get(`takeover:${checkin.id}`) &&
+      !this.store.get(`midchase:${checkin.id}`)
+    );
+  }
+
+  /**
+   * One chase, privately, for a follow-up question left unanswered for
+   * `minMinutes`. After it the conversation is allowed to go quiet and close.
+   */
+  async chaseFollowUps(minMinutes = 0): Promise<number> {
+    let chased = 0;
+    for (const checkin of this.store.checkinsOn(this.today())) {
+      if (checkin.status !== "open") continue;
+      const messages = this.store.messages(checkin.id);
+      if (!this.awaitingFollowUp(checkin, messages)) continue;
+      const lastAt = Date.parse(`${messages.at(-1)!.at.replace(" ", "T")}Z`);
+      if (minMinutes > 0 && this.now().getTime() - lastAt < minMinutes * 60_000) continue;
+      const person = this.store.personById(checkin.personId);
+      if (!person?.nominated || !this.address(person)) continue;
+      try {
+        const nudge = this.personal ? "Any update on this?" : "A quick reminder on my last question, when you have a minute.";
+        await this.say(person, nudge);
+        this.store.addMessage(checkin.id, "bot", nudge);
+        this.store.set(`midchase:${checkin.id}`, "1");
+        chased++;
+      } catch (err) {
+        this.log(`Could not chase ${person.email}`, err);
+      }
+    }
+    return chased;
+  }
+
+  /**
    * Close conversations that have gone quiet: if the person has replied at
    * least once and nothing has been said for `idleMinutes`, write the note
    * and post the summary rather than waiting for the evening digest.
@@ -581,6 +621,8 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       if (checkin.status !== "open") continue;
       const messages = this.store.messages(checkin.id);
       if (!messages.some((m) => m.role === "user")) continue;
+      // A follow-up question still waiting for its one chase is not "quiet" yet.
+      if (this.awaitingFollowUp(checkin, messages)) continue;
       const lastAt = Date.parse(`${messages.at(-1)!.at.replace(" ", "T")}Z`);
       if (idleMinutes > 0 && this.now().getTime() - lastAt < idleMinutes * 60_000) continue;
       const person = this.store.personById(checkin.personId);
@@ -865,6 +907,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
   async tick(): Promise<void> {
     await this.runReminders(this.config.chaseAfterMinutes);
     await this.runGroupTimers();
+    await this.chaseFollowUps(this.config.chaseAfterMinutes);
     await this.closeIdle(this.config.idleCloseMinutes);
     await this.refreshBoards();
 

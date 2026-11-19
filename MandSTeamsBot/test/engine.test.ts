@@ -509,6 +509,8 @@ test("a conversation that goes quiet is closed and summarised; one with no reply
   t.brain.doneAfterUserMessages = 99; // the assistant keeps asking, the person stops answering
   await t.engine.handleMessage(t.id(PRIYA), "half an update");
   assert.equal(await t.engine.closeIdle(30), 0); // too soon
+  assert.equal(await t.engine.closeIdle(0), 0); // her follow-up question has not been chased yet
+  assert.equal(await t.engine.chaseFollowUps(0), 1);
   assert.equal(await t.engine.closeIdle(0), 1);
   assert.equal(t.store.checkin(t.store.personByEmail(PRIYA)!.id, "2026-11-16")!.status, "completed");
   assert.match(t.to(CTO).at(-1)!, /Update from priya/);
@@ -1111,4 +1113,36 @@ test("the wording step is given each person's role and the day's date to work fr
   await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
   const asked = g.brain.groupAsks.at(-1)!;
   assert.deepEqual(asked.members.map((m) => [m.name, m.role]), [["Priya Rao", ""], ["Ravi Kumar", "Web developer"]]);
+});
+
+// ---------- one chase when someone stops replying part-way through ----------
+
+test("an unanswered follow-up question is chased once, privately, and not again", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  g.brain.doneAfterUserMessages = 99;
+  await g.engine.handleGroupReply("u-priya", "sent 3 submissions"); // she gets a follow-up, one to one
+  const toPriya = () => g.sent.filter((s) => s.to === `chat-${PRIYA}`).map((s) => s.text);
+  assert.equal(toPriya().length, 1);
+
+  assert.equal(await g.engine.chaseFollowUps(45), 0); // not yet 45 minutes
+  assert.equal(await g.engine.chaseFollowUps(0), 1);
+  assert.equal(toPriya().at(-1), "Any update on this?");
+  assert.equal(await g.engine.chaseFollowUps(0), 0); // only ever once
+
+  // Ravi never replied at all: that is the group chase's job, not this one.
+  assert.equal(g.sent.filter((s) => s.to === "chat-ravi@acme.test").length, 0);
+});
+
+test("no follow-up chase once you have taken the chat over, or after they answer", async () => {
+  const t = setup({ personal: true });
+  await t.engine.handleInstall(t.id(CTO));
+  await t.engine.handleMessage(t.id(CTO), `add ${PRIYA}`);
+  const priya = t.store.personByEmail(PRIYA)!;
+  await t.engine.runCheckins();
+  t.brain.doneAfterUserMessages = 99;
+  await t.engine.handleDirectReply(priya.id, "half an update");
+  t.engine.manualTakeover(priya.id);
+  assert.equal(await t.engine.chaseFollowUps(0), 0);
 });
