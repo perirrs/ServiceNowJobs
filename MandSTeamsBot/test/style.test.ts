@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { tidyReply } from "../src/ai.js";
+import { humanise, tidyReply } from "../src/ai.js";
 
 test("thanks is removed, the rest of the message stays", () => {
   assert.equal(
     tidyReply("Ok, noted. Thanks for the update. Is there anything you need from me?", "Ravi Kumar"),
     "Ok, noted. Is there anything you need from me?",
   );
-  assert.equal(tidyReply("Thank you!", null), "Ok, noted.");
+  assert.equal(tidyReply("Thank you!", null), "ok noted");
 });
 
 test("the person's name is removed wherever it appears", () => {
@@ -29,4 +29,16 @@ test("internal item numbers never reach the reader", () => {
   assert.equal(tidyReply("Hi. Item 7, the QA fixes, was due yesterday. Is it done?", null), "Hi. The QA fixes, was due yesterday. Is it done?");
   assert.equal(tidyReply("Ok. What about item 7, the QA fixes?", null), "Ok. What about the QA fixes?");
   assert.equal(tidyReply("Is item #12 done?", null), "Is done?");
+});
+
+test("lower case is left alone, and thanks is kept when the conversation has not had one yet", () => {
+  assert.equal(tidyReply("ok. and the login page?", null), "ok. and the login page?");
+  assert.equal(tidyReply("fine, thanks. see you tomorrow", null, "", true), "fine, thanks. see you tomorrow");
+});
+
+test("humanise sometimes drops the 'ok' in front and changes the first capital, never the whole message", () => {
+  assert.equal(humanise("Ok, noted. Who is fixing it?", () => 0), "who is fixing it?");
+  assert.equal(humanise("Ok, noted. Who is fixing it?", () => 0.99), "Ok, noted. Who is fixing it?");
+  assert.equal(humanise("ok noted", () => 0), "Ok noted"); // a message that is only an acknowledgement stays
+  assert.equal(humanise("I will check", () => 0), "I will check");
 });

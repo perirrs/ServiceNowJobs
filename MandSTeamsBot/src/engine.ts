@@ -177,6 +177,17 @@ const roundOf = (slot: Slot): Round => (slot === "morning" ? "plan" : "review");
 const slotOf = (time: string): Slot => (time < "12:00" ? "morning" : "evening");
 const SLOT_LABEL: Record<Slot, string> = { morning: "morning plan", evening: "end-of-day update" };
 
+/** Chases, sent from the sender's account. Picked at random, never the same one twice running. */
+const FIRST_CHASES = [
+  "Any update? Please share when you can.",
+  "hi, any update today?",
+  "waiting for your update",
+  "pls share the update when free",
+  "any update on this?",
+  "need your update for today",
+];
+const FOLLOWUP_CHASES = ["Any update on this?", "?", "any update?", "waiting on this one", "pls check above", "hello?"];
+
 const clamp = (n: number, low: number, high: number) => Math.min(high, Math.max(low, n));
 /** Plus or minus a quarter, so replies do not arrive like clockwork. */
 const jitter = (ms: number) => Math.round(ms * (0.75 + Math.random() * 0.5));
@@ -889,12 +900,23 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     if (!group || !userId || !this.direct) return false;
     if (this.paused) throw new Error("Paused: nothing is sent to staff");
     const name = displayName(person);
+    // A person replying does not lay every message out the same way. Each reply
+    // keeps at least one of the tag or the quote, so it is clear who it is for.
+    const quote = replyingTo?.id ? { messageId: replyingTo.id, preview: replyingTo.text, userId, name } : undefined;
+    const roll = Math.random();
+    let layout: "front" | "end" | "quoteOnly" | "tagOnly" =
+      roll < 0.4 ? "front" : roll < 0.6 ? "end" : roll < 0.8 ? "quoteOnly" : "tagOnly";
+    if (layout === "quoteOnly" && !quote) layout = "front";
+    if (layout === "end" && !/[?]$/.test(text)) layout = "front";
+    if (layout === this.store.get(`lastlayout:${person.id}`)) layout = layout === "front" ? (quote ? "quoteOnly" : "tagOnly") : "front";
+    this.store.set(`lastlayout:${person.id}`, layout);
+
+    const body = layout === "front" || layout === "tagOnly" ? `{@0} ${text}` : layout === "end" ? `${text} {@0}` : text;
     await this.direct.send(
       group.chatId,
-      `{@0} ${text}`,
-      [{ userId, name }],
-      // Quote the message being answered, so the group can see what the reply is to.
-      replyingTo?.id ? { messageId: replyingTo.id, preview: replyingTo.text, userId, name } : undefined,
+      body,
+      layout === "quoteOnly" ? [] : [{ userId, name }],
+      layout === "tagOnly" ? undefined : quote,
     );
     return true;
   }
@@ -928,7 +950,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       const person = this.store.personById(checkin.personId);
       if (!person?.nominated || !this.address(person)) continue;
       try {
-        const nudge = this.personal ? "Any update on this?" : "A quick reminder on my last question, when you have a minute.";
+        const nudge = this.nudgeText("followup");
         const inGroup =
           this.store.get(`lastwhere:${checkin.id}`) === "group" && (await this.sayInGroup(person, checkin, nudge));
         if (!inGroup) await this.say(person, nudge);
@@ -971,10 +993,19 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     return closed;
   }
 
-  private nudgeText(): string {
-    return this.personal
-      ? "Any update? Please share when you can."
-      : "A quick reminder on today's check-in. A line or two is enough.";
+  /** A chase, worded differently from the one sent last time. */
+  private nudgeText(kind: "first" | "followup" = "first"): string {
+    if (!this.personal) {
+      return kind === "first"
+        ? "A quick reminder on today's check-in. A line or two is enough."
+        : "A quick reminder on my last question, when you have a minute.";
+    }
+    const pool = kind === "first" ? FIRST_CHASES : FOLLOWUP_CHASES;
+    const last = this.store.get(`lastnudge:${kind}`);
+    const options = pool.filter((t) => t !== last);
+    const text = options[Math.floor(Math.random() * options.length)] ?? pool[0]!;
+    this.store.set(`lastnudge:${kind}`, text);
+    return text;
   }
 
   /**

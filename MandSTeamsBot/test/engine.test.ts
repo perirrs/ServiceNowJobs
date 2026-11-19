@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+
+// Variety is chosen at random; pin it so each test sees the same choices.
+Math.random = () => 0;
 import type { AdminAction, Brain, CheckinContext, DigestPerson, NoteResult, Turn } from "../src/ai.js";
 import type { Config } from "../src/config.js";
 import { Store } from "../src/db.js";
@@ -1735,4 +1738,41 @@ test("the tracker can be switched off for a group, and nothing is posted while p
   await t.engine.handleMessage(t.cto, "tracker Recruitment Team");
   assert.equal(t.created.length, 1);
   assert.match(t.admin.at(-1)!, /up to date and pinned/);
+});
+
+// ---------- not the same shape every time ----------
+
+test("group replies are laid out in different ways, never the same twice running, always with a tag or a quote", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  g.brain.doneAfterUserMessages = 99;
+  (g.engine as unknown as { config: Config }).config.maxBotTurns = 99; // room for every reply in this test
+  const rolls = [0.1, 0.1, 0.7, 0.9, 0.5];
+  const real = Math.random;
+  const seen: string[] = [];
+  try {
+    for (let i = 0; i < rolls.length; i++) {
+      Math.random = () => rolls[i]!;
+      await g.engine.handleGroupReply("u-priya", `update ${i}`, `m${i}`);
+      const s = g.sent.at(-1)!;
+      assert.ok(s.mentions?.length || s.quote, "each reply has a tag or a quote");
+      seen.push(s.mentions?.length ? (s.text.startsWith("{@0}") ? (s.quote ? "front" : "tagOnly") : "end") : "quoteOnly");
+    }
+  } finally {
+    Math.random = real;
+  }
+  for (let i = 1; i < seen.length; i++) assert.notEqual(seen[i], seen[i - 1]);
+  assert.ok(new Set(seen).size >= 3);
+});
+
+test("chases are worded differently each time", async () => {
+  const t = setup({ personal: true });
+  await t.engine.handleInstall(t.id(CTO));
+  await t.engine.handleMessage(t.id(CTO), `add ${PRIYA}`);
+  await t.engine.handleMessage(t.id(CTO), "ask priya");
+  for (let i = 0; i < 5; i++) await t.engine.handleMessage(t.id(CTO), "ask priya"); // each one a chase
+  const chases = t.sent.filter((s) => s.to === `chat-${PRIYA}`).slice(1).map((s) => s.text);
+  assert.equal(chases.length, 5);
+  for (let i = 1; i < chases.length; i++) assert.notEqual(chases[i], chases[i - 1]);
 });
