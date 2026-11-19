@@ -2,12 +2,12 @@
   "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.19/MicrosoftTeams.schema.json",
   "manifestVersion": "1.19",
   "version": "1.0.0",
-  "id": "REPLACE_WITH_CLIENT_ID",
+  "id": "7a68de71-0c2f-4fe8-9fe0-a273cbe28f63",
   "developer": {
-    "name": "REPLACE_WITH_COMPANY_NAME",
-    "websiteUrl": "https://REPLACE_WITH_YOUR_DOMAIN",
-    "privacyUrl": "https://REPLACE_WITH_YOUR_DOMAIN/privacy",
-    "termsOfUseUrl": "https://REPLACE_WITH_YOUR_DOMAIN/terms"
+    "name": "Mergen Corporates Pvt Ltd",
+    "websiteUrl": "https://mergencorp.com",
+    "privacyUrl": "https://mergencorp.com/privacy",
+    "termsOfUseUrl": "https://mergencorp.com/terms"
   },
   "name": {
     "short": "Daily Check-in",
@@ -24,7 +24,7 @@
   "accentColor": "#2B5797",
   "bots": [
     {
-      "botId": "REPLACE_WITH_CLIENT_ID",
+      "botId": "7a68de71-0c2f-4fe8-9fe0-a273cbe28f63",
       "scopes": ["personal"],
       "supportsFiles": false,
       "isNotificationOnly": false

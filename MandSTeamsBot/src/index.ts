@@ -24,7 +24,10 @@ for (const [name, expr] of [
 }
 
 // Reads CLIENT_ID, CLIENT_SECRET and TENANT_ID from the environment.
-const app = new App();
+// With SOCKET_MODE=true the bot dials out to Teams over a WebSocket, so it needs
+// no public URL: right for trials from a laptop, not for a published app.
+const socketMode = process.env.SOCKET_MODE === "true";
+const app = new App({ socketMode });
 const store = new Store(config.dataDir);
 const brain = new ClaudeBrain(config.model, config.companyName);
 const engine = new Engine(store, brain, { send: async (conversationId, text) => void (await app.send(conversationId, text)) }, config);

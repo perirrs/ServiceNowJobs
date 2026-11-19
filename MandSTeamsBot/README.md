@@ -46,9 +46,19 @@ npm run simulate
 
 You play an employee in the terminal. Type `/nextday` to see the bot pick up yesterday's open items, `/digest` to see what leadership receives, and `/ask who is blocked?` to query the notes.
 
-## Putting it into Teams
+## Trial in Teams from your own machine (socket mode)
 
-You need to be (or work with) a Teams administrator for your Microsoft 365 tenant.
+This needs no Azure subscription, public server or tunnel. The bot connects out to Teams over a WebSocket, so it only works while the process is running on your machine. Microsoft marks socket mode as for development only.
+
+1. In the [Teams Developer Portal](https://dev.teams.microsoft.com/tools/bots), under *Tools → Bot management*, create a bot and set its delivery method to **Socket mode**. (For Mergen this is done: the bot is "Daily Check-in" and its ID is already in `appPackage/manifest.json`.)
+2. On the bot's *Client secrets* page, add a secret and paste it into `.env` as `CLIENT_SECRET`. Also set `CLIENT_ID`, `TENANT_ID`, `SOCKET_MODE=true`, `ANTHROPIC_API_KEY` and `ADMIN_EMAILS`.
+3. Zip the three files in `appPackage/` and upload the zip in the Teams admin centre under *Teams apps → Manage apps → Actions → Upload new app*. On the app's *Users and groups* tab, set availability to the specific people in the trial.
+4. Run `npm run build` then `npm start`, and leave it running.
+5. Each person in the trial opens Teams, finds **Daily Check-in** under *Apps → Built for your org*, adds it and says hello. Admins then `nominate` them.
+
+## Putting it into Teams for real
+
+You need to be (or work with) a Teams administrator for your Microsoft 365 tenant, and an Azure subscription.
 
 1. **Host the bot** somewhere with a public HTTPS address and a disk that persists (an Azure App Service, a small VM, or any container host). For a first trial on your own machine, a dev tunnel works: `devtunnel host -p 3978 --allow-anonymous`.
 2. **Register the bot in Azure.** Create an *Azure Bot* resource, type **Single Tenant**. This creates an app registration: note its **Application (client) ID** and **Directory (tenant) ID**, and create a **client secret** under *Certificates & secrets*.
