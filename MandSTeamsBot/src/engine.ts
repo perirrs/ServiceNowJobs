@@ -2443,26 +2443,32 @@ So you know how it's used: your answers are summarised each day for the CTO and 
   }
 
   /** Bring our record of who is in the group in line with Teams. */
-  /** Once an hour, take each followed group's current name from Teams, so a rename there shows here too. */
+  /**
+   * Once an hour, bring each followed group up to date with Teams: its current name,
+   * so a rename there shows here too, and its members, so joiners and leavers are picked up.
+   */
   private async refreshGroupNames(): Promise<void> {
-    if (!this.direct?.groupName) return;
+    if (!this.direct?.groupName && !this.direct?.groupMembers) return;
     const last = this.store.get("gnamesat");
     if (last && this.now().getTime() - Date.parse(last) < 3_600_000) return;
     this.store.set("gnamesat", this.now().toISOString());
-    for (const group of this.store.groups()) {
+    for (let group of this.store.groups()) {
       try {
-        const name = await this.direct.groupName(group.chatId);
+        const name = this.direct.groupName ? await this.direct.groupName(group.chatId) : null;
         if (name && name !== group.name) {
           this.store.renameGroup(group.id, name);
           this.log(`Group renamed in Teams: "${group.name}" is now "${name}"`);
+          group = { ...group, name };
         }
+        if (this.direct.groupMembers) await this.syncGroup(group);
       } catch (err) {
-        this.log(`Could not read the name of ${group.name}`, err);
+        this.log(`Could not bring ${group.name} up to date`, err);
       }
     }
   }
 
   private async syncGroup(group: Group): Promise<Person[]> {
+    const before = new Set(this.store.groupMembers(group.id).map((p) => p.id));
     const members: Person[] = [];
     for (const m of await this.direct!.groupMembers!(group.chatId)) {
       const person = this.store.upsertPerson(m.email, { name: m.name });
@@ -2472,6 +2478,33 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       members.push(this.store.personById(person.id)!);
     }
     this.store.setGroupMembers(group.id, members.map((p) => p.id));
+
+    // Changes since the last look (not the first one, when everyone is new).
+    if (before.size) {
+      const now = new Set(members.map((p) => p.id));
+      const news: string[] = [];
+      for (const p of members) {
+        if (before.has(p.id) || this.isAdmin(p)) continue;
+        const first = displayName(p).split(" ")[0]!.toLowerCase();
+        news.push(
+          p.profile
+            ? `**${displayName(p)} joined ${group.name}.** I will ask them with the group, as: ${p.profile}`
+            : `**${displayName(p)} joined ${group.name}.** I will ask them with the group. They have no role saved yet: send **profile ${first}: their role and targets** so I ask the right things.`,
+        );
+      }
+      for (const id of before) {
+        if (now.has(id)) continue;
+        const p = this.store.personById(id);
+        if (!p || this.isAdmin(p)) continue;
+        // Someone followed only through this group is no longer followed, so they are not messaged one to one instead.
+        const stillFollowed = !!this.store.get(`solo:${p.id}`) || this.store.groupsOf(p.id).length > 0;
+        if (!stillFollowed) this.store.setNominated(p.id, false);
+        news.push(
+          `**${displayName(p)} left ${group.name}.** ${stillFollowed ? "I still follow them, as you added them in their own right or they are in another group." : "I have stopped following them."}`,
+        );
+      }
+      if (news.length) await this.notifyAdmins(news.join("\n\n"));
+    }
     return members;
   }
 
