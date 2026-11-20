@@ -1351,7 +1351,7 @@ test("someone asked in a group: their one-to-one chat is left alone until a priv
   await g.engine.handleMessage(g.cto, "add group Recruitment Team");
   await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
   g.brain.doneAfterUserMessages = 99;
-  await g.engine.handleGroupReply("u-priya", "sent 3 submissions");
+  await g.engine.handleGroupReply("u-ravi", "sent 3 submissions");
   assert.equal(g.engine.openDirectCheckins().length, 0); // nobody's private chat is being read
 
   g.brain.privateNext = true;
@@ -1367,7 +1367,6 @@ test("when the sender replies to someone in the group himself, the assistant ste
   await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
   g.brain.doneAfterUserMessages = 99;
   await g.engine.handleGroupReply("u-priya", "sent 3 submissions");
-  await g.engine.handleGroupReply("u-ravi", "testing the app");
   const groupId = g.store.groups()[0]!.id;
 
   // The assistant's own posts are recognised, with or without the tag in front.
@@ -1822,6 +1821,10 @@ test("group replies are laid out in different ways, never the same twice running
   const seen: string[] = [];
   try {
     for (let i = 0; i < rolls.length; i++) {
+      // One follow-up per person per day in a group, so each reply is on a day of its own.
+      g.setDate(`2026-11-${16 + i}T17:00:00Z`);
+      Math.random = real;
+      await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
       Math.random = () => rolls[i]!;
       await g.engine.handleGroupReply("u-priya", `update ${i}`, `m${i}`);
       const s = g.sent.at(-1)!;
@@ -2627,7 +2630,7 @@ test("hourly progress and the end-of-day summary are posted in the group from Ta
     stats: async () => ({}),
     team: async () =>
       new Map([
-        [PRIYA, { day: { submitted_to_client: 2, l1_select: 1 }, month: { submitted_to_client: 9, onboarded: 1 }, lastToday: "2026-11-16T10:30:00.000Z" }],
+        [PRIYA, { day: { submitted_to_client: 2, l1_select: 1, added: 3 }, month: { submitted_to_client: 9, onboarded: 1 }, lastToday: "2026-11-16T10:30:00.000Z" }],
         ["ravi@acme.test", { day: { new_requirements: 1, new_spots: 3 }, month: {}, lastToday: "2026-11-16T07:00:00.000Z" }],
       ]),
   };
@@ -2644,7 +2647,7 @@ test("hourly progress and the end-of-day summary are posted in the group from Ta
   await g.engine.tick(); // once an hour
   assert.equal(posts.length, 1);
   assert.match(posts[0]!, /^g-rec\|<p><b>Team progress at 11:02<\/b><\/p>/);
-  assert.match(posts[0]!, /Priya Rao<\/td><td>Recruiter<\/td><td>2 of 6<\/td><td>1<\/td><td>9 · 0 \(0% of 20%\) · 1 of 3<\/td><td>-<\/td><td>10:30<\/td>/);
+  assert.match(posts[0]!, /Priya Rao<\/td><td>Recruiter<\/td><td>2 of 6 · 3 added<\/td><td>1<\/td><td>9 · 0 \(0% of 20%\) · 1 of 3<\/td><td>-<\/td><td>10:30<\/td>/);
   assert.match(posts[0]!, /Ravi Kumar<\/td><td>Account Manager<\/td><td>-<\/td><td>0<\/td><td>-<\/td><td>1 · 3 · 0<\/td>/);
   assert.match(posts[0]!, /Team today: 2 of 6 submissions \(33%\), 1 L1 selects, 1 new requirements \(3 spots\)/);
   assert.match(posts[0]!, /No TalentFlow update in the last 2 hours: Ravi Kumar\./);
