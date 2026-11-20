@@ -1090,6 +1090,13 @@ export class Engine {
     return this.localNow(zone || this.tz).minutes >= Number(at.slice(0, 2)) * 60 + Number(at.slice(3));
   }
 
+  /** True when this conversation came from a group whose clock-out has passed: it is then recorded but not answered or chased. */
+  private afterClockout(checkin: Checkin): boolean {
+    const via = this.store.get(`via:${checkin.id}`);
+    const group = via ? this.store.groups().find((g) => String(g.id) === via) : undefined;
+    return !!group && this.pastClockout(group);
+  }
+
   /** The hourly progress posts and the end-of-day summary, in each group that has them. */
   private async runGroupReports(): Promise<void> {
     if (this.paused || !this.ats?.team || !this.direct?.postHtml || this.holidayToday()) return;
@@ -1956,8 +1963,8 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     const recordId = this.store.addMessage(checkin.id, "user", text);
     // Recorded for tonight's note, but the human has taken over this chat.
     if (this.store.get(`takeover:${checkin.id}`)) return;
-    // Paused, or outside office hours: what they said is kept, and nothing is sent back.
-    if (this.paused || !this.inOfficeHours()) return;
+    // Paused, outside office hours, or after their group's clock-out: what they said is kept, and nothing is sent back.
+    if (this.paused || !this.inOfficeHours() || this.afterClockout(checkin)) return;
     // A reply is waiting for approval: what they say now is recorded, and answered after that.
     if (this.isWaiting(`draftwait:${checkin.id}`)) return;
 
@@ -2257,7 +2264,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       const lastAt = Date.parse(`${messages.at(-1)!.at.replace(" ", "T")}Z`);
       if (minMinutes > 0 && this.now().getTime() - lastAt < minMinutes * 60_000) continue;
       const person = this.store.personById(checkin.personId);
-      if (!person?.nominated || !this.address(person) || this.isAway(person) || this.neverAskedForRole(person)) continue;
+      if (!person?.nominated || !this.address(person) || this.isAway(person) || this.neverAskedForRole(person) || this.afterClockout(checkin)) continue;
       if (this.isWaiting(`draftwait:${checkin.id}`)) continue;
       try {
         const nudge = this.nudgeText("followup");
