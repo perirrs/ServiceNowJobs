@@ -51,6 +51,8 @@ class FakeBrain implements Brain {
   handoverNext = false;
   /** The next reply to a group message is marked as one that must stay out of the group. */
   privateNext = false;
+  /** Group messages containing this text are complete updates that need no reply. */
+  complete = "all set";
   /** Group messages containing this text are treated as chatter. */
   chatter = "lunch";
 
@@ -61,6 +63,7 @@ class FakeBrain implements Brain {
     }
     this.turns.push(ctx);
     if (ctx.fromGroup && ctx.history.at(-1)?.text.includes(this.chatter)) return { reply: "", done: false, ignore: true };
+    if (ctx.fromGroup && ctx.history.at(-1)?.text.includes(this.complete)) return { reply: "", done: false, silent: true };
     if (this.handoverNext) {
       this.handoverNext = false;
       return { reply: "", done: false, handover: true };
@@ -918,10 +921,46 @@ test("a group is asked with one message; a reply there gets its follow-up in the
   assert.equal(g.sent.filter((s) => s.to === `chat-${PRIYA}`).length, 0); // nothing one to one
 
   // Something that should not be said in front of the group goes one to one instead.
+  g.setDate("2026-11-17T17:00:00Z");
+  await g.engine.handleMessage(g.cto, "ask group recruitment team");
   g.brain.privateNext = true;
   await g.engine.handleGroupReply("u-priya", "could not finish, was unwell");
   assert.equal(g.sent.at(-1)!.to, `chat-${PRIYA}`);
   assert.equal(g.sent.at(-1)!.text, "Private question");
+});
+
+test("in a group, each person gets at most one follow-up; a complete update gets no reply at all", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "ask group recruitment team");
+  g.brain.doneAfterUserMessages = 99;
+  await g.engine.handleGroupReply("u-priya", "working on Deloitte");
+  assert.match(g.sent.at(-1)!.text, /Question/);
+  const before = g.sent.length;
+  await g.engine.handleGroupReply("u-priya", "allow me some time");
+  assert.equal(g.sent.length, before); // no second question
+  const priya = g.store.personByEmail(PRIYA)!;
+  assert.ok(g.store.messages(g.store.checkin(priya.id, "2026-11-16")!.id).some((m) => m.text === "allow me some time")); // still recorded
+
+  await g.engine.handleGroupReply("u-ravi", "3 Deloitte submissions by 4 pm, all set");
+  assert.equal(g.sent.length, before); // complete: nothing posted
+});
+
+test("the group ask spells out what each role should send, and names the director for the team view", async () => {
+  const g = groupSetup();
+  g.members.push({ userId: "u-madan", email: "madan@acme.test", name: "Madan Mani" });
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  g.store.setProfile(g.store.personByEmail(PRIYA)!.id, "Recruiter. 6 submissions a day.");
+  g.store.setProfile(g.store.personByEmail("ravi@acme.test")!.id, "Account Manager for Deloitte. Does no submissions.");
+  g.store.setProfile(g.store.personByEmail("madan@acme.test")!.id, "Recruitment Director");
+  g.setDate("2026-11-16T09:00:00Z"); // morning
+  await g.engine.handleMessage(g.cto, "ask group recruitment team");
+  const text = g.sent.at(-1)!.text;
+  assert.match(text, /Recruiters: .*submissions/);
+  assert.match(text, /Account managers: .*new requirements.*SPOCs/);
+  assert.doesNotMatch(text, /Account owners:/); // nobody in that role here
+  assert.match(text, /Madan: .*whole team/);
+  assert.equal(g.store.checkin(g.store.personByEmail("madan@acme.test")!.id, "2026-11-16"), undefined);
 });
 
 test("group banter is ignored: not recorded, not answered", async () => {
