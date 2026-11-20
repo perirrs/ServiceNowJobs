@@ -77,6 +77,7 @@ export interface Identity {
 const ADMIN_HELP = `**Daily Check-in: what you can type**
 
 - **UPDATE** in a group: post a message in any followed group that starts with UPDATE, and I keep it as a standing instruction for that team and follow it from then on. New targets in it (for example "recruiters 5 a day, 25% L1, 2 joins a month") replace the old ones in the tables, the 75% line and the group messages. I confirm here what I understood.
+- **progress Group Name**: post the TalentFlow progress table in that group now, instead of waiting for the hour.
 - **hours 09:30-18:30**: office hours, Monday to Friday. Outside them I send nothing to anyone (no replies, chases or scheduled messages), but still record what people write. **hours off** allows any time.
 - **timezone India**: the time I work in, for office hours and schedules.
 - **sent**: everything I sent as you today, each with a Delete button. You also get this list once a day after office hours.
@@ -3719,7 +3720,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     // Short one-liners are commands. Anything longer or on several lines is
     // free-form and may hold several instructions, so it is interpreted.
     const short = !text.includes("\n") && text.split(/\s+/).length <= 6;
-    if (!short && !["profile", "greeting", "style", "schedule", "tracker", "draft", "hourly", "clockout", "blockers"].includes(verb)) verb = "";
+    if (!short && !["profile", "greeting", "style", "schedule", "tracker", "draft", "hourly", "clockout", "blockers", "progress"].includes(verb)) verb = "";
 
     try {
       switch (verb) {
@@ -3922,6 +3923,14 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           return await reply(m[1] ? `${m[2]} is no longer a holiday.` : `${m[2]} is a holiday (${m[3]!.trim() || "Holiday"}): nobody is asked or chased that day.`);
         }
 
+        case "progress": {
+          // The hourly TalentFlow table, posted in the group now rather than on the hour.
+          const group = this.resolveGroup(arg.replace(/^group\s+/i, "").trim());
+          if (typeof group === "string") return await reply(group);
+          if (!this.ats?.team || !this.direct?.postHtml) return await reply("The progress table needs TalentFlow connected and messages sent from your own account.");
+          const posted = await this.postGroupReport(group, false);
+          return await reply(posted ? `Posted the progress table in ${group.name}.` : `Nothing to post in ${group.name}: nobody there is in TalentFlow.`);
+        }
         case "hourly":
         case "clockout": {
           const { rest, zone } = takeZone(arg);
