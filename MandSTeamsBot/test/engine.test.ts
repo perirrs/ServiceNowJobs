@@ -1076,6 +1076,25 @@ test("an UPDATE posted by an admin in a group is kept as a standing instruction 
   assert.match(posts[0]!, /<td>2 of 5<\/td><td>-<\/td><td>0<\/td><td>8 · 2 \(25% of 25%\) · 0 of 2<\/td>/);
 });
 
+test("a group or person another sender already follows cannot be added a second time", async () => {
+  const g = groupSetup();
+  g.engine.followedElsewhere = {
+    group: (chatId) => (chatId === "g-rec" ? "Mahanth M" : undefined),
+    person: (email) => (email === "ravi@acme.test" ? "Mahanth M" : undefined),
+  };
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  assert.match(g.admin.at(-1)!, /Recruitment Team is already followed by Mahanth M/);
+  assert.equal(g.store.groups().length, 0);
+
+  await g.engine.handleMessage(g.cto, "add ravi@acme.test");
+  assert.match(g.admin.at(-1)!, /ravi@acme.test is already followed by Mahanth M/);
+  assert.equal(g.store.personByEmail("ravi@acme.test")?.nominated ?? false, false);
+
+  // Anyone not followed elsewhere is added as usual.
+  await g.engine.handleMessage(g.cto, `add ${PRIYA}`);
+  assert.equal(g.store.personByEmail(PRIYA)!.nominated, true);
+});
+
 test("group banter is ignored: not recorded, not answered", async () => {
   const g = groupSetup();
   await g.engine.handleMessage(g.cto, "add group Recruitment Team");
