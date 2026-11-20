@@ -1004,6 +1004,19 @@ test("an update someone posted in the group earlier today counts as their answer
   assert.deepEqual(chase?.mentions, [{ userId: "u-ravi", name: "Ravi Kumar" }]); // yesterday's message does not count
 });
 
+test("a group renamed in Teams takes its new name, and commands find it by the new name", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  let topic = "Recruitment Team";
+  (g.engine as unknown as { direct: { groupName: (c: string) => Promise<string | null> } }).direct.groupName = async () => topic;
+  topic = "M&S Recruitment Squad";
+  g.setDate("2026-11-16T18:10:00Z"); // over an hour later
+  await g.engine.tick();
+  assert.equal(g.store.groups()[0]!.name, "M&S Recruitment Squad");
+  await g.engine.handleMessage(g.cto, "schedule Recruitment Squad evening 17:00");
+  assert.match(g.admin.at(-1)!, /M&S Recruitment Squad will be asked automatically at \*\*17:00/);
+});
+
 test("group banter is ignored: not recorded, not answered", async () => {
   const g = groupSetup();
   await g.engine.handleMessage(g.cto, "add group Recruitment Team");
