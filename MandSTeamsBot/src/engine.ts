@@ -234,7 +234,8 @@ type Effect =
       date: string;
       text: string;
       round: Round;
-      asks: { personId: number; topic: string }[];
+      /** earlier: what the person already posted in the group today, recorded as their answer. */
+      asks: { personId: number; topic: string; earlier?: string[] }[];
     }
   | { kind: "depAsk"; helperId: number; date: string; groupId: number; text: string; topic: string };
 
@@ -675,6 +676,8 @@ export class Engine {
             this.store.set(`kind:${checkin.id}`, e.round);
             this.store.set(`round:${checkin.id}:${e.round}`, "1");
             this.store.set(`topic:${checkin.id}`, ask.topic);
+            // An update they posted in the group earlier today is their answer to this ask.
+            for (const text of ask.earlier ?? []) this.store.addMessage(checkin.id, "user", text);
           }
           // Start reading from this ask, unless the group is already being read:
           // then carry on from where the reading had got to, so nothing is skipped.
@@ -2484,11 +2487,6 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           : `Everyone in ${group.name} has already been asked today.`,
       };
     }
-    // People being asked a second time today: they get tagged, so it reads as a chase.
-    const again = due.filter((p) => {
-      const c = this.store.checkin(p.id, date);
-      return c?.status === "open" && this.store.get(`kind:${c.id}`) === round;
-    });
 
     // Read before asking: everything new in the group's chat, and (for a small group) each member's own chat with the sender.
     await this.refreshGroupMemory(group, true);
@@ -2547,9 +2545,12 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       }
     }
 
-    // Anyone being asked again who has no question of their own is tagged together on a last line.
-    const alsoTag = again
-      .filter((p) => !tagged.some((t) => t.person.id === p.id))
+    // What each person already posted in the group today, before this ask: that is their answer.
+    const earlier = await this.earlierUpdates(group, due, date);
+    // Everyone else being asked who has no question of their own is tagged together on a last line,
+    // so nobody can miss that they were asked.
+    const alsoTag = due
+      .filter((p) => !tagged.some((t) => t.person.id === p.id) && !earlier.has(p.id))
       .map((p) => ({ person: p, userId: this.store.get(`aadOf:${p.id}`) ?? "" }))
       .filter((t) => t.userId);
     const mentioned = [...tagged, ...alsoTag];
@@ -2585,7 +2586,11 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           round,
           asks: due.map((person) => {
             const own = tagged.find((t) => t.person.id === person.id)?.question;
-            return { personId: person.id, topic: [topic, own ? `In the group they were asked directly: "${own}"` : ""].filter(Boolean).join("\n") };
+            return {
+              personId: person.id,
+              topic: [topic, own ? `In the group they were asked directly: "${own}"` : ""].filter(Boolean).join("\n"),
+              earlier: earlier.get(person.id) ?? [],
+            };
           }),
         },
       ],
@@ -2597,6 +2602,29 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       asked: due.length,
       message: `Posted in **${group.name}** (${due.length} people): "${text}"\n\nSummaries will appear here as each person finishes.`,
     };
+  }
+
+  /**
+   * What each of these people posted in the group earlier today, before being asked: real updates
+   * only (a few words or more), not short acknowledgements. Empty when the history cannot be read.
+   */
+  private async earlierUpdates(group: Group, people: Person[], date: string): Promise<Map<number, string[]>> {
+    const found = new Map<number, string[]>();
+    if (!this.direct?.history) return found;
+    const byName = new Map(people.map((p) => [(p.name ?? "").toLowerCase(), p] as const).filter(([n]) => n));
+    try {
+      const since = new Date(this.now().getTime() - 24 * 3_600_000).toISOString();
+      const lines = await this.direct.history(group.chatId, 200, since);
+      for (const line of lines) {
+        const person = line.fromSender ? undefined : byName.get(line.from.toLowerCase());
+        if (!person || todayIn(this.tz, new Date(line.at)) !== date) continue;
+        if (line.text.trim().split(/\s+/).length < 6) continue;
+        found.set(person.id, [...(found.get(person.id) ?? []), line.text.trim()]);
+      }
+    } catch (err) {
+      this.log(`Could not read ${group.name} for earlier updates`, err);
+    }
+    return found;
   }
 
   /** Groups whose chat should be watched for replies right now, with when they were asked. */

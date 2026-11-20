@@ -992,8 +992,8 @@ test("an update someone posted in the group earlier today counts as their answer
   const g = groupSetup();
   await g.engine.handleMessage(g.cto, "add group Recruitment Team");
   (g.engine as unknown as { direct: { history: unknown } }).direct.history = async () => [
-    { id: "e1", createdAt: "2026-11-16T08:00:00.000Z", fromUserId: "u-priya", fromName: "Priya Rao", text: "Good morning, today I will send 3 Deloitte profiles and finish the calendar", addressedUserIds: [] },
-    { id: "e0", createdAt: "2026-11-15T08:00:00.000Z", fromUserId: "u-ravi", fromName: "Ravi Kumar", text: "Yesterday I fixed the login bug and two more issues", addressedUserIds: [] },
+    { fromSender: false, from: "Priya Rao", at: "2026-11-16T08:00:00.000Z", text: "Good morning, today I will send 3 Deloitte profiles and finish the calendar" },
+    { fromSender: false, from: "Ravi Kumar", at: "2026-11-15T08:00:00.000Z", text: "Yesterday I fixed the login bug and two more issues" },
   ];
   await g.engine.handleMessage(g.cto, "ask group recruitment team");
   const priya = g.store.personByEmail(PRIYA)!;
@@ -1135,7 +1135,7 @@ test("a long message with several instructions is carried out in a sensible orde
 
   // The group message is worded around the topic, and each member's follow-up knows it.
   assert.equal(g.brain.groupAsks[0]!.topic, "website updates and launch date");
-  assert.equal(g.sent.at(-1)!.text, "Hi team, website updates and launch date?");
+  assert.equal(g.sent.at(-1)!.text, "Hi team, website updates and launch date?\n{@0} {@1} please share your update.");
   g.brain.doneAfterUserMessages = 99;
   await g.engine.handleGroupReply("u-priya", "homepage copy is done");
   assert.equal(g.brain.turns.at(-1)!.topic, "website updates and launch date");
@@ -1235,8 +1235,11 @@ test("the group message tags individuals with their own question, and each follo
 
   const post = g.sent.at(-1)!;
   assert.equal(post.to, "g-rec");
-  assert.equal(post.text, "Hi team, please share today's update.\n{@0} TalentFlow app - where are we?");
-  assert.deepEqual(post.mentions, [{ userId: "u-ravi", name: "Ravi Kumar" }]);
+  assert.equal(post.text, "Hi team, please share today's update.\n{@0} TalentFlow app - where are we?\n{@1} please share your update.");
+  assert.deepEqual(post.mentions, [
+    { userId: "u-ravi", name: "Ravi Kumar" },
+    { userId: "u-priya", name: "Priya Rao" },
+  ]);
 
   // Our own record reads the way the message looks in Teams.
   const ravi = g.store.personByEmail("ravi@acme.test")!;
@@ -1276,8 +1279,8 @@ test("an unanswered follow-up question is chased once, where it was asked, and n
   assert.deepEqual(inGroup().at(-1)!.mentions, [{ userId: "u-priya", name: "Priya Rao" }]);
   assert.equal(await g.engine.chaseFollowUps(0), 0); // only ever once
 
-  // Ravi never replied at all: that is the group chase's job, not this one.
-  assert.ok(!inGroup().some((s) => s.mentions?.some((m) => m.userId === "u-ravi")));
+  // Ravi never replied at all: that is the group chase's job, not this one (he is only tagged in the ask itself).
+  assert.ok(!inGroup().slice(1).some((s) => s.mentions?.some((m) => m.userId === "u-ravi")));
   assert.equal(g.sent.filter((s) => s.to.startsWith("chat-")).length, 0); // nothing went one to one
 });
 
@@ -1411,7 +1414,7 @@ test("when the sender replies to someone in the group himself, the assistant ste
   const groupId = g.store.groups()[0]!.id;
 
   // The assistant's own posts are recognised, with or without the tag in front.
-  assert.equal(g.engine.isAssistantGroupText(groupId, "Hi team, please share today's update."), true);
+  assert.equal(g.engine.isAssistantGroupText(groupId, "Hi team, please share today's update. Priya Rao Ravi Kumar please share your update."), true);
   assert.equal(g.engine.isAssistantGroupText(groupId, "Priya Rao Question 2"), true);
   assert.equal(g.engine.isAssistantGroupText(groupId, "Priya, call me"), false);
 
