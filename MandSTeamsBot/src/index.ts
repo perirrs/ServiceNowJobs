@@ -10,7 +10,7 @@ import type { DirectChannel, Identity } from "./engine.js";
 import { GraphChat, htmlToText, textToHtml } from "./graph.js";
 import { Base44TalentFlow } from "./ats.js";
 import { Base44 } from "./base44.js";
-import { extraSenders, routeAdminMessage, senderDataDir } from "./senders.js";
+import { extraSenders, followedElsewhereFor, routeAdminMessage, senderDataDir } from "./senders.js";
 import type { SenderKey } from "./senders.js";
 
 const config = loadConfig();
@@ -29,6 +29,9 @@ const normalise = (text: string) => htmlToText(textToHtml(text)).replace(/\s+/g,
 /** One person sending check-ins from their own Teams account, with everything that goes with it. */
 interface Sender {
   email: string;
+  /** Their name as Teams shows it, for telling the other senders who already follows someone. */
+  name: string;
+  store: Store;
   engine: Engine;
   /** While an inbox command runs, what the bot says to that admin is also written to the outbox. */
   outbox: { conversationId: string; lines: string[] } | null;
@@ -109,7 +112,13 @@ async function startSender(cfg: Config, required: boolean): Promise<Sender | nul
 
   // Only now, once this sender is known to be signed in, is their database opened (and created).
   const store = new Store(cfg.dataDir);
-  const sender: Sender = { email: senderEmail.toLowerCase(), engine: undefined as unknown as Engine, outbox: null };
+  const sender: Sender = {
+    email: senderEmail.toLowerCase(),
+    name: direct?.senderName ?? senderEmail,
+    store,
+    engine: undefined as unknown as Engine,
+    outbox: null,
+  };
 
   const brain = new ClaudeBrain(cfg.model, cfg.companyName, undefined, direct?.senderName, cfg.discloseAutomation);
   brain.smartModel = cfg.smartModel;
@@ -353,6 +362,8 @@ for (const email of extraSenders(process.env.EXTRA_SENDERS ?? "", main.email)) {
   senders.push(extra);
 }
 const keys: SenderKey[] = senders.map((s) => ({ email: s.email, key: s.email.split(/[@.]/)[0]!.toLowerCase() }));
+// One sender per group and per person: each assistant checks the others before adding anyone.
+if (senders.length > 1) for (const s of senders) s.engine.followedElsewhere = followedElsewhereFor(s, senders);
 const senderFor = (email: string) => senders.find((s) => s.email === email) ?? main;
 
 /** Build an Identity from an inbound activity. Only one-to-one chats count. */

@@ -48,3 +48,27 @@ export function routeAdminMessage(
   const own = senders.find((s, i) => i > 0 && s.email === from);
   return { sender: (own ?? senders[0]!).email, text };
 }
+
+/** What the guard needs from each sender: their name, and what their assistant follows. */
+export interface SenderFollows {
+  name: string;
+  store: {
+    groups(): { chatId: string }[];
+    personByEmail(email: string): { nominated: boolean } | undefined;
+  };
+}
+
+/**
+ * For one sender: which other sender already follows a group chat or a person, so their
+ * assistant never adds someone another sender already asks. Undefined when nobody else does.
+ */
+export function followedElsewhereFor(
+  self: SenderFollows,
+  all: SenderFollows[],
+): { group(chatId: string): string | undefined; person(email: string): string | undefined } {
+  const others = all.filter((o) => o !== self);
+  return {
+    group: (chatId) => others.find((o) => o.store.groups().some((g) => g.chatId === chatId))?.name,
+    person: (email) => others.find((o) => o.store.personByEmail(email.trim().toLowerCase())?.nominated)?.name,
+  };
+}

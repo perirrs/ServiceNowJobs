@@ -1014,6 +1014,12 @@ export class Engine {
   ats?: Ats;
 
   /**
+   * With more than one sender: who else already follows a group chat (by chat id) or a person
+   * (by email), so the same people are never asked by two senders. Undefined when nobody else does.
+   */
+  followedElsewhere?: { group(chatId: string): string | undefined; person(email: string): string | undefined };
+
+  /**
    * What TalentFlow shows for this person: today's figures (fetched at most
    * every 15 minutes, or now when `fresh`), and once a day yesterday's
    * figures, when they last updated it, and this month against target.
@@ -2500,6 +2506,11 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     }
     if (matches.length > 1) {
       return `Several group chats match:\n\n${matches.slice(0, 10).map((g) => `- ${g.name}`).join("\n")}\n\nSend the full name of the one you mean.`;
+    }
+    // One sender per group: two would ask the same people twice.
+    const elsewhere = this.followedElsewhere?.group(matches[0]!.chatId);
+    if (elsewhere) {
+      return `${matches[0]!.name} is already followed by ${elsewhere}, so I have not added it: the team would be asked twice. To move it here, ${elsewhere} removes it first.`;
     }
     const group = this.store.addGroup(matches[0]!.chatId, matches[0]!.name);
     if (this.config.approveFirstDay && this.store.get(`approve:${group.chatId}`) !== "always") {
@@ -4107,6 +4118,13 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           // Through the bot an admin's messages are commands, so they cannot also give updates there.
           if (!this.direct && this.config.adminEmails.includes(email)) {
             return await reply("That's an admin account. Admins receive the digest rather than check-ins.");
+          }
+          // One sender per person: two would ask them twice.
+          const elsewhere = this.followedElsewhere?.person(email);
+          if (elsewhere) {
+            return await reply(
+              `${email} is already followed by ${elsewhere}, so I have not added them: they would be asked twice. To move them here, ${elsewhere} removes them first.`,
+            );
           }
           let chat: { conversationId: string; name: string } | undefined;
           if (this.direct) {
