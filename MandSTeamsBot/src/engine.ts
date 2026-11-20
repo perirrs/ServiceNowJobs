@@ -1183,7 +1183,9 @@ export class Engine {
       const day = f?.day ?? {};
       const month = f?.month ?? {};
       const target = role ? ROLE_TARGETS[role] : undefined;
-      const sub = n(day, "submitted_to_client");
+      // A submission is a candidate added against a requirement, as TalentFlow counts it;
+      // sending it on to the client is a later step, shown beside it.
+      const sub = n(day, "added");
       if (target && !this.isAway(p)) measured.push({ name: displayName(p), share: sub / target.daySubmissions });
       if (target) {
         teamSub += sub;
@@ -1197,13 +1199,11 @@ export class Engine {
       teamSpocs += n(day, "new_spocs");
       const last = f?.lastToday ?? null;
       if (!this.isAway(p) && (!last || now.getTime() - Date.parse(last) > 2 * 3_600_000)) stale.push(displayName(p));
-      // Candidates added against a requirement but not yet moved to "submitted to client" are shown beside it,
-      // so work in progress is visible without counting towards the target.
-      const added = n(day, "added");
+      const toClient = n(day, "submitted_to_client");
       const subCell = target
-        ? `${sub >= target.daySubmissions ? "✅ " : ""}${sub} of ${target.daySubmissions}${added ? ` · ${added} added` : ""}`
+        ? `${sub >= target.daySubmissions ? "✅ " : ""}${sub} of ${target.daySubmissions}${toClient ? ` · ${toClient} to client` : ""}`
         : "-";
-      const monthSub = n(month, "submitted_to_client");
+      const monthSub = n(month, "added");
       const monthL1 = n(month, "l1_select");
       const rate = target?.l1Rate && monthSub ? ` (${Math.round((monthL1 / monthSub) * 100)}% of ${Math.round(target.l1Rate * 100)}%)` : "";
       const monthCell = target ? `${monthSub} · ${monthL1}${rate} · ${n(month, "onboarded")} of ${target.monthJoins}` : "-";
@@ -1222,7 +1222,7 @@ export class Engine {
     const pctOf = (a: number, b: number) => (b ? `${Math.round((a / b) * 100)}%` : "-");
     const day = new Date(`${date}T12:00:00Z`).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
     const title = final ? `<b>End of day summary, ${day}</b>` : `<b>Team progress at ${this.clock(now.toISOString().replace("T", " ").slice(0, 19))}</b>`;
-    const table = `<table><tr><th>Who</th><th>Role</th><th>Submitted today</th><th>L1 select today</th><th>Month: submitted · L1 select · joined</th><th>Today: new reqs · spots · SPOCs</th><th>Last TalentFlow update</th></tr>${rows.join("")}</table>`;
+    const table = `<table><tr><th>Who</th><th>Role</th><th>Submissions today</th><th>L1 select today</th><th>Month: submissions · L1 select · joined</th><th>Today: new reqs · spots · SPOCs</th><th>Last TalentFlow update</th></tr>${rows.join("")}</table>`;
     const summary = [
       `Team today: ${teamSub} of ${teamSubTarget} submissions (${pctOf(teamSub, teamSubTarget)}), ${teamL1} L1 selects, ${teamReqs} new requirements (${teamSpots} spots), ${teamSpocs} new SPOCs.`,
       `Month so far: ${teamJoin} of ${teamJoinTarget} joins (${pctOf(teamJoin, teamJoinTarget)}).`,

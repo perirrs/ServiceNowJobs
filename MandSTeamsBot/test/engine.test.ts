@@ -2499,8 +2499,8 @@ test("TalentFlow figures count each move into a status inside the window, from B
   };
   const tf = new Base44TalentFlow(fake as unknown as Base44, "mats");
   const counts = await tf.stats("priya@acme.test", "2026-11-16T00:00:00.000Z", "2026-11-16T12:00:00.000Z");
-  assert.deepEqual(counts, { submitted_to_client: 2, l1_scheduled: 1 });
-  assert.equal(describeCounts(counts!), "2 submitted to client, 1 L1 scheduled");
+  assert.deepEqual(counts, { submitted_to_client: 2, l1_scheduled: 1, client_hold: 1 });
+  assert.equal(describeCounts(counts!), "2 submitted to client, 1 on client hold, 1 L1 scheduled");
   assert.deepEqual(calls.at(-1)!.q, { recruiter_id: "r1", updated_date: { $gte: "2026-11-16T00:00:00" } });
   assert.equal(await tf.stats("nobody@acme.test", "2026-11-16T00:00:00.000Z", "2026-11-16T12:00:00.000Z"), null);
   assert.equal(calls.filter((c) => c.entity === "Recruiter").length, 1); // recruiters read once, not per call
@@ -2662,7 +2662,7 @@ test("every TalentFlow status is counted, including holds, hires, internal rejec
   }));
   const counts = countMoves(rows as never, Date.parse("2026-11-20T00:00:00Z"), Date.parse("2026-11-21T00:00:00Z"));
   assert.deepEqual(counts, { added: 1, client_hold: 1, hired: 1, internal_reject: 1, client_duplicate: 1, internal_duplicate: 1 });
-  assert.match(describeCounts(counts), /^1 submissions (candidates added), 1 internal screen reject/);
+  assert.match(describeCounts(counts), /^1 submissions \(candidates added\), 1 internal screen reject/);
 });
 
 test("roles are read from the start of a profile", () => {
@@ -2763,7 +2763,7 @@ test("the end-of-day summary carries a line per person and the director's team t
   };
   g.engine.ats = {
     stats: async () => ({}),
-    team: async () => new Map([[PRIYA, { day: { submitted_to_client: 3 }, month: { onboarded: 2 }, lastToday: null }]]),
+    team: async () => new Map([[PRIYA, { day: { added: 3 }, month: { onboarded: 2 }, lastToday: null }]]),
   };
   await g.engine.handleMessage(g.cto, "clockout Recruitment Team 18:00");
   g.setDate("2026-11-16T18:00:00Z");
@@ -2776,7 +2776,7 @@ test("the end-of-day summary carries a line per person and the director's team t
   assert.match(posts[0]!, /Priya Rao: 3 submissions; 3 more needed tomorrow\.<br>Ravi Kumar: no update\./);
   assert.doesNotMatch(posts[0]!, /<td>Madan Mani/); // the director is measured by the team, not a row
   assert.deepEqual(asked[0]!.map((p) => p.name), ["Priya Rao", "Ravi Kumar"]);
-  assert.equal(asked[0]![0]!.figures, "3 submitted to client");
+  assert.equal(asked[0]![0]!.figures, "3 submissions (candidates added)");
 });
 
 test("the board shows group chats first and individual chats below them", async () => {

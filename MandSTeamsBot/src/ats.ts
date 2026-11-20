@@ -15,7 +15,11 @@ import type { HistoryPerson } from "./trackrecord.js";
 /** TalentFlow status -> the figure it counts towards. Statuses not listed are not counted. */
 const STATUS_BUCKET: Record<string, string> = {
   Applied: "added",
+  "Screen Reject - Internal": "internal_reject",
+  "Internal Duplicate": "internal_duplicate",
   "Submitted to Client": "submitted_to_client",
+  "Client Duplicate": "client_duplicate",
+  "Client Hold": "client_hold",
   "Screen Reject - Client": "client_reject",
   "L1 Interview Scheduled": "l1_scheduled",
   "L1 Select": "l1_select",
@@ -28,14 +32,20 @@ const STATUS_BUCKET: Record<string, string> = {
   "L3 Reject": "l3_reject",
   "Final Select": "final_select",
   Offered: "offered",
+  Hired: "hired",
   Onboarded: "onboarded",
   "Candidate Backed Out": "backed_out",
 };
 
 /** Plain names for the figures, in the order they are shown. */
 const BUCKET_NAMES: Record<string, string> = {
-  added: "new candidates added",
+  // TalentFlow calls a candidate added against a requirement a "submission"; sending it on to the client is a later step.
+  added: "submissions (candidates added)",
+  internal_reject: "internal screen reject",
+  internal_duplicate: "internal duplicate",
   submitted_to_client: "submitted to client",
+  client_duplicate: "client duplicate",
+  client_hold: "on client hold",
   client_reject: "rejected by client on screening",
   l1_scheduled: "L1 scheduled",
   l1_select: "L1 select",
@@ -48,6 +58,7 @@ const BUCKET_NAMES: Record<string, string> = {
   l3_reject: "L3 reject",
   final_select: "final select",
   offered: "offered",
+  hired: "hired",
   onboarded: "joined",
   backed_out: "backed out",
   new_requirements: "new requirements",
