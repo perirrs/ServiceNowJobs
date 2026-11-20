@@ -70,6 +70,7 @@ if (config.sendAsUser) {
     postHtml: (chatId, html) => g.sendHtml(chatId, html),
     findGroups: (query) => g.findGroups(query),
     groupMembers: (chatId) => g.groupMembers(chatId),
+    groupName: (chatId) => g.groupName(chatId),
     history: async (chatId, max, since) =>
       (await g.history(chatId, max, since)).map((m) => ({
         fromSender: m.fromUserId === me.id,

@@ -549,6 +549,10 @@ export class Store {
     return this.groups().find((g) => g.chatId === chatId)!;
   }
 
+  renameGroup(groupId: number, name: string): void {
+    this.db.prepare("UPDATE groups SET name = ? WHERE id = ?").run(name, groupId);
+  }
+
   removeGroup(groupId: number): void {
     this.db.prepare("DELETE FROM group_members WHERE group_id = ?").run(groupId);
     this.db.prepare("DELETE FROM groups WHERE id = ?").run(groupId);

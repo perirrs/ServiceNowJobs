@@ -432,6 +432,12 @@ export class GraphChat {
     return chat.id;
   }
 
+  /** A group chat's current name, as shown in Teams; null when it has none. */
+  async groupName(chatId: string): Promise<string | null> {
+    const chat = await this.call<{ topic?: string | null }>("GET", `/chats/${encodeURIComponent(chatId)}?$select=topic`);
+    return chat.topic?.trim() || null;
+  }
+
   /** Everyone in a group chat except the signed-in person. People without an email (guests) are left out. */
   async groupMembers(chatId: string): Promise<{ userId: string; email: string; name: string }[]> {
     const me = await this.whoAmI();

@@ -52,6 +52,8 @@ export interface DirectChannel {
   findGroups?(query: string): Promise<{ chatId: string; name: string }[]>;
   /** Everyone in a group chat except the sender. */
   groupMembers?(chatId: string): Promise<{ userId: string; email: string; name: string }[]>;
+  /** A group chat's current name in Teams, so renames there are followed. */
+  groupName?(chatId: string): Promise<string | null>;
   /**
    * Messages in one of the sender's chats, oldest first: the most recent `max`,
    * or with `since` only those after that time.
@@ -2441,6 +2443,25 @@ So you know how it's used: your answers are summarised each day for the CTO and 
   }
 
   /** Bring our record of who is in the group in line with Teams. */
+  /** Once an hour, take each followed group's current name from Teams, so a rename there shows here too. */
+  private async refreshGroupNames(): Promise<void> {
+    if (!this.direct?.groupName) return;
+    const last = this.store.get("gnamesat");
+    if (last && this.now().getTime() - Date.parse(last) < 3_600_000) return;
+    this.store.set("gnamesat", this.now().toISOString());
+    for (const group of this.store.groups()) {
+      try {
+        const name = await this.direct.groupName(group.chatId);
+        if (name && name !== group.name) {
+          this.store.renameGroup(group.id, name);
+          this.log(`Group renamed in Teams: "${group.name}" is now "${name}"`);
+        }
+      } catch (err) {
+        this.log(`Could not read the name of ${group.name}`, err);
+      }
+    }
+  }
+
   private async syncGroup(group: Group): Promise<Person[]> {
     const members: Person[] = [];
     for (const m of await this.direct!.groupMembers!(group.chatId)) {
@@ -3015,6 +3036,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     await this.runWeekly();
     await this.runGroupReports();
     await this.routeBlockers();
+    await this.refreshGroupNames();
     // The weekly read of everyone's TalentFlow history: slow, and nothing waits for it.
     void this.refreshTrackRecords().catch((err) => this.log("Could not read the TalentFlow history", err));
     this.backupDaily();
