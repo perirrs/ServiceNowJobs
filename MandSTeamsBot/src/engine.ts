@@ -76,6 +76,7 @@ export interface Identity {
 
 const ADMIN_HELP = `**Daily Check-in: what you can type**
 
+- **UPDATE** in a group: post a message in any followed group that starts with UPDATE, and I keep it as a standing instruction for that team and follow it from then on. New targets in it (for example "recruiters 5 a day, 25% L1, 2 joins a month") replace the old ones in the tables, the 75% line and the group messages. I confirm here what I understood.
 - **hours 09:30-18:30**: office hours, Monday to Friday. Outside them I send nothing to anyone (no replies, chases or scheduled messages), but still record what people write. **hours off** allows any time.
 - **timezone India**: the time I work in, for office hours and schedules.
 - **sent**: everything I sent as you today, each with a Delete button. You also get this list once a day after office hours.
@@ -287,21 +288,21 @@ export function roleOf(profile: string | null | undefined): Role | null {
  * What each role in a group should send, one line per role present, so a group ask reads
  * the way the sender would write it by hand. The director is named and asked for the team view.
  */
-export function roleAskLines(people: { name: string; profile: string | null }[], round: Round): string[] {
+export function roleAskLines(people: { name: string; profile: string | null }[], round: Round, t: Targets = DEFAULT_TARGETS): string[] {
   const has = (r: Role) => people.some((p) => roleOf(p.profile) === r);
   const morning = round === "plan";
   const lines: string[] = [];
   if (has("Recruiter")) {
     lines.push(
       morning
-        ? "Recruiters: how many submissions today (target 6), for which requirements and clients."
+        ? `Recruiters: how many submissions today (target ${t.recruiter.daySubmissions}), for which requirements and clients.`
         : "Recruiters: submissions sent today, any L1s scheduled or selected, and is all of it in TalentFlow.",
     );
   }
   if (has("Account Owner")) {
     lines.push(
       morning
-        ? "Account owners: the same (target 4 submissions), plus any new requirements you are bringing in today."
+        ? `Account owners: the same (target ${t.owner.daySubmissions} submissions), plus any new requirements you are bringing in today.`
         : "Account owners: the same, plus new requirements and SPOCs added today.",
     );
   }
@@ -321,18 +322,36 @@ export function roleAskLines(people: { name: string; profile: string | null }[],
   return lines;
 }
 
-/** Daily submissions, monthly joins and (where set) the L1 select rate expected of each role that does submissions. */
-const ROLE_TARGETS: Partial<Record<Role, { daySubmissions: number; monthJoins: number; l1Rate?: number }>> = {
-  Recruiter: { daySubmissions: 6, monthJoins: 3, l1Rate: 0.2 },
-  "Account Owner": { daySubmissions: 4, monthJoins: 3 },
+/**
+ * The numbers each role is measured on. Defaults below; an admin's UPDATE post in a group
+ * can change them, and the change is kept (kv "targets") until the next one.
+ * A manager figure of 0 means no number has been set.
+ */
+export interface Targets {
+  recruiter: { daySubmissions: number; l1Rate: number; monthJoins: number };
+  owner: { daySubmissions: number; monthJoins: number };
+  manager: { monthRequirements: number; monthSpocs: number };
+}
+
+export const DEFAULT_TARGETS: Targets = {
+  recruiter: { daySubmissions: 6, l1Rate: 0.2, monthJoins: 3 },
+  owner: { daySubmissions: 4, monthJoins: 3 },
+  manager: { monthRequirements: 0, monthSpocs: 0 },
 };
 
-/** The targets in words, for the analysis of the whole ATS. */
-const TARGETS_TEXT =
-  "Recruiters: at least 6 quality submissions a day, at least 20% of submissions reaching L1 select, and 3 onboards (joins) every month, without fail. " +
-  "Account owners: 4 submissions a day and 3 onboards a month, plus net new requirements and new SPOCs on their accounts. " +
-  "Account managers: net new requirements and new SPOCs at their clients every month; no submissions. " +
-  "Recruitment director: overall performance; successful only when every individual reaches at least 75% of target.";
+/** The targets in words: for the analysis of the whole ATS, and to confirm a change. */
+export function targetsText(t: Targets): string {
+  const manager =
+    t.manager.monthRequirements || t.manager.monthSpocs
+      ? `Account managers: ${t.manager.monthRequirements || "net new"} new requirements and ${t.manager.monthSpocs || "new"} new SPOCs a month at their clients; no submissions.`
+      : "Account managers: net new requirements and new SPOCs at their clients every month; no submissions.";
+  return [
+    `Recruiters: at least ${t.recruiter.daySubmissions} submissions a day, at least ${Math.round(t.recruiter.l1Rate * 100)}% of submissions reaching L1 select, and ${t.recruiter.monthJoins} joins a month.`,
+    `Account owners: ${t.owner.daySubmissions} submissions a day and ${t.owner.monthJoins} joins a month, plus net new requirements and new SPOCs on their accounts.`,
+    manager,
+    "Recruitment director: overall performance; successful only when every individual reaches at least 75% of target.",
+  ].join(" ");
+}
 
 const PRICES: Record<string, [number, number]> = {
   "claude-haiku-5-5": [0.1, 0.5],
@@ -560,6 +579,100 @@ export class Engine {
    */
   private notAsked(person: Person): boolean {
     return this.isAdmin(person) || this.neverAskedForRole(person);
+  }
+
+  /** The targets in force: the defaults, with any change an admin made in an UPDATE post. */
+  private targets(): Targets {
+    try {
+      const saved = JSON.parse(this.store.get("targets") || "{}") as Partial<Targets>;
+      return {
+        recruiter: { ...DEFAULT_TARGETS.recruiter, ...saved.recruiter },
+        owner: { ...DEFAULT_TARGETS.owner, ...saved.owner },
+        manager: { ...DEFAULT_TARGETS.manager, ...saved.manager },
+      };
+    } catch {
+      return DEFAULT_TARGETS;
+    }
+  }
+
+  /** Daily submissions, monthly joins and (for recruiters) the L1 select rate for a role that does submissions. */
+  private roleTarget(role: Role | null): { daySubmissions: number; monthJoins: number; l1Rate?: number } | undefined {
+    const t = this.targets();
+    if (role === "Recruiter") return t.recruiter;
+    if (role === "Account Owner") return t.owner;
+    return undefined;
+  }
+
+  /** A group's memory from its chat, followed by the admins' standing instructions posted there as UPDATEs. */
+  private groupMemory(groupId: number): string {
+    const memory = this.store.get(`gmemory:${groupId}`) || "";
+    let updates: { at: string; by: string; text: string }[] = [];
+    try {
+      updates = JSON.parse(this.store.get(`gupdates:${groupId}`) || "[]");
+    } catch {
+      updates = [];
+    }
+    if (!updates.length) return memory;
+    const standing = updates.map((u) => `- ${u.at.slice(0, 10)}, ${u.by}: ${u.text}`).join("\n");
+    return [memory, `Standing instructions from leadership (UPDATE posts in the group, newest last; these win over anything older):\n${standing}`]
+      .filter(Boolean)
+      .join("\n\n");
+  }
+
+  /**
+   * An admin posted a message headed UPDATE in a followed group: keep it as a standing
+   * instruction for that group, take any new targets from it, and confirm to the admins.
+   * Anyone else's UPDATE is ignored.
+   */
+  async adminGroupPost(groupId: number, authorEmail: string, text: string): Promise<void> {
+    const author = this.store.personByEmail(authorEmail.trim().toLowerCase());
+    if (!author || !this.isAdmin(author)) return;
+    const group = this.store.groups().find((g) => g.id === groupId);
+    if (!group) return;
+    const body = text.replace(/^\s*\**\s*update\b[\s:*-]*/i, "").trim();
+    if (!body) return;
+
+    let updates: { at: string; by: string; text: string }[] = [];
+    try {
+      updates = JSON.parse(this.store.get(`gupdates:${groupId}`) || "[]");
+    } catch {
+      updates = [];
+    }
+    updates.push({ at: this.now().toISOString(), by: displayName(author), text: body });
+    this.store.set(`gupdates:${groupId}`, JSON.stringify(updates.slice(-15)));
+
+    const lines = [`**Read ${displayName(author)}'s UPDATE in ${group.name}.** I keep it as a standing instruction for that team and follow it from now on.`];
+    if (this.brain.readTargets) {
+      try {
+        const found = await this.brain.readTargets({ text: body, current: targetsText(this.targets()) });
+        const num = (v: number | null | undefined) => (typeof v === "number" && v >= 0 ? v : undefined);
+        if (found) {
+          const t = this.targets();
+          const next: Targets = {
+            recruiter: {
+              daySubmissions: num(found.recruiterDay) ?? t.recruiter.daySubmissions,
+              l1Rate: num(found.recruiterL1Percent) !== undefined ? num(found.recruiterL1Percent)! / 100 : t.recruiter.l1Rate,
+              monthJoins: num(found.recruiterMonthJoins) ?? t.recruiter.monthJoins,
+            },
+            owner: {
+              daySubmissions: num(found.ownerDay) ?? t.owner.daySubmissions,
+              monthJoins: num(found.ownerMonthJoins) ?? t.owner.monthJoins,
+            },
+            manager: {
+              monthRequirements: num(found.managerMonthRequirements) ?? t.manager.monthRequirements,
+              monthSpocs: num(found.managerMonthSpocs) ?? t.manager.monthSpocs,
+            },
+          };
+          if (JSON.stringify(next) !== JSON.stringify(t)) {
+            this.store.set("targets", JSON.stringify(next));
+            lines.push(`Targets are now: ${targetsText(next)}`);
+          }
+        }
+      } catch (err) {
+        this.log("Could not read targets from an UPDATE", err);
+      }
+    }
+    await this.notifyAdmins(lines.join("\n\n"));
   }
 
   /** The director, HR and anyone whose profile says never to ask: not asked anywhere, one to one included. */
@@ -1008,7 +1121,7 @@ export class Engine {
           team = await this.ats.overview();
           this.store.set("atsoverviewstats", team);
           if (this.brain.talentflowOverview) {
-            const overview = await this.brain.talentflowOverview({ stats: team, today: date, targets: TARGETS_TEXT });
+            const overview = await this.brain.talentflowOverview({ stats: team, today: date, targets: targetsText(this.targets()) });
             this.store.set("atsoverview", overview);
             out.push(`**The whole of TalentFlow**\n${overview}`);
           }
@@ -1182,7 +1295,7 @@ export class Engine {
       const f: TeamFigures | undefined = figures.get(p.email.toLowerCase());
       const day = f?.day ?? {};
       const month = f?.month ?? {};
-      const target = role ? ROLE_TARGETS[role] : undefined;
+      const target = this.roleTarget(role);
       // A submission is a candidate added against a requirement, as TalentFlow counts it;
       // sending it on to the client is a later step, shown beside it.
       const sub = n(day, "added");
@@ -1696,7 +1809,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     const parts = [this.store.get(`rapport:${person.id}`) || ""];
     for (const groupId of this.store.groupsOf(person.id)) {
       const group = this.store.groups().find((g) => g.id === groupId);
-      const memory = this.store.get(`gmemory:${groupId}`);
+      const memory = this.groupMemory(groupId);
       if (group && memory) parts.push(`From the group chat "${group.name}":\n${memory}`);
     }
     return parts.filter(Boolean).join("\n\n") || undefined;
@@ -2570,7 +2683,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         const composed = await this.brain.composeGroupAsk({
           groupName: group.name,
           topic,
-          memory: this.store.get(`gmemory:${group.id}`) || "",
+          memory: this.groupMemory(group.id),
           today: date,
           round,
           members: due.map((p) => ({
@@ -2614,6 +2727,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       : roleAskLines(
           this.store.groupMembers(group.id).filter((p) => !this.isAdmin(p)).map((p) => ({ name: displayName(p), profile: p.profile })),
           round,
+          this.targets(),
         );
 
     // {@0}, {@1}... mark where each person's tag goes when the message is sent.
@@ -4368,7 +4482,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     });
     const groupSections = this.store
       .groups()
-      .map((g) => ({ g, memory: this.store.get(`gmemory:${g.id}`) }))
+      .map((g) => ({ g, memory: this.groupMemory(g.id) }))
       .filter((x) => x.memory)
       .map(
         (x) =>
@@ -4377,7 +4491,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     const overview = this.store.get("atsoverview");
     const stats = this.store.get("atsoverviewstats");
     const talentflow = overview || stats
-      ? [`# TalentFlow, the whole team (targets: ${TARGETS_TEXT})`, overview ? `## Analysis\n${overview}` : "", stats ? `## Figures\n${stats}` : ""]
+      ? [`# TalentFlow, the whole team (targets: ${targetsText(this.targets())})`, overview ? `## Analysis\n${overview}` : "", stats ? `## Figures\n${stats}` : ""]
           .filter(Boolean)
           .join("\n\n")
       : "";

@@ -29,6 +29,7 @@ const store = new Store(config.dataDir);
 let graph: GraphChat | undefined;
 let direct: DirectChannel | undefined;
 let senderId = "";
+let senderEmail = "";
 /** Text of messages the assistant sent, so the poller can tell them from ones the person typed. */
 const sentByAssistant = new Set<string>();
 const normalise = (text: string) => htmlToText(textToHtml(text)).replace(/\s+/g, " ");
@@ -43,6 +44,7 @@ if (config.sendAsUser) {
     process.exit(1);
   }
   senderId = me.id;
+  senderEmail = me.email;
   const g = graph;
   direct = {
     senderName: me.name,
@@ -263,6 +265,39 @@ if (graph) {
   setInterval(() => {
     pollNow().catch((err) => console.error("[poll] failed", err));
   }, config.pollSeconds * 1000);
+
+  // Once a minute: a message headed UPDATE that an admin posts in any followed group is
+  // kept as a standing instruction for that team (and any new targets in it take effect).
+  const reader = graph;
+  let scanning = false;
+  setInterval(async () => {
+    if (scanning) return;
+    scanning = true;
+    try {
+      for (const group of store.groups()) {
+        const key = `ucursor:${group.id}`;
+        const since = store.get(key);
+        // The first look starts from now: older posts were already read into the group's memory.
+        if (!since) {
+          store.set(key, new Date().toISOString());
+          continue;
+        }
+        const lines = await reader.messagesSince(group.chatId, since);
+        if (!lines.length) continue;
+        store.set(key, lines.at(-1)!.createdAt);
+        for (const line of lines) {
+          if (!/^\s*\**\s*update\b/i.test(line.text)) continue;
+          const email =
+            line.fromUserId === senderId ? senderEmail : (store.personById(Number(store.get(`aad:${line.fromUserId}`)))?.email ?? "");
+          if (email) await engine.adminGroupPost(group.id, email, line.text);
+        }
+      }
+    } catch (err) {
+      console.error("[updates] failed", err);
+    } finally {
+      scanning = false;
+    }
+  }, 60_000);
 }
 
 await app.start(config.port);
