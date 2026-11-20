@@ -110,6 +110,13 @@ class FakeBrain implements Brain {
   }
   groupAsks: { groupName: string; topic: string; members: { name: string; role: string }[] }[] = [];
   nextGroupQuestions: { name: string; question: string }[] = [];
+  /** What readTargets finds in an UPDATE post; null when it holds no targets. */
+  nextTargets: Record<string, number | null> | null = null;
+  targetReads: string[] = [];
+  async readTargets(input: { text: string }) {
+    this.targetReads.push(input.text);
+    return this.nextTargets;
+  }
   trackerEntries: { person: string; title: string; status: "open" | "blocked" | "done" | "dropped"; due: string; progress: number; doneSoFar: string }[] = [];
   trackerInputs: { transcript: string }[] = [];
   async extractTracker(input: { transcript: string }) {
@@ -1030,6 +1037,43 @@ test("people added or removed in Teams are picked up within the hour; leavers ar
   assert.match(told, /Sam Lee joined Recruitment Team/);
   assert.match(told, /profile sam/i);
   assert.match(told, /Ravi Kumar left Recruitment Team/);
+});
+
+test("an UPDATE posted by an admin in a group is kept as a standing instruction and its targets take effect", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "profile priya: Recruiter. Does submissions only.");
+  const groupId = g.store.groups()[0]!.id;
+
+  // Someone who is not an admin cannot give instructions this way.
+  await g.engine.adminGroupPost(groupId, PRIYA, "UPDATE targets are 1 a day");
+  assert.equal(g.brain.targetReads.length, 0);
+
+  g.brain.nextTargets = { recruiterDay: 5, recruiterL1Percent: 25, recruiterMonthJoins: 2, ownerDay: null, ownerMonthJoins: null, managerMonthRequirements: 4, managerMonthSpocs: 2 };
+  await g.engine.adminGroupPost(groupId, CTO, "UPDATE\nAfter the call with Madan: recruiters 5 a day, 25% L1, 2 joins a month. Account managers 4 new requirements and 2 SPOCs a month. No leave without telling Madan.");
+  assert.match(g.brain.targetReads[0]!, /recruiters 5 a day/);
+  assert.match(g.admin.at(-1)!, /Recruiters: at least 5 submissions a day, at least 25% .* 2 joins a month/);
+
+  // The instruction reaches what the bot writes for the group.
+  g.setDate("2026-11-16T09:00:00Z");
+  await g.engine.handleMessage(g.cto, "ask group recruitment team");
+  assert.match(g.brain.groupAsks.at(-1)!.memory, /No leave without telling Madan/);
+  assert.match(g.sent.at(-1)!.text, /Recruiters: how many submissions today \(target 5\)/);
+
+  // And the hourly table measures against the new numbers.
+  const posts: string[] = [];
+  (g.engine as unknown as { direct: { postHtml: (c: string, h: string) => Promise<string> } }).direct.postHtml = async (_c, h) => {
+    posts.push(h);
+    return `m${posts.length}`;
+  };
+  g.engine.ats = {
+    stats: async () => ({}),
+    team: async () => new Map([[PRIYA, { day: { added: 2 }, month: { added: 8, l1_select: 2 }, lastToday: null }]]),
+  };
+  await g.engine.handleMessage(g.cto, "hourly Recruitment Team 11:00-17:00");
+  g.setDate("2026-11-16T11:02:00Z");
+  await g.engine.tick();
+  assert.match(posts[0]!, /<td>2 of 5<\/td><td>0<\/td><td>8 · 2 \(25% of 25%\) · 0 of 2<\/td>/);
 });
 
 test("group banter is ignored: not recorded, not answered", async () => {
