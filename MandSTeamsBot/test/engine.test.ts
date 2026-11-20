@@ -2571,7 +2571,7 @@ test("TalentFlow figures count each move into a status inside the window, from B
   const counts = await tf.stats("priya@acme.test", "2026-11-16T00:00:00.000Z", "2026-11-16T12:00:00.000Z");
   assert.deepEqual(counts, { submitted_to_client: 2, l1_scheduled: 1, client_hold: 1 });
   assert.equal(describeCounts(counts!), "2 submitted to client, 1 on client hold, 1 L1 scheduled");
-  assert.deepEqual(calls.at(-1)!.q, { recruiter_id: "r1", updated_date: { $gte: "2026-11-16T00:00:00" } });
+  assert.deepEqual(calls.at(-1)!.q, { recruiter_id: { $in: ["r1"] }, updated_date: { $gte: "2026-11-16T00:00:00" } });
   assert.equal(await tf.stats("nobody@acme.test", "2026-11-16T00:00:00.000Z", "2026-11-16T12:00:00.000Z"), null);
   assert.equal(calls.filter((c) => c.entity === "Recruiter").length, 1); // recruiters read once, not per call
 });

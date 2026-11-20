@@ -39,8 +39,8 @@ const STATUS_BUCKET: Record<string, string> = {
 
 /** Plain names for the figures, in the order they are shown. */
 const BUCKET_NAMES: Record<string, string> = {
-  // TalentFlow calls a candidate added against a requirement a "submission"; sending it on to the client is a later step.
-  added: "submissions (candidates added)",
+  // Only "Submitted to Client" counts towards the submission targets; a candidate added is not yet a submission.
+  added: "candidates added (not yet sent to the client)",
   internal_reject: "internal screen reject",
   internal_duplicate: "internal duplicate",
   submitted_to_client: "submitted to client",
@@ -98,6 +98,8 @@ export interface TeamFigures {
   month: Record<string, number>;
   /** Their last change in the ATS today (ISO, UTC), or null. */
   lastToday: string | null;
+  /** Each candidate they moved to "Submitted to Client" today, with the requirement's title. */
+  toClientToday?: { candidate: string; requirement: string }[];
 }
 
 interface Application {
@@ -106,6 +108,7 @@ interface Application {
 
 interface FullApplication extends Application {
   recruiter_id?: string;
+  candidate_id?: string;
   requirement_id?: string;
   client_id?: string;
   status?: string;
@@ -161,7 +164,7 @@ function addOwnerCounts(
 }
 
 export class Base44TalentFlow implements Ats {
-  private recruiters?: { at: number; byEmail: Map<string, string> };
+  private recruiters?: { at: number; byEmail: Map<string, string[]> };
   private users?: { at: number; byEmail: Map<string, string> };
   private everything?: { at: number; apps: FullApplication[]; reqs: RequirementRow[]; clients: ClientRow[] };
   private appId?: string;
@@ -183,14 +186,22 @@ export class Base44TalentFlow implements Ats {
   }
 
   /** Recruiter ids by lower-case email, read at most hourly. */
-  private async recruiterId(email: string): Promise<string | undefined> {
+  /**
+   * Every TalentFlow recruiter record under this email. Some people have more than one
+   * (an old and a new record), and their work is split across them.
+   */
+  private async recruiterIds(email: string): Promise<string[]> {
     if (!this.recruiters || this.now().getTime() - this.recruiters.at > 3_600_000) {
       const rows = await this.b44.list<{ id: string; email?: string }>(await this.app(), "Recruiter", { fields: ["email"] });
-      const byEmail = new Map<string, string>();
-      for (const r of rows) if (r.email) byEmail.set(r.email.trim().toLowerCase(), r.id);
+      const byEmail = new Map<string, string[]>();
+      for (const r of rows) {
+        if (!r.email) continue;
+        const key = r.email.trim().toLowerCase();
+        byEmail.set(key, [...(byEmail.get(key) ?? []), r.id]);
+      }
       this.recruiters = { at: this.now().getTime(), byEmail };
     }
-    return this.recruiters.byEmail.get(email.trim().toLowerCase());
+    return this.recruiters.byEmail.get(email.trim().toLowerCase()) ?? [];
   }
 
   /** TalentFlow user ids (account managers and owners own requirements by these) by lower-case email. */
@@ -206,17 +217,17 @@ export class Base44TalentFlow implements Ats {
 
   async stats(email: string, fromIso: string, toIso: string): Promise<Record<string, number> | null> {
     const key = email.trim().toLowerCase();
-    const id = await this.recruiterId(key);
+    const ids = await this.recruiterIds(key);
     const user = await this.userId(key);
-    if (!id && !user) return null;
+    if (!ids.length && !user) return null;
     const from = Date.parse(fromIso);
     const to = Date.parse(toIso);
     const app = await this.app();
     let counts: Record<string, number> = {};
-    if (id) {
+    if (ids.length) {
       // Only applications touched since the window opened can have moved inside it.
       const rows = await this.b44.list<Application>(app, "CandidateApplication", {
-        q: { recruiter_id: id, updated_date: { $gte: stored(from) } },
+        q: { recruiter_id: { $in: ids }, updated_date: { $gte: stored(from) } },
         fields: ["status_history"],
       });
       counts = countMoves(rows, from, to);
@@ -243,7 +254,7 @@ export class Base44TalentFlow implements Ats {
     // Three reads for the whole team, whatever its size.
     const apps = await this.b44.list<FullApplication>(app, "CandidateApplication", {
       q: { updated_date: { $gte: stored(monthFrom) } },
-      fields: ["recruiter_id", "status_history"],
+      fields: ["recruiter_id", "candidate_id", "requirement_id", "status_history"],
     });
     const reqs = await this.b44.list<RequirementRow>(app, "Requirement", {
       q: { created_date: { $gte: stored(monthFrom) } },
@@ -256,10 +267,10 @@ export class Base44TalentFlow implements Ats {
     const out = new Map<string, TeamFigures>();
     for (const raw of emails) {
       const email = raw.trim().toLowerCase();
-      const rid = await this.recruiterId(email);
+      const rids = await this.recruiterIds(email);
       const uid = await this.userId(email);
-      if (!rid && !uid) continue;
-      const mine = rid ? apps.filter((a) => a.recruiter_id === rid) : [];
+      if (!rids.length && !uid) continue;
+      const mine = apps.filter((a) => !!a.recruiter_id && rids.includes(a.recruiter_id));
       const day = countMoves(mine, dayFrom, to);
       const month = countMoves(mine, monthFrom, to);
       addOwnerCounts(day, reqs, clients, uid, email, dayFrom, to);
@@ -272,7 +283,34 @@ export class Base44TalentFlow implements Ats {
       }
       for (const r of reqs) if (uid && r.account_manager_id === uid) last = Math.max(last, utc(r.created_date) >= dayFrom ? utc(r.created_date) : -Infinity);
       for (const c of clients) if ((c.created_by ?? "").toLowerCase() === email) last = Math.max(last, utc(c.created_date) >= dayFrom ? utc(c.created_date) : -Infinity);
-      out.set(email, { day, month, lastToday: Number.isFinite(last) ? new Date(last).toISOString() : null });
+      const sentToday = mine.filter((a) =>
+        (a.status_history ?? []).some((h) => h.status === "Submitted to Client" && utc(h.changed_at) >= dayFrom && utc(h.changed_at) < to),
+      );
+      out.set(email, {
+        day,
+        month,
+        lastToday: Number.isFinite(last) ? new Date(last).toISOString() : null,
+        toClientToday: sentToday.map((a) => ({ candidate: a.candidate_id ?? "", requirement: a.requirement_id ?? "" })),
+      });
+    }
+    // Names for the candidates sent to clients today, and their requirements' titles: two more reads, only when needed.
+    const candidateIds = [...new Set([...out.values()].flatMap((f) => f.toClientToday ?? []).map((x) => x.candidate).filter(Boolean))];
+    const requirementIds = [...new Set([...out.values()].flatMap((f) => f.toClientToday ?? []).map((x) => x.requirement).filter(Boolean))];
+    if (candidateIds.length) {
+      const [people, roles] = await Promise.all([
+        this.b44.list<{ id: string; full_name?: string }>(app, "Candidate", { q: { id: { $in: candidateIds } }, fields: ["id", "full_name"] }),
+        requirementIds.length
+          ? this.b44.list<{ id: string; job_title?: string }>(app, "Requirement", { q: { id: { $in: requirementIds } }, fields: ["id", "job_title"] })
+          : Promise.resolve([]),
+      ]);
+      const nameOf = new Map(people.map((c) => [c.id, c.full_name?.trim() || "unnamed candidate"]));
+      const titleOf = new Map(roles.map((r) => [r.id, r.job_title?.trim() || "untitled requirement"]));
+      for (const f of out.values()) {
+        f.toClientToday = (f.toClientToday ?? []).map((x) => ({
+          candidate: nameOf.get(x.candidate) ?? "unknown candidate",
+          requirement: titleOf.get(x.requirement) ?? "unknown requirement",
+        }));
+      }
     }
     return out;
   }
@@ -327,17 +365,17 @@ export class Base44TalentFlow implements Ats {
 
   async trackRecord(email: string): Promise<string | null> {
     const key = email.trim().toLowerCase();
-    const rid = await this.recruiterId(key);
+    const rids = await this.recruiterIds(key);
     const uid = await this.userId(key);
-    if (!rid && !uid) return null;
-    return describeTrackRecord(await this.all(), rid, uid, key, this.now());
+    if (!rids.length && !uid) return null;
+    return describeTrackRecord(await this.all(), rids, uid, key, this.now());
   }
 
   async lastUpdate(email: string): Promise<string | null> {
-    const id = await this.recruiterId(email);
-    if (!id) return null;
+    const ids = await this.recruiterIds(email);
+    if (!ids.length) return null;
     const rows = await this.b44.list<{ updated_date?: string }>(await this.app(), "CandidateApplication", {
-      q: { recruiter_id: id },
+      q: { recruiter_id: { $in: ids } },
       fields: ["updated_date"],
       sort: "-updated_date",
       max: 1,

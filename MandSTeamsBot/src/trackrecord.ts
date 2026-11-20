@@ -91,7 +91,7 @@ const statusesOf = (a: HistoryApplication) =>
 
 export function describeTrackRecord(
   data: { apps: HistoryApplication[]; reqs: HistoryRequirement[]; clients: HistoryClient[] },
-  recruiterId: string | undefined,
+  recruiterId: string | string[] | undefined,
   userId: string | undefined,
   email: string,
   now: Date,
@@ -114,8 +114,9 @@ export function describeTrackRecord(
   }
   const lines: string[] = [];
 
-  if (recruiterId) {
-    const mine = data.apps.filter((a) => a.recruiter_id === recruiterId);
+  const rids = recruiterId === undefined ? [] : Array.isArray(recruiterId) ? recruiterId : [recruiterId];
+  if (rids.length) {
+    const mine = data.apps.filter((a) => !!a.recruiter_id && rids.includes(a.recruiter_id));
     const all = emptyFunnel();
     const byClient = new Map<string, Funnel>();
     const byRole = new Map<string, Funnel>();
