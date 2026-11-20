@@ -963,7 +963,7 @@ test("the group ask spells out what each role should send, and names the directo
   g.setDate("2026-11-16T09:00:00Z"); // morning
   await g.engine.handleMessage(g.cto, "ask group recruitment team");
   const text = g.sent.at(-1)!.text;
-  assert.match(text, /Recruiters: .*submissions/);
+  assert.match(text, /Recruiters: .*submitted to client/);
   assert.match(text, /Account managers: .*new requirements.*SPOCs/);
   assert.doesNotMatch(text, /Account owners:/); // nobody in that role here
   assert.match(text, /Madan: .*whole team/);
@@ -1073,7 +1073,7 @@ test("an UPDATE posted by an admin in a group is kept as a standing instruction 
   await g.engine.handleMessage(g.cto, "hourly Recruitment Team 11:00-17:00");
   g.setDate("2026-11-16T11:02:00Z");
   await g.engine.tick();
-  assert.match(posts[0]!, /<td>2 of 5<\/td><td>0<\/td><td>8 · 2 \(25% of 25%\) · 0 of 2<\/td>/);
+  assert.match(posts[0]!, /<td>2 of 5<\/td><td>-<\/td><td>0<\/td><td>8 · 2 \(25% of 25%\) · 0 of 2<\/td>/);
 });
 
 test("group banter is ignored: not recorded, not answered", async () => {
@@ -2519,6 +2519,32 @@ test("an update yesterday is not flagged as behind", async () => {
   t.engine.ats = { stats: async () => ({}), lastUpdate: async () => "2026-11-15T16:00:00.000Z" };
   await t.engine.handleMessage(t.id(CTO), "ask priya");
   assert.doesNotMatch(t.brain.turns.at(-1)!.facts!, /behind/);
+});
+
+test("someone with two TalentFlow recruiter records under one email gets the work from both", async () => {
+  const fake = {
+    findApp: async () => ({ id: "app1", name: "TalentFlow", slug: "mats" }),
+    users: async () => [],
+    list: async (_app: string, entity: string, opts: { q?: { id?: { $in: string[] } } } = {}) => {
+      if (entity === "Recruiter") return [{ id: "r-old", email: "Priya@Acme.test" }, { id: "r-new", email: "priya@acme.test" }];
+      if (entity === "Candidate") return (opts.q?.id?.$in ?? []).map((id) => ({ id, full_name: `Candidate ${id}` }));
+      if (entity === "Requirement" && opts.q?.id) return (opts.q.id.$in ?? []).map((id) => ({ id, job_title: `Role ${id}` }));
+      if (entity !== "CandidateApplication") return [];
+      const sent = [{ status: "Submitted to Client", changed_at: "2026-11-16T05:00:00Z" }];
+      return [
+        { recruiter_id: "r-old", candidate_id: "c1", requirement_id: "q1", status_history: sent },
+        { recruiter_id: "r-new", candidate_id: "c2", requirement_id: "q2", status_history: sent },
+      ];
+    },
+  };
+  const tf = new Base44TalentFlow(fake as unknown as Base44, "mats");
+  const team = await tf.team([PRIYA], "2026-11-16T00:00:00.000Z", "2026-11-01T00:00:00.000Z", "2026-11-16T12:00:00.000Z");
+  const f = team.get(PRIYA)!;
+  assert.equal(f.day.submitted_to_client, 2);
+  assert.deepEqual(f.toClientToday, [
+    { candidate: "Candidate c1", requirement: "Role q1" },
+    { candidate: "Candidate c2", requirement: "Role q2" },
+  ]);
 });
 
 test("TalentFlow figures count each move into a status inside the window, from Base44", async () => {
