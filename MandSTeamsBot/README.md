@@ -168,6 +168,16 @@ You need to be (or work with) a Teams administrator for your Microsoft 365 tenan
 
 A person who is nominated before the app reaches them shows as "not connected" in `list`; the bot introduces itself as soon as the install lands or they message it.
 
+### More than one sender
+
+Another leader can send check-ins from their own Teams account through the same bot. Add their email to `EXTRA_SENDERS` in `.env`, then they sign in once on the server (they enter the code shown at microsoft.com/devicelogin themselves):
+
+```bash
+node --env-file=.env dist/signin.js --as mahanth.m@mergencorp.com
+```
+
+Restart the service. Their assistant has its own people, groups, schedule and memory, kept in `data/senders/<email>/`, and is not started until they have signed in. Their messages to the bot go to their assistant; anyone else's go to the main one. An admin can talk to another sender's assistant by starting with that sender's first name, for example **mahanth: list** or **sujith: board**. Do not follow the same group or person from two senders, or they will be asked twice.
+
 ### Running on a Linux server
 
 In socket mode the bot needs no public address, so a small Linux VM is enough (it runs live on an Ubuntu 24.04 B2ats_v2 VM in Azure). Copy `package.json`, `package-lock.json`, `dist/`, `.env` and `service/` to `/opt/mandsteamsbot` (and `data/` when moving from another machine, after stopping the old copy), then:
