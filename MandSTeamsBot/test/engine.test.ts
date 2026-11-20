@@ -963,6 +963,21 @@ test("the group ask spells out what each role should send, and names the directo
   assert.equal(g.store.checkin(g.store.personByEmail("madan@acme.test")!.id, "2026-11-16"), undefined);
 });
 
+test("after a group's clock-out, replies there are recorded but not answered or chased, even inside office hours", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "hours 09:00-21:00");
+  await g.engine.handleMessage(g.cto, "clockout Recruitment Team 18:00");
+  await g.engine.handleMessage(g.cto, "ask group recruitment team");
+  g.brain.doneAfterUserMessages = 99;
+  g.setDate("2026-11-16T18:30:00Z");
+  const before = g.sent.length;
+  await g.engine.handleGroupReply("u-priya", "working on Deloitte");
+  assert.equal(g.sent.length, before);
+  const priya = g.store.personByEmail(PRIYA)!;
+  assert.ok(g.store.messages(g.store.checkin(priya.id, "2026-11-16")!.id).some((m) => m.text === "working on Deloitte"));
+});
+
 test("group banter is ignored: not recorded, not answered", async () => {
   const g = groupSetup();
   await g.engine.handleMessage(g.cto, "add group Recruitment Team");
