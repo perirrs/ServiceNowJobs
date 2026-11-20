@@ -280,6 +280,44 @@ export function roleOf(profile: string | null | undefined): Role | null {
   return word === "recruitment director" ? "Recruitment Director" : word === "hr manager" || word === "hr" ? "HR Manager" : word === "account manager" ? "Account Manager" : word === "account owner" ? "Account Owner" : "Recruiter";
 }
 
+/**
+ * What each role in a group should send, one line per role present, so a group ask reads
+ * the way the sender would write it by hand. The director is named and asked for the team view.
+ */
+export function roleAskLines(people: { name: string; profile: string | null }[], round: Round): string[] {
+  const has = (r: Role) => people.some((p) => roleOf(p.profile) === r);
+  const morning = round === "plan";
+  const lines: string[] = [];
+  if (has("Recruiter")) {
+    lines.push(
+      morning
+        ? "Recruiters: how many submissions today (target 6), for which requirements and clients."
+        : "Recruiters: submissions sent today, any L1s scheduled or selected, and is all of it in TalentFlow.",
+    );
+  }
+  if (has("Account Owner")) {
+    lines.push(
+      morning
+        ? "Account owners: the same (target 4 submissions), plus any new requirements you are bringing in today."
+        : "Account owners: the same, plus new requirements and SPOCs added today.",
+    );
+  }
+  if (has("Account Manager")) {
+    lines.push(
+      morning
+        ? "Account managers: new requirements expected today, and which SPOCs you are working to onboard."
+        : "Account managers: new requirements, spots and SPOCs added today.",
+    );
+  }
+  const directors = people.filter((p) => roleOf(p.profile) === "Recruitment Director");
+  for (const d of directors) {
+    const first = d.name.split(" ")[0]!;
+    lines.push(morning ? `${first}: the plan for the whole team today, and any blockers.` : `${first}: how the whole team did today, and any blockers.`);
+  }
+  if (lines.length) lines.push("Please keep TalentFlow updated as you go.");
+  return lines;
+}
+
 /** Daily submissions, monthly joins and (where set) the L1 select rate expected of each role that does submissions. */
 const ROLE_TARGETS: Partial<Record<Role, { daySubmissions: number; monthJoins: number; l1Rate?: number }>> = {
   Recruiter: { daySubmissions: 6, monthJoins: 3, l1Rate: 0.2 },
@@ -1147,7 +1185,12 @@ export class Engine {
       teamSpocs += n(day, "new_spocs");
       const last = f?.lastToday ?? null;
       if (!this.isAway(p) && (!last || now.getTime() - Date.parse(last) > 2 * 3_600_000)) stale.push(displayName(p));
-      const subCell = target ? `${sub >= target.daySubmissions ? "✅ " : ""}${sub} of ${target.daySubmissions}` : "-";
+      // Candidates added against a requirement but not yet moved to "submitted to client" are shown beside it,
+      // so work in progress is visible without counting towards the target.
+      const added = n(day, "added");
+      const subCell = target
+        ? `${sub >= target.daySubmissions ? "✅ " : ""}${sub} of ${target.daySubmissions}${added ? ` · ${added} added` : ""}`
+        : "-";
       const monthSub = n(month, "submitted_to_client");
       const monthL1 = n(month, "l1_select");
       const rate = target?.l1Rate && monthSub ? ` (${Math.round((monthL1 / monthSub) * 100)}% of ${Math.round(target.l1Rate * 100)}%)` : "";
@@ -1982,6 +2025,8 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       const soFar = this.sinceAsk(checkin.id);
       const firstReply = soFar.findIndex((m) => m.role === "user");
       const followUps = soFar.slice(firstReply).filter((m) => m.role === "bot").length;
+      // In a group, one follow-up per person: after that, what they say is kept for the note and left unanswered.
+      if (incoming.fromGroup && followUps >= 1) return null;
       const finalTurn = followUps >= this.config.maxBotTurns - 1;
       const turn = await this.brain.nextTurn(this.context(person, checkin, finalTurn, incoming.fromGroup));
       if (turn.ignore) {
@@ -1989,6 +2034,8 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         for (const id of incoming.ids) this.store.removeMessage(id);
         return null;
       }
+      // A complete group update: kept for the note, nothing posted back.
+      if (turn.silent) return null;
       if (turn.handover || !turn.reply) {
         // Something only a person should answer: go quiet here and tell the admins.
         this.store.set(`takeover:${checkin.id}`, "handover");
@@ -2499,11 +2546,19 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       .map((p) => ({ person: p, userId: this.store.get(`aadOf:${p.id}`) ?? "" }))
       .filter((t) => t.userId);
     const mentioned = [...tagged, ...alsoTag];
+    // What each role should send, unless the admin asked for something specific.
+    const byRole = topic
+      ? []
+      : roleAskLines(
+          this.store.groupMembers(group.id).filter((p) => !this.isAdmin(p)).map((p) => ({ name: displayName(p), profile: p.profile })),
+          round,
+        );
 
     // {@0}, {@1}... mark where each person's tag goes when the message is sent.
     const lines = (name: (i: number) => string) =>
       [
         opening,
+        ...byRole,
         ...tagged.map((t, i) => `${name(i)} ${t.question}`),
         ...(alsoTag.length ? [`${alsoTag.map((_, i) => name(tagged.length + i)).join(" ")} please share your update.`] : []),
       ].join("\n");
