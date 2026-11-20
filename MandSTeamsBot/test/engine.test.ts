@@ -978,6 +978,32 @@ test("after a group's clock-out, replies there are recorded but not answered or 
   assert.ok(g.store.messages(g.store.checkin(priya.id, "2026-11-16")!.id).some((m) => m.text === "working on Deloitte"));
 });
 
+test("everyone asked in the group is tagged, not only those with a question of their own", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  g.brain.nextGroupQuestions = [{ name: "Priya Rao", question: "Deloitte profiles, how many today?" }];
+  await g.engine.handleMessage(g.cto, "ask group recruitment team");
+  const ask = g.sent.at(-1)!;
+  assert.deepEqual(ask.mentions!.map((m) => m.userId).sort(), ["u-priya", "u-ravi"]);
+  assert.match(ask.text, /{@1} please share your update./);
+});
+
+test("an update someone posted in the group earlier today counts as their answer: not chased", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  (g.engine as unknown as { direct: { history: unknown } }).direct.history = async () => [
+    { id: "e1", createdAt: "2026-11-16T08:00:00.000Z", fromUserId: "u-priya", fromName: "Priya Rao", text: "Good morning, today I will send 3 Deloitte profiles and finish the calendar", addressedUserIds: [] },
+    { id: "e0", createdAt: "2026-11-15T08:00:00.000Z", fromUserId: "u-ravi", fromName: "Ravi Kumar", text: "Yesterday I fixed the login bug and two more issues", addressedUserIds: [] },
+  ];
+  await g.engine.handleMessage(g.cto, "ask group recruitment team");
+  const priya = g.store.personByEmail(PRIYA)!;
+  assert.ok(g.store.messages(g.store.checkin(priya.id, "2026-11-16")!.id).some((m) => m.role === "user" && m.text.includes("3 Deloitte profiles")));
+  g.setDate("2026-11-16T17:50:00Z");
+  await g.engine.tick();
+  const chase = g.sent.find((s) => s.to === "g-rec" && s.text.includes("Any update?"));
+  assert.deepEqual(chase?.mentions, [{ userId: "u-ravi", name: "Ravi Kumar" }]); // yesterday's message does not count
+});
+
 test("group banter is ignored: not recorded, not answered", async () => {
   const g = groupSetup();
   await g.engine.handleMessage(g.cto, "add group Recruitment Team");
