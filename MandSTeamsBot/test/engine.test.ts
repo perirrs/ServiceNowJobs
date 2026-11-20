@@ -9,7 +9,7 @@ import { Store } from "../src/db.js";
 import { cardToCommand, chunk, Engine, parseTime, roleOf, takeZone } from "../src/engine.js";
 import { describeTrackRecord } from "../src/trackrecord.js";
 import type { Identity } from "../src/engine.js";
-import { Base44TalentFlow, describeCounts } from "../src/ats.js";
+import { Base44TalentFlow, countMoves, describeCounts } from "../src/ats.js";
 import type { Base44 } from "../src/base44.js";
 
 const CTO = "cto@acme.test";
@@ -2655,6 +2655,16 @@ test("asking for the weekly report by hand does not cancel Friday's", async () =
 
 // ---------- hourly progress, end of day, TalentFlow history ----------
 
+test("every TalentFlow status is counted, including holds, hires, internal rejects and duplicates", () => {
+  const at = "2026-11-20T09:00:00.000Z";
+  const rows = ["Applied", "Client Hold", "Hired", "Screen Reject - Internal", "Client Duplicate", "Internal Duplicate"].map((status) => ({
+    status_history: [{ status, changed_at: at }],
+  }));
+  const counts = countMoves(rows as never, Date.parse("2026-11-20T00:00:00Z"), Date.parse("2026-11-21T00:00:00Z"));
+  assert.deepEqual(counts, { added: 1, client_hold: 1, hired: 1, internal_reject: 1, client_duplicate: 1, internal_duplicate: 1 });
+  assert.match(describeCounts(counts), /^1 submissions (candidates added), 1 internal screen reject/);
+});
+
 test("roles are read from the start of a profile", () => {
   assert.equal(roleOf("Recruiter. Does submissions only."), "Recruiter");
   assert.equal(roleOf("account owner for TCS"), "Account Owner");
@@ -2702,7 +2712,7 @@ test("hourly progress and the end-of-day summary are posted in the group from Ta
     stats: async () => ({}),
     team: async () =>
       new Map([
-        [PRIYA, { day: { submitted_to_client: 2, l1_select: 1, added: 3 }, month: { submitted_to_client: 9, onboarded: 1 }, lastToday: "2026-11-16T10:30:00.000Z" }],
+        [PRIYA, { day: { added: 2, submitted_to_client: 1, l1_select: 1 }, month: { added: 9, submitted_to_client: 4, onboarded: 1 }, lastToday: "2026-11-16T10:30:00.000Z" }],
         ["ravi@acme.test", { day: { new_requirements: 1, new_spots: 3 }, month: {}, lastToday: "2026-11-16T07:00:00.000Z" }],
       ]),
   };
@@ -2719,7 +2729,7 @@ test("hourly progress and the end-of-day summary are posted in the group from Ta
   await g.engine.tick(); // once an hour
   assert.equal(posts.length, 1);
   assert.match(posts[0]!, /^g-rec\|<p><b>Team progress at 11:02<\/b><\/p>/);
-  assert.match(posts[0]!, /Priya Rao<\/td><td>Recruiter<\/td><td>2 of 6 · 3 added<\/td><td>1<\/td><td>9 · 0 \(0% of 20%\) · 1 of 3<\/td><td>-<\/td><td>10:30<\/td>/);
+  assert.match(posts[0]!, /Priya Rao<\/td><td>Recruiter<\/td><td>2 of 6 · 1 to client<\/td><td>1<\/td><td>9 · 0 \(0% of 20%\) · 1 of 3<\/td><td>-<\/td><td>10:30<\/td>/);
   assert.match(posts[0]!, /Ravi Kumar<\/td><td>Account Manager<\/td><td>-<\/td><td>0<\/td><td>-<\/td><td>1 · 3 · 0<\/td>/);
   assert.match(posts[0]!, /Team today: 2 of 6 submissions \(33%\), 1 L1 selects, 1 new requirements \(3 spots\)/);
   assert.match(posts[0]!, /No TalentFlow update in the last 2 hours: Ravi Kumar\./);
