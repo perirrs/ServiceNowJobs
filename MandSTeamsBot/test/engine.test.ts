@@ -2850,6 +2850,22 @@ test("the end-of-day summary carries a line per person and the director's team t
   assert.equal(asked[0]![0]!.figures, "7 candidates added (not yet sent to the client), 3 submitted to client");
 });
 
+test("'progress' posts the TalentFlow table in a group straight away", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "profile priya: Recruiter. Does submissions only.");
+  const posts: string[] = [];
+  (g.engine as unknown as { direct: { postHtml: (c: string, h: string) => Promise<string> } }).direct.postHtml = async (c, h) => {
+    posts.push(`${c}|${h}`);
+    return "m1";
+  };
+  g.engine.ats = { stats: async () => ({}), team: async () => new Map([[PRIYA, { day: { submitted_to_client: 1 }, month: {}, lastToday: null }]]) };
+  await g.engine.handleMessage(g.cto, "progress Recruitment Team");
+  assert.equal(posts.length, 1);
+  assert.match(posts[0]!, /^g-rec|<p><b>Team progress at /);
+  assert.match(g.admin.at(-1)!, /Posted the progress table in Recruitment Team/);
+});
+
 test("the board shows group chats first and individual chats below them", async () => {
   const g = groupSetup();
   await g.engine.handleMessage(g.cto, "add group Recruitment Team");
