@@ -1017,6 +1017,21 @@ test("a group renamed in Teams takes its new name, and commands find it by the n
   assert.match(g.admin.at(-1)!, /M&S Recruitment Squad will be asked automatically at \*\*17:00/);
 });
 
+test("people added or removed in Teams are picked up within the hour; leavers are no longer followed, and the admins are told", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, `add ${PRIYA}`); // Priya is also followed in her own right
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  g.members.splice(0, g.members.length, { userId: "u-sam", email: "sam@acme.test", name: "Sam Lee" }); // Priya and Ravi left, Sam joined
+  g.setDate("2026-11-16T18:10:00Z");
+  await g.engine.tick();
+  const nominees = g.store.nominees().map((p) => p.email).sort();
+  assert.deepEqual(nominees, [PRIYA, "sam@acme.test"]); // Ravi was only there through the group
+  const told = g.admin.join("\n");
+  assert.match(told, /Sam Lee joined Recruitment Team/);
+  assert.match(told, /profile sam/i);
+  assert.match(told, /Ravi Kumar left Recruitment Team/);
+});
+
 test("group banter is ignored: not recorded, not answered", async () => {
   const g = groupSetup();
   await g.engine.handleMessage(g.cto, "add group Recruitment Team");
