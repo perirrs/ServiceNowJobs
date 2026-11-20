@@ -2558,9 +2558,8 @@ for (const [who, profile] of [
 ] as const) {
   test(`${who} is not asked, chased or put on the tracker in the group`, async () => {
     const g = groupSetup();
-    g.store.upsertPerson("ravi@acme.test", { profile });
     await g.engine.handleMessage(g.cto, "add group Recruitment Team");
-    g.store.upsertPerson("ravi@acme.test", { profile }); // adding the group may refresh people; keep the profile
+    g.store.setProfile(g.store.personByEmail("ravi@acme.test")!.id, profile);
     await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
     const ravi = g.store.personByEmail("ravi@acme.test")!;
     const priya = g.store.personByEmail(PRIYA)!;

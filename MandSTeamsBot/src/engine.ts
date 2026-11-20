@@ -274,10 +274,10 @@ type Role = "Recruitment Director" | "HR Manager" | "Account Manager" | "Account
 
 /** A person's role, read from the start of their profile. */
 export function roleOf(profile: string | null | undefined): Role | null {
-  const m = /^(Recruitment Director|HR Manager|Account Manager|Account Owner|Recruiter)\b/i.exec((profile ?? "").trim());
+  const m = /^(Recruitment Director|HR Manager|HR|Account Manager|Account Owner|Recruiter)\b/i.exec((profile ?? "").trim());
   if (!m) return null;
   const word = m[1]!.toLowerCase();
-  return word === "recruitment director" ? "Recruitment Director" : word === "hr manager" ? "HR Manager" : word === "account manager" ? "Account Manager" : word === "account owner" ? "Account Owner" : "Recruiter";
+  return word === "recruitment director" ? "Recruitment Director" : word === "hr manager" || word === "hr" ? "HR Manager" : word === "account manager" ? "Account Manager" : word === "account owner" ? "Account Owner" : "Recruiter";
 }
 
 /** Daily submissions, monthly joins and (where set) the L1 select rate expected of each role that does submissions. */
@@ -510,6 +510,22 @@ export class Engine {
 
   private isAdmin(person: Person): boolean {
     return this.config.adminEmails.includes(person.email);
+  }
+
+  /**
+   * People never asked for updates, chased or put on a group's tracker: the admins,
+   * the recruitment director (judged on the team, not on his own work), HR,
+   * and anyone whose profile says never to ask.
+   */
+  private notAsked(person: Person): boolean {
+    return this.isAdmin(person) || this.neverAskedForRole(person);
+  }
+
+  /** The director, HR and anyone whose profile says never to ask: not asked anywhere, one to one included. */
+  private neverAskedForRole(person: Person): boolean {
+    const role = roleOf(person.profile);
+    if (role === "Recruitment Director" || role === "HR Manager") return true;
+    return /\bnever ask\b/i.test(person.profile ?? "");
   }
 
   /**
@@ -1743,6 +1759,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     if (this.isWaiting(`pwait:${person.id}`)) return false; // an opening is already waiting for approval
     if (!this.address(person)) return false;
     if (this.isAway(person)) return false;
+    if (this.neverAskedForRole(person)) return false;
     const date = this.today();
     const existing = this.store.checkin(person.id, date);
     if (!this.dueFor(person, date, round, force)) return false;
@@ -2193,7 +2210,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       const lastAt = Date.parse(`${messages.at(-1)!.at.replace(" ", "T")}Z`);
       if (minMinutes > 0 && this.now().getTime() - lastAt < minMinutes * 60_000) continue;
       const person = this.store.personById(checkin.personId);
-      if (!person?.nominated || !this.address(person) || this.isAway(person)) continue;
+      if (!person?.nominated || !this.address(person) || this.isAway(person) || this.neverAskedForRole(person)) continue;
       if (this.isWaiting(`draftwait:${checkin.id}`)) continue;
       try {
         const nudge = this.nudgeText("followup");
@@ -2394,9 +2411,9 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     if (this.isWaiting(`gwait:${group.id}`)) return { asked: 0, message: `A message for ${group.name} is already waiting for your approval.` };
     const date = this.today();
     const due = (await this.syncGroup(group)).filter((p) => {
-      // Admins in the group see the question like everyone else, but are not
-      // chased or followed up: the summaries are for them.
-      if (this.isAdmin(p)) return false;
+      // Admins, the director and HR see the question like everyone else, but are not
+      // asked, chased or followed up: the summaries are for them.
+      if (this.notAsked(p)) return false;
       // On the group's schedule, someone with a time of their own for this message waits for it.
       const slot = round === "plan" ? "morning" : round === "review" ? "evening" : "";
       if (!force && slot && this.store.get(`schedule:person:${p.id}:${slot}`)) return false;
@@ -2558,6 +2575,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     for (const { group, askedAt } of this.listeningGroups()) {
       const minutes = (this.now().getTime() - Date.parse(askedAt)) / 60_000;
       const unanswered = this.store.groupMembers(group.id).filter((p) => {
+        if (this.notAsked(p)) return false;
         const c = this.store.checkin(p.id, date);
         return c?.status === "open" && this.store.get(`via:${c.id}`) === String(group.id) && !this.sinceAsk(c.id).some((m) => m.role === "user");
       });
@@ -2619,7 +2637,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     let rows = 0;
     const body = this.store
       .groupMembers(group.id)
-      .filter((p) => !this.isAdmin(p))
+      .filter((p) => !this.notAsked(p))
       .map((p) => {
         const name = `${esc((p.name ?? p.email).split(" ")[0]!)}${this.isAway(p) ? " (on leave)" : ""}`;
         const items = this.store.trackerItems(p.id, date).slice(0, 8);
@@ -2695,7 +2713,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       return "Building a tracker needs messages to be sent from your own Teams account.";
     }
     if (this.paused) return `Paused: nothing was posted in ${group.name}. Send **resume** first.`;
-    const members = (await this.syncGroup(group)).filter((p) => !this.isAdmin(p));
+    const members = (await this.syncGroup(group)).filter((p) => !this.notAsked(p));
     if (!members.length) return `I found nobody in ${group.name} to track.`;
 
     const lines = await this.direct.history(group.chatId, this.config.historyMessages);
