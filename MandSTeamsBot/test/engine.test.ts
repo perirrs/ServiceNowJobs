@@ -2547,8 +2547,33 @@ test("roles are read from the start of a profile", () => {
   assert.equal(roleOf("Account Manager for Deloitte"), "Account Manager");
   assert.equal(roleOf("Recruitment Director. Owns the flow."), "Recruitment Director");
   assert.equal(roleOf("HR Manager. Oversees blockers."), "HR Manager");
+  assert.equal(roleOf("HR. Not involved in recruitment work. Never ask for updates."), "HR Manager");
   assert.equal(roleOf("Developer"), null);
 });
+
+for (const [who, profile] of [
+  ["the recruitment director", "Recruitment Director. Responsible for the team's overall performance."],
+  ["HR", "HR. Not involved in recruitment work; in the group only to stay aware. Never ask for updates."],
+  ["someone marked never to be asked", "Observer. Never ask for updates."],
+] as const) {
+  test(`${who} is not asked, chased or put on the tracker in the group`, async () => {
+    const g = groupSetup();
+    g.store.upsertPerson("ravi@acme.test", { profile });
+    await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+    g.store.upsertPerson("ravi@acme.test", { profile }); // adding the group may refresh people; keep the profile
+    await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+    const ravi = g.store.personByEmail("ravi@acme.test")!;
+    const priya = g.store.personByEmail(PRIYA)!;
+    assert.equal(g.store.checkin(ravi.id, "2026-11-16"), undefined);
+    assert.ok(g.store.checkin(priya.id, "2026-11-16"));
+    assert.ok(!g.brain.groupAsks.at(-1)!.members.some((m) => m.name.startsWith("Ravi")));
+
+    g.setDate("2026-11-16T17:50:00Z"); // past the chase
+    await g.engine.tick();
+    const chase = g.sent.find((s) => s.to === "g-rec" && s.text.includes("Any update?"));
+    assert.deepEqual(chase?.mentions, [{ userId: "u-priya", name: "Priya Rao" }]);
+  });
+}
 
 test("hourly progress and the end-of-day summary are posted in the group from TalentFlow", async () => {
   const g = groupSetup();
