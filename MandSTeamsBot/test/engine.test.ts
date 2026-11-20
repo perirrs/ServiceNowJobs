@@ -1058,7 +1058,7 @@ test("an UPDATE posted by an admin in a group is kept as a standing instruction 
   g.setDate("2026-11-16T09:00:00Z");
   await g.engine.handleMessage(g.cto, "ask group recruitment team");
   assert.match(g.brain.groupAsks.at(-1)!.memory, /No leave without telling Madan/);
-  assert.match(g.sent.at(-1)!.text, /Recruiters: how many submissions today \(target 5\)/);
+  assert.match(g.sent.at(-1)!.text, /Recruiters: how many profiles submitted to client today \(target 5\)/);
 
   // And the hourly table measures against the new numbers.
   const posts: string[] = [];
@@ -1068,7 +1068,7 @@ test("an UPDATE posted by an admin in a group is kept as a standing instruction 
   };
   g.engine.ats = {
     stats: async () => ({}),
-    team: async () => new Map([[PRIYA, { day: { added: 2 }, month: { added: 8, l1_select: 2 }, lastToday: null }]]),
+    team: async () => new Map([[PRIYA, { day: { added: 4, submitted_to_client: 2 }, month: { added: 20, submitted_to_client: 8, l1_select: 2 }, lastToday: null }]]),
   };
   await g.engine.handleMessage(g.cto, "hourly Recruitment Team 11:00-17:00");
   g.setDate("2026-11-16T11:02:00Z");
@@ -2706,7 +2706,7 @@ test("every TalentFlow status is counted, including holds, hires, internal rejec
   }));
   const counts = countMoves(rows as never, Date.parse("2026-11-20T00:00:00Z"), Date.parse("2026-11-21T00:00:00Z"));
   assert.deepEqual(counts, { added: 1, client_hold: 1, hired: 1, internal_reject: 1, client_duplicate: 1, internal_duplicate: 1 });
-  assert.match(describeCounts(counts), /^1 submissions \(candidates added\), 1 internal screen reject/);
+  assert.match(describeCounts(counts), /^1 candidates added \(not yet sent to the client\), 1 internal screen reject/);
 });
 
 test("roles are read from the start of a profile", () => {
@@ -2756,7 +2756,7 @@ test("hourly progress and the end-of-day summary are posted in the group from Ta
     stats: async () => ({}),
     team: async () =>
       new Map([
-        [PRIYA, { day: { added: 2, submitted_to_client: 1, l1_select: 1 }, month: { added: 9, submitted_to_client: 4, onboarded: 1 }, lastToday: "2026-11-16T10:30:00.000Z" }],
+        [PRIYA, { day: { added: 5, submitted_to_client: 2, l1_select: 1 }, month: { added: 30, submitted_to_client: 9, onboarded: 1 }, lastToday: "2026-11-16T10:30:00.000Z", toClientToday: [{ candidate: "Asha Kumar", requirement: "ServiceNow Lead" }, { candidate: "Ben <Roy>", requirement: "SAP FICO" }] }],
         ["ravi@acme.test", { day: { new_requirements: 1, new_spots: 3 }, month: {}, lastToday: "2026-11-16T07:00:00.000Z" }],
       ]),
   };
@@ -2773,9 +2773,10 @@ test("hourly progress and the end-of-day summary are posted in the group from Ta
   await g.engine.tick(); // once an hour
   assert.equal(posts.length, 1);
   assert.match(posts[0]!, /^g-rec\|<p><b>Team progress at 11:02<\/b><\/p>/);
-  assert.match(posts[0]!, /Priya Rao<\/td><td>Recruiter<\/td><td>2 of 6 · 1 to client<\/td><td>1<\/td><td>9 · 0 \(0% of 20%\) · 1 of 3<\/td><td>-<\/td><td>10:30<\/td>/);
-  assert.match(posts[0]!, /Ravi Kumar<\/td><td>Account Manager<\/td><td>-<\/td><td>0<\/td><td>-<\/td><td>1 · 3 · 0<\/td>/);
-  assert.match(posts[0]!, /Team today: 2 of 6 submissions \(33%\), 1 L1 selects, 1 new requirements \(3 spots\)/);
+  assert.match(posts[0]!, /Priya Rao<\/td><td>Recruiter<\/td><td>2 of 6<\/td><td>Asha Kumar – ServiceNow Lead<br>Ben &lt;Roy&gt; – SAP FICO<\/td><td>1<\/td><td>9 · 0 \(0% of 20%\) · 1 of 3<\/td><td>-<\/td><td>10:30<\/td>/);
+  assert.match(posts[0]!, /Ravi Kumar<\/td><td>Account Manager<\/td><td>-<\/td><td>-<\/td><td>0<\/td><td>-<\/td><td>1 · 3 · 0<\/td>/);
+  assert.match(posts[0]!, /<th>Submitted to client today<\/th><th>Candidate – requirement<\/th>/);
+  assert.match(posts[0]!, /Team today: 2 of 6 submitted to client \(33%\), 1 L1 selects, 1 new requirements \(3 spots\)/);
   assert.match(posts[0]!, /No TalentFlow update in the last 2 hours: Ravi Kumar\./);
   assert.equal(g.engine.isGroupReport("m1"), true);
   assert.equal(g.sent.length, 0); // the posts are not chat messages, and nothing else was sent
@@ -2807,7 +2808,7 @@ test("the end-of-day summary carries a line per person and the director's team t
   };
   g.engine.ats = {
     stats: async () => ({}),
-    team: async () => new Map([[PRIYA, { day: { added: 3 }, month: { onboarded: 2 }, lastToday: null }]]),
+    team: async () => new Map([[PRIYA, { day: { added: 7, submitted_to_client: 3 }, month: { onboarded: 2 }, lastToday: null }]]),
   };
   await g.engine.handleMessage(g.cto, "clockout Recruitment Team 18:00");
   g.setDate("2026-11-16T18:00:00Z");
@@ -2820,7 +2821,7 @@ test("the end-of-day summary carries a line per person and the director's team t
   assert.match(posts[0]!, /Priya Rao: 3 submissions; 3 more needed tomorrow\.<br>Ravi Kumar: no update\./);
   assert.doesNotMatch(posts[0]!, /<td>Madan Mani/); // the director is measured by the team, not a row
   assert.deepEqual(asked[0]!.map((p) => p.name), ["Priya Rao", "Ravi Kumar"]);
-  assert.equal(asked[0]![0]!.figures, "3 submissions (candidates added)");
+  assert.equal(asked[0]![0]!.figures, "7 candidates added (not yet sent to the client), 3 submitted to client");
 });
 
 test("the board shows group chats first and individual chats below them", async () => {
