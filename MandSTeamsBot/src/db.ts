@@ -1,0 +1,754 @@
+import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+
+export interface Person {
+  id: number;
+  email: string;
+  name: string | null;
+  teamsUserId: string | null;
+  /** The person's one-to-one chat with the bot. */
+  conversationId: string | null;
+  /** The person's one-to-one chat with the sender, in send-as-user mode. */
+  chatId: string | null;
+  nominated: boolean;
+  /** Free-text brief written by an admin: role, responsibilities, targets. */
+  profile: string | null;
+}
+
+/** A message sent in the sender's name. */
+export interface SentMessage {
+  id: number;
+  chatId: string;
+  messageId: string;
+  text: string;
+  label: string;
+  at: string;
+  deleted: boolean;
+  /** The check-in record rows written when it was sent. */
+  recordIds: number[];
+}
+
+/** A Teams group chat whose members are asked together. */
+export interface Group {
+  id: number;
+  chatId: string;
+  name: string;
+}
+
+export type CheckinStatus = "open" | "completed" | "no_response";
+
+export interface Checkin {
+  id: number;
+  personId: number;
+  date: string;
+  status: CheckinStatus;
+  reminded: boolean;
+}
+
+export interface ChatMessage {
+  /** The row's id; absent on messages made up outside the store. */
+  id?: number;
+  role: "bot" | "user";
+  text: string;
+  at: string;
+}
+
+/** paused: put on hold by an admin, off the tracker and not asked about until resumed (or until `resumeOn`). */
+export type ItemStatus = "open" | "blocked" | "done" | "dropped" | "paused";
+
+/** A tracked piece of work. Open and blocked items are the bot's memory between days. */
+export interface WorkItem {
+  id: number;
+  personId: number;
+  title: string;
+  status: ItemStatus;
+  lastUpdate: string;
+  firstSeen: string;
+  lastSeen: string;
+  /** The date this is due (YYYY-MM-DD), when the person gave one. */
+  due: string | null;
+  /** How far along it is, 0 to 100, when known. */
+  progress: number | null;
+  /** When blocked: the colleague it is waiting on, as named in the chat. */
+  waitingOn: string | null;
+  /** The date it became blocked; null when it is not blocked. */
+  blockedSince: string | null;
+  /** When paused with a date ("do it Monday"): the day it comes back. */
+  resumeOn: string | null;
+}
+
+/** The structured note the AI writes at the end of each person's check-in. */
+export interface NoteContent {
+  summary: string;
+  progressVsTargets: string;
+  blockers: string[];
+  painPoints: string[];
+  helpNeeded: string[];
+  followUpTomorrow: string[];
+  /** What they said in the morning they would do today. Absent on older notes. */
+  planToday?: string[];
+}
+
+export interface Note extends NoteContent {
+  personId: number;
+  date: string;
+}
+
+type Row = Record<string, unknown>;
+
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS people (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  email TEXT NOT NULL UNIQUE,
+  name TEXT,
+  teams_user_id TEXT UNIQUE,
+  conversation_id TEXT,
+  nominated INTEGER NOT NULL DEFAULT 0,
+  profile TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS checkins (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  person_id INTEGER NOT NULL REFERENCES people(id),
+  date TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open',
+  reminded INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (person_id, date)
+);
+CREATE TABLE IF NOT EXISTS messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  checkin_id INTEGER NOT NULL REFERENCES checkins(id),
+  role TEXT NOT NULL,
+  text TEXT NOT NULL,
+  at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS notes (
+  checkin_id INTEGER PRIMARY KEY REFERENCES checkins(id),
+  person_id INTEGER NOT NULL REFERENCES people(id),
+  date TEXT NOT NULL,
+  content TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  person_id INTEGER NOT NULL REFERENCES people(id),
+  title TEXT NOT NULL,
+  status TEXT NOT NULL,
+  last_update TEXT NOT NULL,
+  first_seen TEXT NOT NULL,
+  last_seen TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS groups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  chat_id TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS group_members (
+  group_id INTEGER NOT NULL REFERENCES groups(id),
+  person_id INTEGER NOT NULL REFERENCES people(id),
+  PRIMARY KEY (group_id, person_id)
+);
+CREATE TABLE IF NOT EXISTS sent (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  chat_id TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  text TEXT NOT NULL,
+  label TEXT NOT NULL,
+  at TEXT NOT NULL,
+  deleted INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS drafts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  chat_id TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  label TEXT NOT NULL,
+  at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'waiting'
+);
+CREATE TABLE IF NOT EXISTS kv (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS digests (
+  date TEXT PRIMARY KEY,
+  text TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`;
+
+function toPerson(r: Row): Person {
+  return {
+    id: r.id as number,
+    email: r.email as string,
+    name: (r.name as string | null) ?? null,
+    teamsUserId: (r.teams_user_id as string | null) ?? null,
+    conversationId: (r.conversation_id as string | null) ?? null,
+    chatId: (r.chat_id as string | null) ?? null,
+    nominated: r.nominated === 1,
+    profile: (r.profile as string | null) ?? null,
+  };
+}
+
+function toCheckin(r: Row): Checkin {
+  return {
+    id: r.id as number,
+    personId: r.person_id as number,
+    date: r.date as string,
+    status: r.status as CheckinStatus,
+    reminded: r.reminded === 1,
+  };
+}
+
+function toItem(r: Row): WorkItem {
+  return {
+    id: r.id as number,
+    personId: r.person_id as number,
+    title: r.title as string,
+    status: r.status as ItemStatus,
+    lastUpdate: r.last_update as string,
+    firstSeen: r.first_seen as string,
+    lastSeen: r.last_seen as string,
+    due: (r.due as string | null) || null,
+    progress: typeof r.progress === "number" ? (r.progress as number) : null,
+    waitingOn: (r.waiting_on as string | null) || null,
+    blockedSince: (r.blocked_since as string | null) || null,
+    resumeOn: (r.resume_on as string | null) || null,
+  };
+}
+
+function toNote(r: Row): Note {
+  return {
+    ...(JSON.parse(r.content as string) as NoteContent),
+    personId: r.person_id as number,
+    date: r.date as string,
+  };
+}
+
+export class Store {
+  private db: DatabaseSync;
+
+  /** Pass ":memory:" for tests. */
+  /** Where the database file lives; empty for an in-memory store. */
+  private dir = "";
+
+  constructor(dataDirOrMemory: string) {
+    if (dataDirOrMemory !== ":memory:") this.dir = dataDirOrMemory;
+    if (dataDirOrMemory === ":memory:") {
+      this.db = new DatabaseSync(":memory:");
+    } else {
+      mkdirSync(dataDirOrMemory, { recursive: true });
+      this.db = new DatabaseSync(path.join(dataDirOrMemory, "mands.db"));
+    }
+    this.db.exec("PRAGMA foreign_keys = ON;");
+    this.db.exec(SCHEMA);
+    // Added after the first release: older databases need the column.
+    const columns = this.db.prepare("PRAGMA table_info(people)").all();
+    if (!columns.some((c) => c.name === "chat_id")) this.db.exec("ALTER TABLE people ADD COLUMN chat_id TEXT");
+    const sentColumns = this.db.prepare("PRAGMA table_info(sent)").all();
+    if (!sentColumns.some((c) => c.name === "record_ids")) this.db.exec("ALTER TABLE sent ADD COLUMN record_ids TEXT");
+    const itemColumns = this.db.prepare("PRAGMA table_info(items)").all();
+    if (!itemColumns.some((c) => c.name === "due")) this.db.exec("ALTER TABLE items ADD COLUMN due TEXT");
+    if (!itemColumns.some((c) => c.name === "progress")) this.db.exec("ALTER TABLE items ADD COLUMN progress INTEGER");
+    if (!itemColumns.some((c) => c.name === "waiting_on")) this.db.exec("ALTER TABLE items ADD COLUMN waiting_on TEXT");
+    if (!itemColumns.some((c) => c.name === "blocked_since")) this.db.exec("ALTER TABLE items ADD COLUMN blocked_since TEXT");
+    if (!itemColumns.some((c) => c.name === "resume_on")) this.db.exec("ALTER TABLE items ADD COLUMN resume_on TEXT");
+  }
+
+  close(): void {
+    this.db.close();
+  }
+
+  // ---- people ----
+
+  personByEmail(email: string): Person | undefined {
+    const r = this.db.prepare("SELECT * FROM people WHERE email = ?").get(email.toLowerCase());
+    return r ? toPerson(r) : undefined;
+  }
+
+  personByTeamsId(teamsUserId: string): Person | undefined {
+    const r = this.db.prepare("SELECT * FROM people WHERE teams_user_id = ?").get(teamsUserId);
+    return r ? toPerson(r) : undefined;
+  }
+
+  personById(id: number): Person | undefined {
+    const r = this.db.prepare("SELECT * FROM people WHERE id = ?").get(id);
+    return r ? toPerson(r) : undefined;
+  }
+
+  /** Create the person if needed, and fill in whichever details are provided. */
+  upsertPerson(
+    email: string,
+    details: { name?: string | null; teamsUserId?: string; conversationId?: string; chatId?: string } = {},
+  ): Person {
+    const key = email.toLowerCase();
+    this.db.prepare("INSERT OR IGNORE INTO people (email) VALUES (?)").run(key);
+    this.db
+      .prepare(
+        `UPDATE people SET
+           name = COALESCE(?, name),
+           teams_user_id = COALESCE(?, teams_user_id),
+           conversation_id = COALESCE(?, conversation_id),
+           chat_id = COALESCE(?, chat_id)
+         WHERE email = ?`,
+      )
+      .run(
+        details.name ?? null,
+        details.teamsUserId ?? null,
+        details.conversationId ?? null,
+        details.chatId ?? null,
+        key,
+      );
+    return this.personByEmail(key)!;
+  }
+
+  setNominated(personId: number, nominated: boolean): void {
+    this.db.prepare("UPDATE people SET nominated = ? WHERE id = ?").run(nominated ? 1 : 0, personId);
+  }
+
+  setProfile(personId: number, profile: string): void {
+    this.db.prepare("UPDATE people SET profile = ? WHERE id = ?").run(profile, personId);
+  }
+
+  nominees(): Person[] {
+    return this.db
+      .prepare("SELECT * FROM people WHERE nominated = 1 ORDER BY COALESCE(name, email)")
+      .all()
+      .map(toPerson);
+  }
+
+  /** Find nominees by email, or by a fragment of their name or email. */
+  findNominees(query: string): Person[] {
+    const q = query.trim().toLowerCase();
+    const all = this.nominees();
+    const exact = all.filter((p) => p.email === q);
+    if (exact.length) return exact;
+    return all.filter((p) => p.email.includes(q) || (p.name ?? "").toLowerCase().includes(q));
+  }
+
+  // ---- check-ins ----
+
+  checkinById(id: number): Checkin | undefined {
+    const r = this.db.prepare("SELECT * FROM checkins WHERE id = ?").get(id);
+    return r ? toCheckin(r) : undefined;
+  }
+
+  checkin(personId: number, date: string): Checkin | undefined {
+    const r = this.db
+      .prepare("SELECT * FROM checkins WHERE person_id = ? AND date = ?")
+      .get(personId, date);
+    return r ? toCheckin(r) : undefined;
+  }
+
+  openCheckin(personId: number, date: string): Checkin {
+    this.db
+      .prepare(
+        `INSERT INTO checkins (person_id, date) VALUES (?, ?)
+         ON CONFLICT (person_id, date) DO UPDATE SET status = 'open'`,
+      )
+      .run(personId, date);
+    return this.checkin(personId, date)!;
+  }
+
+  /** Remove a check-in that never got as far as a delivered message. */
+  discardEmptyCheckin(checkinId: number): void {
+    const n = this.db.prepare("SELECT COUNT(*) AS n FROM messages WHERE checkin_id = ?").get(checkinId);
+    if (n && n.n === 0) this.db.prepare("DELETE FROM checkins WHERE id = ?").run(checkinId);
+  }
+
+  setCheckinStatus(checkinId: number, status: CheckinStatus): void {
+    this.db.prepare("UPDATE checkins SET status = ? WHERE id = ?").run(status, checkinId);
+  }
+
+  resetReminded(checkinId: number): void {
+    this.db.prepare("UPDATE checkins SET reminded = 0 WHERE id = ?").run(checkinId);
+  }
+
+  hasNote(checkinId: number): boolean {
+    return !!this.db.prepare("SELECT 1 AS x FROM notes WHERE checkin_id = ?").get(checkinId);
+  }
+
+  markReminded(checkinId: number): void {
+    this.db.prepare("UPDATE checkins SET reminded = 1 WHERE id = ?").run(checkinId);
+  }
+
+  /** Check-ins from earlier days that were never closed. */
+  openCheckinsBefore(date: string): Checkin[] {
+    return this.db
+      .prepare("SELECT * FROM checkins WHERE date < ? AND status = 'open'")
+      .all(date)
+      .map(toCheckin);
+  }
+
+  checkinsOn(date: string): Checkin[] {
+    return this.db.prepare("SELECT * FROM checkins WHERE date = ?").all(date).map(toCheckin);
+  }
+
+  /** Returns the new message's id. */
+  addMessage(checkinId: number, role: "bot" | "user", text: string): number {
+    const res = this.db
+      .prepare("INSERT INTO messages (checkin_id, role, text) VALUES (?, ?, ?)")
+      .run(checkinId, role, text);
+    return Number(res.lastInsertRowid);
+  }
+
+  removeMessage(messageId: number): void {
+    this.db.prepare("DELETE FROM messages WHERE id = ?").run(messageId);
+  }
+
+  messages(checkinId: number): ChatMessage[] {
+    return this.db
+      .prepare("SELECT id, role, text, at FROM messages WHERE checkin_id = ? ORDER BY id")
+      .all(checkinId)
+      .map((r) => ({ id: r.id as number, role: r.role as "bot" | "user", text: r.text as string, at: r.at as string }));
+  }
+
+  /** Everything the assistant has sent this person, across all days. */
+  assistantTexts(personId: number): string[] {
+    return this.db
+      .prepare(
+        `SELECT m.text FROM messages m JOIN checkins c ON c.id = m.checkin_id
+         WHERE c.person_id = ? AND m.role = 'bot'`,
+      )
+      .all(personId)
+      .map((r) => r.text as string);
+  }
+
+  // ---- notes ----
+
+  saveNote(checkin: Checkin, content: NoteContent): void {
+    this.db
+      .prepare(
+        `INSERT INTO notes (checkin_id, person_id, date, content) VALUES (?, ?, ?, ?)
+         ON CONFLICT (checkin_id) DO UPDATE SET content = excluded.content`,
+      )
+      .run(checkin.id, checkin.personId, checkin.date, JSON.stringify(content));
+  }
+
+  /** Most recent notes first. */
+  recentNotes(personId: number, limit: number, beforeDate?: string): Note[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM notes WHERE person_id = ? AND date < ?
+         ORDER BY date DESC LIMIT ?`,
+      )
+      .all(personId, beforeDate ?? "9999-12-31", limit)
+      .map(toNote);
+  }
+
+  notesOn(date: string): Note[] {
+    return this.db.prepare("SELECT * FROM notes WHERE date = ?").all(date).map(toNote);
+  }
+
+  notesSince(date: string): Note[] {
+    return this.db
+      .prepare("SELECT * FROM notes WHERE date >= ? ORDER BY date DESC")
+      .all(date)
+      .map(toNote);
+  }
+
+  // ---- work items (the memory) ----
+
+  /** Items still in play: open or blocked. */
+  activeItems(personId: number): WorkItem[] {
+    return this.db
+      .prepare(
+        "SELECT * FROM items WHERE person_id = ? AND status IN ('open', 'blocked') ORDER BY first_seen, id",
+      )
+      .all(personId)
+      .map(toItem);
+  }
+
+  /** What belongs on a tracker today: everything still in play, plus what was finished today. */
+  trackerItems(personId: number, date: string): WorkItem[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM items WHERE person_id = ?
+           AND (status IN ('open', 'blocked') OR (status = 'done' AND last_seen = ?))
+         ORDER BY (status = 'done'), COALESCE(due, '9999-12-31'), id`,
+      )
+      .all(personId, date)
+      .map(toItem);
+  }
+
+  addItem(
+    personId: number,
+    title: string,
+    status: ItemStatus,
+    update: string,
+    date: string,
+    due = "",
+    progress: number | null = null,
+  ): number {
+    const res = this.db
+      .prepare(
+        `INSERT INTO items (person_id, title, status, last_update, first_seen, last_seen, due, progress)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(personId, title, status, update, date, date, due || null, progress);
+    return Number(res.lastInsertRowid);
+  }
+
+  /**
+   * Record who a blocked item is waiting on, and since when it has been
+   * blocked. Leaving blocked clears both.
+   */
+  setItemFlow(itemId: number, status: ItemStatus, waitingOn: string, date: string): void {
+    this.db
+      .prepare(
+        `UPDATE items SET
+           waiting_on = CASE WHEN ? = 'blocked' THEN COALESCE(NULLIF(?, ''), waiting_on) ELSE NULL END,
+           blocked_since = CASE WHEN ? = 'blocked' THEN COALESCE(blocked_since, ?) ELSE NULL END
+         WHERE id = ?`,
+      )
+      .run(status, waitingOn, status, date, itemId);
+  }
+
+  /** Every item of this person's, whatever its status. */
+  itemsOf(personId: number): WorkItem[] {
+    return this.db.prepare("SELECT * FROM items WHERE person_id = ? ORDER BY id").all(personId).map(toItem);
+  }
+
+  /** The day a paused item comes back (`""`: no date, it waits for an admin). */
+  setResumeOn(itemId: number, date: string): void {
+    this.db.prepare("UPDATE items SET resume_on = ? WHERE id = ?").run(date || null, itemId);
+  }
+
+  /** Bring back paused items whose day has come. Returns how many. */
+  resumeDue(date: string): number {
+    const res = this.db
+      .prepare("UPDATE items SET status = 'open', resume_on = NULL, last_seen = ? WHERE status = 'paused' AND resume_on IS NOT NULL AND resume_on <= ?")
+      .run(date, date);
+    return Number(res.changes);
+  }
+
+  /** Every open or blocked item, for everyone. */
+  allActiveItems(): WorkItem[] {
+    return this.db.prepare("SELECT * FROM items WHERE status IN ('open', 'blocked') ORDER BY id").all().map(toItem);
+  }
+
+  /** An item of this person's with this title, ignoring case and spacing. */
+  itemByTitle(personId: number, title: string): WorkItem | undefined {
+    const want = title.trim().toLowerCase().replace(/\s+/g, " ");
+    return this.db
+      .prepare("SELECT * FROM items WHERE person_id = ?")
+      .all(personId)
+      .map(toItem)
+      .find((i) => i.title.trim().toLowerCase().replace(/\s+/g, " ") === want);
+  }
+
+  /** Returns false if the item does not belong to this person, so the AI cannot touch others' items. */
+  updateItem(
+    personId: number,
+    itemId: number,
+    status: ItemStatus,
+    update: string,
+    date: string,
+    due = "",
+    progress: number | null = null,
+  ): boolean {
+    const res = this.db
+      .prepare(
+        // A due date or progress figure is only replaced when a new one is given.
+        `UPDATE items SET status = ?, last_update = ?, last_seen = ?, due = COALESCE(?, due), progress = COALESCE(?, progress)
+         WHERE id = ? AND person_id = ?`,
+      )
+      .run(status, update, date, due || null, progress, itemId, personId);
+    return res.changes > 0;
+  }
+
+  // ---- group chats ----
+
+  groups(): Group[] {
+    return this.db
+      .prepare("SELECT id, chat_id, name FROM groups ORDER BY name")
+      .all()
+      .map((r) => ({ id: r.id as number, chatId: r.chat_id as string, name: r.name as string }));
+  }
+
+  addGroup(chatId: string, name: string): Group {
+    this.db
+      .prepare("INSERT INTO groups (chat_id, name) VALUES (?, ?) ON CONFLICT (chat_id) DO UPDATE SET name = excluded.name")
+      .run(chatId, name);
+    return this.groups().find((g) => g.chatId === chatId)!;
+  }
+
+  renameGroup(groupId: number, name: string): void {
+    this.db.prepare("UPDATE groups SET name = ? WHERE id = ?").run(name, groupId);
+  }
+
+  removeGroup(groupId: number): void {
+    this.db.prepare("DELETE FROM group_members WHERE group_id = ?").run(groupId);
+    this.db.prepare("DELETE FROM groups WHERE id = ?").run(groupId);
+  }
+
+  setGroupMembers(groupId: number, personIds: number[]): void {
+    this.db.prepare("DELETE FROM group_members WHERE group_id = ?").run(groupId);
+    const insert = this.db.prepare("INSERT OR IGNORE INTO group_members (group_id, person_id) VALUES (?, ?)");
+    for (const id of personIds) insert.run(groupId, id);
+  }
+
+  groupMembers(groupId: number): Person[] {
+    return this.db
+      .prepare(
+        `SELECT p.* FROM people p JOIN group_members gm ON gm.person_id = p.id
+         WHERE gm.group_id = ? ORDER BY COALESCE(p.name, p.email)`,
+      )
+      .all(groupId)
+      .map(toPerson);
+  }
+
+  /** Ids of the groups a person belongs to. */
+  groupsOf(personId: number): number[] {
+    return this.db
+      .prepare("SELECT group_id FROM group_members WHERE person_id = ?")
+      .all(personId)
+      .map((r) => r.group_id as number);
+  }
+
+  // ---- what was sent in the sender's name, and drafts waiting for approval ----
+
+  logSent(chatId: string, messageId: string, text: string, label: string, at: string, recordIds: number[] = []): void {
+    this.db
+      .prepare("INSERT INTO sent (chat_id, message_id, text, label, at, record_ids) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(chatId, messageId, text, label, at, JSON.stringify(recordIds));
+  }
+
+  /** Remove messages from check-in records, by id. */
+  deleteMessages(ids: number[]): void {
+    for (const id of ids) this.db.prepare("DELETE FROM messages WHERE id = ?").run(id);
+  }
+
+  /** Drafts still waiting that were made before `beforeIso`. */
+  staleDrafts(beforeIso: string): { id: number; payload: string }[] {
+    return this.db
+      .prepare("SELECT id, payload FROM drafts WHERE status = 'waiting' AND at < ?")
+      .all(beforeIso)
+      .map((r) => ({ id: r.id as number, payload: r.payload as string }));
+  }
+
+  /** Messages sent since `sinceIso`, newest first. */
+  sentSince(sinceIso: string): SentMessage[] {
+    return this.db
+      .prepare("SELECT * FROM sent WHERE at >= ? ORDER BY id DESC")
+      .all(sinceIso)
+      .map((r) => ({
+        id: r.id as number,
+        chatId: r.chat_id as string,
+        messageId: r.message_id as string,
+        text: r.text as string,
+        label: r.label as string,
+        at: r.at as string,
+        deleted: r.deleted === 1,
+        recordIds: JSON.parse((r.record_ids as string | null) || "[]") as number[],
+      }));
+  }
+
+  sentById(id: number): SentMessage | undefined {
+    return this.sentSince("").find((m) => m.id === id);
+  }
+
+  markSentDeleted(id: number): void {
+    this.db.prepare("UPDATE sent SET deleted = 1 WHERE id = ?").run(id);
+  }
+
+  addDraft(chatId: string, payload: string, label: string, at: string): number {
+    const res = this.db.prepare("INSERT INTO drafts (chat_id, payload, label, at) VALUES (?, ?, ?, ?)").run(chatId, payload, label, at);
+    return Number(res.lastInsertRowid);
+  }
+
+  draft(id: number): { id: number; chatId: string; payload: string; label: string; at: string; status: string } | undefined {
+    const r = this.db.prepare("SELECT * FROM drafts WHERE id = ?").get(id);
+    return r
+      ? { id: r.id as number, chatId: r.chat_id as string, payload: r.payload as string, label: r.label as string, at: r.at as string, status: r.status as string }
+      : undefined;
+  }
+
+  setDraftStatus(id: number, status: string): void {
+    this.db.prepare("UPDATE drafts SET status = ? WHERE id = ?").run(status, id);
+  }
+
+  /** In the records of check-ins from `date`, change (or with null, remove) the assistant's messages with this exact text. */
+  rewriteBotText(date: string, oldText: string, newText: string | null): void {
+    const ids = this.db
+      .prepare(
+        `SELECT m.id FROM messages m JOIN checkins c ON c.id = m.checkin_id
+         WHERE c.date = ? AND m.role = 'bot' AND m.text = ?`,
+      )
+      .all(date, oldText)
+      .map((r) => r.id as number);
+    for (const id of ids) {
+      if (newText === null) this.db.prepare("DELETE FROM messages WHERE id = ?").run(id);
+      else this.db.prepare("UPDATE messages SET text = ? WHERE id = ?").run(newText, id);
+    }
+  }
+
+  // ---- backups and weekly figures ----
+
+  /** A consistent copy of the database in DATA_DIR/backups, keeping the last `keep`. Returns the file, or "" in memory. */
+  backup(date: string, keep = 14): string {
+    if (!this.dir) return "";
+    const folder = path.join(this.dir, "backups");
+    mkdirSync(folder, { recursive: true });
+    const file = path.join(folder, `mands-${date}.db`);
+    if (!existsSync(file)) this.db.exec(`VACUUM INTO '${file.replace(/'/g, "''")}'`);
+    const old = readdirSync(folder).filter((f) => /^mands-\d{4}-\d{2}-\d{2}\.db$/.test(f)).sort().slice(0, -keep);
+    for (const f of old) rmSync(path.join(folder, f));
+    return file;
+  }
+
+  /** Items this person finished on or after `date`. */
+  doneSince(personId: number, date: string): WorkItem[] {
+    return this.db
+      .prepare("SELECT * FROM items WHERE person_id = ? AND status = 'done' AND last_seen >= ?")
+      .all(personId, date)
+      .map(toItem);
+  }
+
+  /** Check-ins of this person between two dates, with whether they replied. */
+  checkinsBetween(personId: number, from: string, to: string): { date: string; replied: boolean }[] {
+    return this.db
+      .prepare(
+        `SELECT c.date, EXISTS(SELECT 1 FROM messages m WHERE m.checkin_id = c.id AND m.role = 'user') AS replied
+         FROM checkins c WHERE c.person_id = ? AND c.date BETWEEN ? AND ?`,
+      )
+      .all(personId, from, to)
+      .map((r) => ({ date: r.date as string, replied: r.replied === 1 }));
+  }
+
+  // ---- small persistent flags and cursors ----
+
+  get(key: string): string | undefined {
+    const r = this.db.prepare("SELECT value FROM kv WHERE key = ?").get(key);
+    return r ? (r.value as string) : undefined;
+  }
+
+  /** Every stored key that starts with `prefix`. */
+  keys(prefix: string): string[] {
+    return this.db
+      .prepare("SELECT key FROM kv WHERE key LIKE ? ESCAPE '\\'")
+      .all(`${prefix.replace(/[\\%_]/g, "\\$&")}%`)
+      .map((r) => r.key as string);
+  }
+
+  set(key: string, value: string): void {
+    this.db
+      .prepare("INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
+      .run(key, value);
+  }
+
+  // ---- digests ----
+
+  saveDigest(date: string, text: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO digests (date, text) VALUES (?, ?)
+         ON CONFLICT (date) DO UPDATE SET text = excluded.text`,
+      )
+      .run(date, text);
+  }
+
+  digest(date: string): string | undefined {
+    const r = this.db.prepare("SELECT text FROM digests WHERE date = ?").get(date);
+    return r ? (r.text as string) : undefined;
+  }
+}

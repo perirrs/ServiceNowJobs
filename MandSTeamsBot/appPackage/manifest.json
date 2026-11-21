@@ -1,0 +1,73 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.19/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.19",
+  "version": "1.1.0",
+  "id": "7a68de71-0c2f-4fe8-9fe0-a273cbe28f63",
+  "developer": {
+    "name": "Mergen Corporates Pvt Ltd",
+    "websiteUrl": "https://mergencorp.com",
+    "privacyUrl": "https://mergencorp.com/privacy",
+    "termsOfUseUrl": "https://mergencorp.com/terms"
+  },
+  "name": {
+    "short": "Daily Check-in",
+    "full": "Daily Check-in Assistant"
+  },
+  "description": {
+    "short": "A quick end-of-day update, summarised for leadership.",
+    "full": "Each working day the assistant asks nominated team members for a short update on their work, follows up on items left open from earlier days, and sends the CTO and CEO a summary of progress, blockers and where help is needed."
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "accentColor": "#2B5797",
+  "bots": [
+    {
+      "botId": "7a68de71-0c2f-4fe8-9fe0-a273cbe28f63",
+      "scopes": [
+        "personal"
+      ],
+      "supportsFiles": false,
+      "isNotificationOnly": false,
+      "commandLists": [
+        {
+          "scopes": [
+            "personal"
+          ],
+          "commands": [
+            {
+              "title": "board",
+              "description": "Who has replied, who is blocked, and all the buttons"
+            },
+            {
+              "title": "ask all",
+              "description": "Ask everyone for an update now"
+            },
+            {
+              "title": "digest",
+              "description": "Today's summary of everyone"
+            },
+            {
+              "title": "list",
+              "description": "Everyone added and where they stand"
+            },
+            {
+              "title": "schedule",
+              "description": "Show or set the automatic asking time"
+            },
+            {
+              "title": "help",
+              "description": "Everything you can type"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "permissions": [
+    "identity",
+    "messageTeamMembers"
+  ],
+  "validDomains": []
+}

@@ -1,0 +1,19 @@
+# Keeps the check-in bot running on a Linux server: starts it at boot and again if it ever stops.
+# Installed by service/install-linux.sh to /etc/systemd/system/mandsteamsbot.service.
+[Unit]
+Description=MandSTeamsBot daily check-in bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mands
+WorkingDirectory=/opt/mandsteamsbot
+ExecStart=/usr/bin/node --env-file=.env dist/index.js
+Restart=always
+RestartSec=15
+StandardOutput=append:/opt/mandsteamsbot/data/bot.log
+StandardError=append:/opt/mandsteamsbot/data/bot.log
+
+[Install]
+WantedBy=multi-user.target
