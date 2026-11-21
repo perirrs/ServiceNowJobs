@@ -798,6 +798,41 @@ test("past chat is read when someone is added, the tone is stored, and asking do
   assert.equal(r.brain.rapportCalls.length, 1);
 });
 
+test("asking someone by hand first reads what is new in their chat since the last look", async () => {
+  const r = rapportSetup([
+    { fromSender: true, text: "pls share the list" },
+    { fromSender: false, text: "ok sir" },
+    { fromSender: true, text: "any update on globex" },
+  ]);
+  await r.engine.handleMessage(r.cto, `add ${PRIYA}`);
+  await r.engine.handleMessage(r.cto, "ask priya");
+  // Midday, typed by hand in her chat: a new priority.
+  r.later.push({ fromSender: true, text: "pls prioritise the covering letter first" });
+  await r.engine.handleMessage(r.cto, "ask priya");
+  assert.match(r.brain.revisions.at(-1)?.transcript ?? "", /prioritise the covering letter/);
+  assert.equal(r.brain.rapportCalls.length, 1); // the tone is not learned again
+});
+
+test("asking a group by hand first reads everything typed there today, then asks", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  (g.engine as unknown as { direct: { history: unknown } }).direct.history = async (chatId: string) =>
+    chatId === "g-rec"
+      ? [
+          { fromSender: false, from: "Ravi Kumar", text: "an old message from last week", at: "2026-11-15T10:00:00Z" },
+          { fromSender: true, from: "Sujith", text: "Team, please prioritise the covering letter for Deloitte first", at: "2026-11-16T16:50:00Z" },
+          { fromSender: true, from: "Sujith", text: "Team progress at 16:00 Who Role", at: "2026-11-16T16:00:00Z" },
+          { fromSender: false, from: "Ravi Kumar", text: "covering letter half done", at: "2026-11-16T16:55:00Z" },
+        ]
+      : [];
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  const memory = g.brain.groupAsks.at(-1)!.memory;
+  assert.match(memory, /Sujith: Team, please prioritise the covering letter/);
+  assert.match(memory, /Ravi Kumar: covering letter half done/);
+  assert.doesNotMatch(memory, /old message from last week/);
+  assert.doesNotMatch(memory, /Team progress at/); // the assistant's own post
+});
+
 test("the assistant's own earlier messages are left out of what it learns from", async () => {
   const r = rapportSetup([
     { fromSender: true, text: "pls share the list" },
