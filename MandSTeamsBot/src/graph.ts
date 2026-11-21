@@ -460,6 +460,7 @@ export class GraphChat {
         id: string;
         messageType: string;
         createdDateTime: string;
+        lastModifiedDateTime?: string | null;
         deletedDateTime?: string | null;
         from?: { user?: { id?: string; displayName?: string } | null } | null;
         body?: { content?: string };
@@ -472,10 +473,15 @@ export class GraphChat {
     while (url && lines.length < max && !reachedOlder) {
       const page: Page = await this.call<Page>("GET", url);
       for (const m of page.value) {
-        // Pages run newest first, so once we pass `since` the rest is older still.
-        if (since && m.createdDateTime <= since) {
-          reachedOlder = true;
-          break;
+        if (since) {
+          // Teams lists messages by when they last changed, newest first: once one has not
+          // changed since `since`, nothing after it is new. A message edited since (the pinned
+          // tracker) can sit above newer ones, so it is skipped rather than taken as the end.
+          if ((m.lastModifiedDateTime || m.createdDateTime) <= since) {
+            reachedOlder = true;
+            break;
+          }
+          if (m.createdDateTime <= since) continue;
         }
         const text = htmlToText(m.body?.content ?? "");
         if (m.messageType !== "message" || m.deletedDateTime || !m.from?.user?.id || !text) continue;
@@ -499,6 +505,7 @@ export class GraphChat {
       id: string;
       messageType: string;
       createdDateTime: string;
+      lastModifiedDateTime?: string | null;
       deletedDateTime?: string | null;
       from?: { user?: { id?: string } | null } | null;
       body?: { content?: string };
@@ -527,10 +534,13 @@ export class GraphChat {
     for (let page = 0; url && !reachedOlder && page < 10; page++) {
       const r: Page = await this.call<Page>("GET", url);
       for (const m of r.value) {
-        if (m.createdDateTime <= since) {
+        // Listed by when they last changed: a message edited since (the pinned tracker) can sit
+        // above newer ones, so it is skipped; one unchanged since `since` means the rest is older.
+        if ((m.lastModifiedDateTime || m.createdDateTime) <= since) {
           reachedOlder = true;
           break;
         }
+        if (m.createdDateTime <= since) continue;
         if (m.messageType !== "message" || m.deletedDateTime || !m.from?.user?.id) continue;
         lines.push({
           id: m.id,
