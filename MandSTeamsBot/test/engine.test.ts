@@ -890,6 +890,26 @@ test("asking a group by hand first reads everything typed there today, then asks
   assert.doesNotMatch(memory, /Team progress at/); // the assistant's own post
 });
 
+test("a long one-to-one history is read in full, in parts, oldest first, with the tone taken from the most recent part", async () => {
+  const history = Array.from({ length: 12 }, (_, i) => ({ fromSender: i % 2 === 0, text: `message number ${i} about work` }));
+  const r = rapportSetup(history);
+  (r.engine as unknown as { config: Config }).config.historyChunkChars = 120; // a few messages per part
+  await r.engine.handleMessage(r.cto, `add ${PRIYA}`);
+  // The older parts are folded into a memory first, oldest first, each building on the last.
+  assert.ok(r.brain.revisions.length >= 2);
+  assert.match(r.brain.revisions[0]!.transcript, /message number 0 /);
+  assert.equal(r.brain.revisions[1]!.memory, "MEMORY v1");
+  // The tone is learned from the newest part, which ends with the last message.
+  const toneFrom = r.brain.rapportCalls.at(-1)!.map((m) => m.text);
+  assert.equal(toneFrom.at(-1), "message number 11 about work");
+  assert.ok(!toneFrom.includes("message number 0 about work"));
+  // Both are kept.
+  const kept = r.store.get(`rapport:${r.store.personByEmail(PRIYA)!.id}`)!;
+  assert.match(kept, /Casual/);
+  assert.match(kept, /older chat history/i);
+  assert.match(kept, new RegExp(`MEMORY v${r.brain.revisions.length}`));
+});
+
 test("the assistant's own earlier messages are left out of what it learns from", async () => {
   const r = rapportSetup([
     { fromSender: true, text: "pls share the list" },
@@ -1131,6 +1151,53 @@ test("people added or removed in Teams are picked up within the hour; leavers ar
   assert.match(told, /Sam Lee joined Recruitment Team/);
   assert.match(told, /profile sam/i);
   assert.match(told, /Ravi Kumar left Recruitment Team/);
+});
+
+test("someone who joins a followed group has their chat read straight away; someone who leaves is let go within a minute", async () => {
+  const g = groupSetup();
+  const direct = (g.engine as unknown as { direct: { history: unknown } }).direct;
+  const reads: string[] = [];
+  direct.history = async (chatId: string) => {
+    reads.push(chatId);
+    return chatId === "chat-sam@acme.test"
+      ? [
+          { fromSender: true, from: "Sujith", text: "Sam, pls share the Initech list", at: "2026-11-10T10:00:00Z" },
+          { fromSender: false, from: "Sam Lee", text: "sure sir", at: "2026-11-10T10:05:00Z" },
+          { fromSender: true, from: "Sujith", text: "any update on Initech", at: "2026-11-12T10:00:00Z" },
+          { fromSender: true, from: "Sujith", text: "call me when free", at: "2026-11-13T10:00:00Z" },
+        ]
+      : [];
+  };
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  g.members.push({ userId: "u-sam", email: "sam@acme.test", name: "Sam Lee" }); // Sam joins
+  g.members.splice(1, 1); // Ravi leaves
+  g.setDate("2026-11-16T17:02:00Z"); // two minutes later
+  await g.engine.tick();
+
+  const sam = g.store.personByEmail("sam@acme.test")!;
+  assert.ok(reads.includes("chat-sam@acme.test"));
+  assert.match(g.store.get(`rapport:${sam.id}`) ?? "", /Casual/);
+  assert.equal(g.store.personByEmail("ravi@acme.test")!.nominated, false);
+  const told = g.admin.join("\n");
+  assert.match(told, /Sam Lee joined Recruitment Team/);
+  assert.match(told, /read their whole chat with you/);
+  assert.match(told, /Ravi Kumar left Recruitment Team/);
+});
+
+test("a long group history is read in full, in parts, oldest first, each part building on the last", async () => {
+  const g = groupSetup();
+  (g.engine as unknown as { config: Config }).config.historyChunkChars = 150;
+  (g.engine as unknown as { direct: { history: unknown } }).direct.history = async (chatId: string) =>
+    chatId === "g-rec"
+      ? Array.from({ length: 10 }, (_, i) => ({ fromSender: false, from: "Ravi Kumar", text: `group message ${i}`, at: `2026-11-${String(i + 1).padStart(2, "0")}T10:00:00Z` }))
+      : [];
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  const parts = g.brain.revisions.filter((r) => r.about.includes("group chat"));
+  assert.ok(parts.length >= 2);
+  assert.match(parts[0]!.transcript, /group message 0$/m);
+  assert.match(parts.at(-1)!.transcript, /group message 9$/m);
+  for (let i = 1; i < parts.length; i++) assert.match(parts[i]!.memory, /^MEMORY v\d+$/);
+  assert.equal(g.store.get(`gmemory:${g.store.groups()[0]!.id}`), `MEMORY v${g.brain.revisions.length}`);
 });
 
 test("an UPDATE posted by an admin in a group is kept as a standing instruction and its targets take effect", async () => {
