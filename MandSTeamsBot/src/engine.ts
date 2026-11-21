@@ -76,7 +76,8 @@ export interface Identity {
 
 const ADMIN_HELP = `**Daily Check-in: what you can type**
 
-- **UPDATE** in a group: post a message in any followed group that starts with UPDATE, and I keep it as a standing instruction for that team and follow it from then on. New targets in it (for example "recruiters 5 a day, 25% L1, 2 joins a month") replace the old ones in the tables, the 75% line and the group messages. I confirm here what I understood.
+- **UPDATE** in a group: post a message in any followed group with UPDATE as its first word or on a line of its own (notes you post within 15 minutes after it count as part of it), and I keep it as a standing instruction for that team and follow it from then on. New targets in it (for example "recruiters 5 a day, 25% L1, 2 joins a month") replace the old ones in the tables, the 75% line and the group messages. I confirm here what I understood.
+- **In the groups, all day:** I read what you, the other admins and the team type by hand as it is posted. A new priority given during the day ("prioritise the covering letter") is what I follow up on, not the morning ask. Anyone said to be on leave, sick or away today is not asked or chased, and I tell you here.
 - **progress Group Name**: post the TalentFlow progress table in that group now, instead of waiting for the hour.
 - **hours 09:30-18:30**: office hours, Monday to Friday. Outside them I send nothing to anyone (no replies, chases or scheduled messages), but still record what people write. **hours off** allows any time.
 - **timezone India**: the time I work in, for office hours and schedules.
@@ -319,8 +320,45 @@ export function roleAskLines(people: { name: string; profile: string | null }[],
     const first = d.name.split(" ")[0]!;
     lines.push(morning ? `${first}: the plan for the whole team today, and any blockers.` : `${first}: how the whole team did today, and any blockers.`);
   }
-  if (lines.length) lines.push("Please keep TalentFlow updated as you go.");
+  if (lines.length) lines.push(morning ? "Please keep TalentFlow updated as you go." : "Please update TalentFlow before you log off, and say what carries over to tomorrow morning.");
   return lines;
+}
+
+/** A line that is only the word UPDATE, as a heading: "UPDATE", "**Update:**". */
+const UPDATE_LINE = /^\s*\**\s*update\s*\**\s*[:-]?\s*\**\s*$/i;
+
+/** A message headed UPDATE: on its first line, or on a line of its own anywhere in it. */
+export function isUpdatePost(text: string): boolean {
+  return /^\s*\**\s*update\b/i.test(text) || text.split("\n").some((l) => UPDATE_LINE.test(l));
+}
+
+const LEAVE_WORDS =
+  /\b(annual leave|sick leave|casual leave|medical leave|maternity leave|paternity leave|on leave|on holiday|on vacation|on pto|day off|off today|off sick|is sick|am sick|i'?m sick|sick today|away today|absent)\b/i;
+const OTHER_DAY = /\b(tomorrow|yesterday|next|was|were|back|returned|from|till|until|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i;
+const FIRST_PERSON = /\b(i|i'm|im|me|my)\b/i;
+
+/**
+ * Who a message says is on leave, sick or away today: the people it names (by full name, or
+ * by a first name nobody else shares), or else its author when they speak of themselves.
+ * Leave on another day ("tomorrow", "next week", "was on leave") does not count.
+ */
+export function leaveToday(
+  text: string,
+  author: { id: number; name: string | null },
+  people: { id: number; name: string | null }[],
+): number[] {
+  if (!LEAVE_WORDS.test(text)) return [];
+  if (!/\btoday\b/i.test(text) && OTHER_DAY.test(text)) return [];
+  const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const has = (word: string) => new RegExp(`(^|[^\\w])${escape(word)}($|[^\\w])`, "i").test(text);
+  const first = (p: { name: string | null }) => (p.name ?? "").trim().split(/\s+/)[0]!.toLowerCase();
+  const shared = (f: string) => people.filter((p) => first(p) === f).length > 1;
+  const named = people
+    .filter((p) => p.id !== author.id && p.name?.trim())
+    .filter((p) => has(p.name!.trim()) || (first(p).length >= 3 && !shared(first(p)) && has(first(p))))
+    .map((p) => p.id);
+  if (named.length) return named;
+  return FIRST_PERSON.test(text) ? [author.id] : [];
 }
 
 /**
@@ -613,11 +651,72 @@ export class Engine {
     } catch {
       updates = [];
     }
-    if (!updates.length) return memory;
     const standing = updates.map((u) => `- ${u.at.slice(0, 10)}, ${u.by}: ${u.text}`).join("\n");
-    return [memory, `Standing instructions from leadership (UPDATE posts in the group, newest last; these win over anything older):\n${standing}`]
+    const said = this.groupToday(groupId)
+      .map((l) => `- ${l.at.slice(11, 16)} UTC ${l.by}: ${l.text}`)
+      .join("\n");
+    return [
+      memory,
+      updates.length ? `Standing instructions from leadership (UPDATE posts in the group, newest last; these win over anything older):\n${standing}` : "",
+      said
+        ? `Typed in the group today by people, oldest first. Anything leadership asked for during the day (a new priority, a change of plan) wins over this morning's plan: the next questions and follow-ups are about that, and do not go back to the morning ask. Do not ask for what someone already said here.\n${said}`
+        : "",
+    ]
       .filter(Boolean)
       .join("\n\n");
+  }
+
+  /** What people (the sender, other admins, the team) typed in a group today, oldest first. */
+  private groupToday(groupId: number): { at: string; by: string; text: string }[] {
+    try {
+      const lines = JSON.parse(this.store.get(`gtoday:${groupId}`) || "[]") as { at: string; by: string; text: string }[];
+      return lines.filter((l) => todayIn(this.tz, new Date(l.at)) === this.today());
+    } catch {
+      return [];
+    }
+  }
+
+  private groupUpdates(groupId: number): { at: string; by: string; text: string }[] {
+    try {
+      return JSON.parse(this.store.get(`gupdates:${groupId}`) || "[]");
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * A message in a followed group that the assistant did not post. Anyone's may say who is on
+   * leave today. An admin's is kept as a standing instruction when it is headed UPDATE, or comes
+   * within 15 minutes of their last UPDATE there (the notes typed straight after one belong to it).
+   */
+  async groupLine(groupId: number, authorEmail: string, text: string, postedAt: string): Promise<void> {
+    const author = this.store.personByEmail(authorEmail.trim().toLowerCase());
+    if (!author || !text.trim()) return;
+    const today = this.groupToday(groupId);
+    today.push({ at: postedAt, by: displayName(author), text: text.trim().slice(0, 600) });
+    this.store.set(`gtoday:${groupId}`, JSON.stringify(today.slice(-40)));
+    await this.noticeLeave(author, text);
+    if (!this.isAdmin(author)) return;
+    const last = this.groupUpdates(groupId).at(-1);
+    const gap = last ? Date.parse(postedAt) - Date.parse(last.at) : NaN;
+    const continues = !!last && last.by === displayName(author) && gap >= 0 && gap <= 15 * 60_000;
+    if (isUpdatePost(text) || continues) await this.adminGroupPost(groupId, authorEmail, text, postedAt);
+  }
+
+  /** Someone said that they, or people they named, are on leave today: stop asking and chasing them, and tell the admins once. */
+  private async noticeLeave(author: Person, text: string): Promise<void> {
+    const people = this.store.nominees();
+    if (!people.some((p) => p.id === author.id)) people.push(author);
+    for (const id of leaveToday(text, author, people)) {
+      const p = this.store.personById(id);
+      if (!p || this.isAway(p)) continue;
+      this.store.set(`leave:${p.id}`, this.today());
+      const who = p.id === author.id ? `${displayName(author)} says they are on leave today` : `${displayName(author)} says ${displayName(p)} is on leave today`;
+      const first = (p.name ?? p.email).split(/[\s@]/)[0]!.toLowerCase();
+      await this.notifyAdmins(
+        `**${who}**: "${text.trim().slice(0, 200)}"\n\nI will not ask or chase them today. If that is wrong, send **leave ${first} off**.`,
+      );
+    }
   }
 
   /**
@@ -625,21 +724,22 @@ export class Engine {
    * instruction for that group, take any new targets from it, and confirm to the admins.
    * Anyone else's UPDATE is ignored.
    */
-  async adminGroupPost(groupId: number, authorEmail: string, text: string): Promise<void> {
+  async adminGroupPost(groupId: number, authorEmail: string, text: string, postedAt?: string): Promise<void> {
     const author = this.store.personByEmail(authorEmail.trim().toLowerCase());
     if (!author || !this.isAdmin(author)) return;
     const group = this.store.groups().find((g) => g.id === groupId);
     if (!group) return;
-    const body = text.replace(/^\s*\**\s*update\b[\s:*-]*/i, "").trim();
+    const body = text
+      .replace(/^\s*\**\s*update\b[\s:*-]*/i, "")
+      .split("\n")
+      .filter((l) => !UPDATE_LINE.test(l))
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
     if (!body) return;
 
-    let updates: { at: string; by: string; text: string }[] = [];
-    try {
-      updates = JSON.parse(this.store.get(`gupdates:${groupId}`) || "[]");
-    } catch {
-      updates = [];
-    }
-    updates.push({ at: this.now().toISOString(), by: displayName(author), text: body });
+    const updates = this.groupUpdates(groupId);
+    updates.push({ at: postedAt ?? this.now().toISOString(), by: displayName(author), text: body });
     this.store.set(`gupdates:${groupId}`, JSON.stringify(updates.slice(-15)));
 
     const lines = [`**Read ${displayName(author)}'s UPDATE in ${group.name}.** I keep it as a standing instruction for that team and follow it from now on.`];
@@ -2083,8 +2183,12 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     // closing) opens or reopens today's, so nothing a person says is lost.
     if (!checkin || checkin.status !== "open") checkin = this.store.openCheckin(person.id, date);
     const recordId = this.store.addMessage(checkin.id, "user", text);
+    // "I am on sick leave today", "Ravi is on leave": from now on they are not asked or chased today.
+    await this.noticeLeave(person, text);
     // Recorded for tonight's note, but the human has taken over this chat.
     if (this.store.get(`takeover:${checkin.id}`)) return;
+    // On leave by their own word or someone else's: no follow-up questions.
+    if ((this.store.get(`leave:${person.id}`) || "") >= date) return;
     // Paused, outside office hours, or after their group's clock-out: what they said is kept, and nothing is sent back.
     if (this.paused || !this.inOfficeHours() || this.afterClockout(checkin)) return;
     // A reply is waiting for approval: what they say now is recorded, and answered after that.
@@ -2685,7 +2789,9 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     let opening =
       round === "plan"
         ? "Hi team, please share what you will work on today."
-        : "Hi team, please share today's update.";
+        : round === "review"
+          ? "Hi team, end of day: what is complete so far, will the rest be done before you log off, and what carries over to tomorrow morning? Any blockers?"
+          : "Hi team, please share today's update.";
     let tagged: { person: Person; userId: string; question: string }[] = [];
     if (this.personal || topic) {
       try {

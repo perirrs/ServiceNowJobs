@@ -917,7 +917,7 @@ test("a group is asked with one message; a reply there gets its follow-up in the
   await g.engine.handleMessage(g.cto, "add group Recruitment Team");
   await g.engine.handleMessage(g.cto, "ask group recruitment team");
   assert.deepEqual(g.sent.map((s) => s.to), ["g-rec"]);
-  assert.match(g.sent[0]!.text, /Hi team, please share today's update/);
+  assert.match(g.sent[0]!.text, /Hi team, end of day: what is complete so far/);
 
   g.brain.doneAfterUserMessages = 99;
   await g.engine.handleGroupReply("u-priya", "sent 3 submissions today");
@@ -1438,7 +1438,10 @@ test("the group message tags individuals with their own question, and each follo
 
   const post = g.sent.at(-1)!;
   assert.equal(post.to, "g-rec");
-  assert.equal(post.text, "Hi team, please share today's update.\n{@0} TalentFlow app - where are we?\n{@1} please share your update.");
+  assert.equal(
+    post.text,
+    "Hi team, end of day: what is complete so far, will the rest be done before you log off, and what carries over to tomorrow morning? Any blockers?\n{@0} TalentFlow app - where are we?\n{@1} please share your update.",
+  );
   assert.deepEqual(post.mentions, [
     { userId: "u-ravi", name: "Ravi Kumar" },
     { userId: "u-priya", name: "Priya Rao" },
@@ -1565,7 +1568,10 @@ test("asking a group again re-asks those who said nothing, tagged; someone mid-r
   await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
   const post = g.sent.at(-1)!;
   assert.equal(post.to, "g-rec");
-  assert.equal(post.text, "Hi team, please share today's update.\n{@0} please share your update.");
+  assert.equal(
+    post.text,
+    "Hi team, end of day: what is complete so far, will the rest be done before you log off, and what carries over to tomorrow morning? Any blockers?\n{@0} please share your update.",
+  );
   assert.deepEqual(post.mentions, [{ userId: "u-ravi", name: "Ravi Kumar" }]);
   assert.match(g.admin.at(-1)!, /\(1 people\)/);
 });
@@ -1617,7 +1623,7 @@ test("when the sender replies to someone in the group himself, the assistant ste
   const groupId = g.store.groups()[0]!.id;
 
   // The assistant's own posts are recognised, with or without the tag in front.
-  assert.equal(g.engine.isAssistantGroupText(groupId, "Hi team, please share today's update. Priya Rao Ravi Kumar please share your update."), true);
+  assert.equal(g.engine.isAssistantGroupText(groupId, "Hi team, end of day: what is complete so far, will the rest be done before you log off, and what carries over to tomorrow morning? Any blockers? Priya Rao Ravi Kumar please share your update."), true);
   assert.equal(g.engine.isAssistantGroupText(groupId, "Priya Rao Question 2"), true);
   assert.equal(g.engine.isAssistantGroupText(groupId, "Priya, call me"), false);
 

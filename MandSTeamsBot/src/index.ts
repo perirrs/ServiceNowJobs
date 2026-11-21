@@ -184,6 +184,20 @@ async function startSender(cfg: Config, required: boolean): Promise<Sender | nul
     }
   }
 
+  /**
+   * A message in the sender's name that the assistant posted, not one they typed: the tracker
+   * table, the hourly progress posts and end-of-day summary, and anything else it sent.
+   */
+  function fromAssistant(groupId: number, line: { id: string; text: string }): boolean {
+    return (
+      line.id === store.get(`tracker:${groupId}`) ||
+      line.text.startsWith("Team tracker") ||
+      engine.isGroupReport(line.id) ||
+      sentByAssistant.has(normalise(line.text)) ||
+      engine.isAssistantGroupText(groupId, line.text)
+    );
+  }
+
   /** Read new messages in each group chat that was asked for updates and is still being followed. */
   async function pollGroups(g: GraphChat): Promise<void> {
     for (const { group, askedAt } of engine.listeningGroups()) {
@@ -197,11 +211,7 @@ async function startSender(cfg: Config, required: boolean): Promise<Sender | nul
         // What the sender wrote himself comes first: the assistant steps back for whoever it was aimed at.
         for (const line of lines) {
           if (line.fromUserId !== senderId) continue;
-          // The tracker table is the assistant's, not something the sender typed.
-          if (line.id === store.get(`tracker:${group.id}`) || line.text.startsWith("Team tracker")) continue;
-          // Nor are the hourly progress posts and the end-of-day summary.
-          if (engine.isGroupReport(line.id)) continue;
-          if (sentByAssistant.has(normalise(line.text)) || engine.isAssistantGroupText(group.id, line.text)) continue;
+          if (fromAssistant(group.id, line)) continue;
           engine.senderSpokeInGroup(group.id, line.addressedUserIds);
         }
 
@@ -261,8 +271,9 @@ async function startSender(cfg: Config, required: boolean): Promise<Sender | nul
       pollNow().catch((err) => console.error("[poll] failed", err));
     }, cfg.pollSeconds * 1000);
 
-    // Once a minute: a message headed UPDATE that an admin posts in any followed group is
-    // kept as a standing instruction for that team (and any new targets in it take effect).
+    // Once a minute, every followed group, all day: what people type by hand is kept for the
+    // day (the next ask and follow-ups go by it), anyone saying who is on leave is noticed, and
+    // an admin's UPDATE is kept as a standing instruction (any new targets in it take effect).
     const reader = graph;
     let scanning = false;
     setInterval(async () => {
@@ -281,10 +292,10 @@ async function startSender(cfg: Config, required: boolean): Promise<Sender | nul
           if (!lines.length) continue;
           store.set(key, lines.at(-1)!.createdAt);
           for (const line of lines) {
-            if (!/^\s*\**\s*update\b/i.test(line.text)) continue;
+            if (line.fromUserId === senderId && fromAssistant(group.id, line)) continue;
             const email =
               line.fromUserId === senderId ? senderEmail : (store.personById(Number(store.get(`aad:${line.fromUserId}`)))?.email ?? "");
-            if (email) await engine.adminGroupPost(group.id, email, line.text);
+            if (email) await engine.groupLine(group.id, email, line.text, line.createdAt);
           }
         }
       } catch (err) {
