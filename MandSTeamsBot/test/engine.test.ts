@@ -1461,6 +1461,27 @@ test("the tracker marks what is due tomorrow and what is behind for the time lef
   assert.ok(late);
 });
 
+test("one or two people are asked by name, without 'Hi team'; three or more get the team opening", async () => {
+  const g = groupSetup(); // two people: Priya and Ravi
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  g.brain.nextGroupQuestions = [{ name: "Ravi Kumar", question: "how far is the Deloitte shortlist, and what moves to tomorrow?" }];
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  const small = g.sent.at(-1)!;
+  assert.doesNotMatch(small.text, /Hi team/);
+  assert.equal(
+    small.text,
+    "{@0} how far is the Deloitte shortlist, and what moves to tomorrow?\n{@1} end of day: what is complete so far, will the rest be done before you log off, and what carries over to tomorrow morning? Any blockers?",
+  );
+  assert.equal((g.brain.groupAsks.at(-1) as { small?: boolean }).small, true);
+
+  // A third person joins: the team opening is back.
+  g.members.push({ userId: "u-sam", email: "sam@acme.test", name: "Sam Lee" });
+  g.setDate("2026-11-17T17:00:00Z");
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  assert.match(g.sent.at(-1)!.text, /^Hi team, end of day/);
+  assert.equal((g.brain.groupAsks.at(-1) as { small?: boolean }).small, false);
+});
+
 test("work an admin asked for is raised before other work due the same day, and says who asked", async () => {
   const g = groupSetup();
   await g.engine.handleMessage(g.cto, "add group Recruitment Team");
