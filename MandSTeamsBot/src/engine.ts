@@ -804,8 +804,9 @@ export class Engine {
    * A manual ask in one group: the admin's own words, posted as they are. It counts as an ask
    * about that message, so replies are read, followed up and summarised on autopilot.
    */
-  private async postInGroup(group: Group, text: string): Promise<string> {
+  private async postInGroup(group: Group, text: string, voice = ""): Promise<string> {
     if (this.paused) return `Paused: nothing was posted in ${group.name}. Send **resume** first.`;
+    this.store.set(`gvoice:${group.id}`, voice);
     try {
       const members = (await this.syncGroup(group)).filter((p) => !this.notAsked(p) && !this.isAway(p));
       const date = this.today();
@@ -933,12 +934,16 @@ export class Engine {
         const due = a.due ?? (a.kind === "prioritise" ? date : "");
         for (const p of named(a.person)) {
           const same = this.store.itemByTitle(p.id, title);
+          let id: number;
           if (same && live(same)) {
             this.store.updateItem(p.id, same.id, "open", note, date, due);
             this.store.setResumeOn(same.id, "");
+            id = same.id;
           } else {
-            this.store.addItem(p.id, title, "open", note, date, due);
+            id = this.store.addItem(p.id, title, "open", note, date, due);
           }
+          // Asked for by an admin: raised before other work due the same day.
+          this.store.set(`priority:${id}`, displayName(author));
           lines.push(`${displayName(p)}: ${title}${due ? ` (due ${due})` : ""}`);
         }
         continue;
@@ -952,6 +957,7 @@ export class Engine {
       switch (a.kind) {
         case "prioritise":
           set("open", a.due ?? date);
+          this.store.set(`priority:${item.id}`, displayName(author));
           lines.push(`${displayName(person)}: ${item.title}: first, due ${a.due ?? date}`);
           break;
         case "reschedule":
@@ -1120,7 +1126,8 @@ export class Engine {
 
   /** Send, then apply what follows from it. With `edited`, the record shows the edited text. */
   private async sendNow(out: Outgoing, edited?: string): Promise<void> {
-    const id = await this.direct!.send(out.chatId, out.text, out.mentions, out.quote);
+    // During a round the other admin started in this group, it is said from their account.
+    const id = await (this.voiceForChat(out.chatId) ?? this.direct!).send(out.chatId, out.text, out.mentions, out.quote);
     const recordIds = await this.applyEffects(out.effects, edited);
     this.store.logSent(out.chatId, typeof id === "string" ? id : "", edited ?? shown(out), out.label, this.now().toISOString(), recordIds);
   }
@@ -1406,6 +1413,23 @@ export class Engine {
   followedElsewhere?: { group(chatId: string): string | undefined; person(email: string): string | undefined };
   /** The word that reaches this assistant from another admin's chat ("mahanth: …"). */
   selfKey?: string;
+  /** Another admin's Teams account, for a round they start in one of this assistant's groups. */
+  voiceFor?: (email: string) => DirectChannel | undefined;
+
+  /** The account to speak from in this chat now: the other admin's, during a round they started; else none (the sender's). */
+  private voiceForChat(chatId: string): DirectChannel | undefined {
+    const group = this.store.groups().find((g) => g.chatId === chatId);
+    if (!group) return undefined;
+    // Set when the round starts; cleared when its window closes or the sender asks next.
+    const email = this.store.get(`gvoice:${group.id}`);
+    return email ? this.voiceFor?.(email) : undefined;
+  }
+
+  /** Who a round in a group is said by: the admin asking, if that is not the sender and their account is at hand. */
+  private voiceOf(admin: Person): string {
+    const sender = this.direct?.senderEmail?.toLowerCase();
+    return sender && admin.email !== sender && this.voiceFor?.(admin.email) ? admin.email : "";
+  }
   /** The groups other senders' assistants follow; this board offers to ask them for an update. */
   otherSenders?: () => { name: string; key: string; groups: string[] }[];
 
@@ -2217,7 +2241,12 @@ So you know how it's used: your answers are summarised each day for the CTO and 
   private touchpoints(person: Person, date: string, mark = false): string[] {
     const due = this.store
       .activeItems(person.id)
-      .map((i) => deadlineTouchpoint(i, date, this.store.get(`touched:${i.id}`) || ""))
+      .map((i) => {
+        const t = deadlineTouchpoint(i, date, this.store.get(`touched:${i.id}`) || "");
+        // Work an admin asked for goes ahead of other work as urgent, and says who asked.
+        const who = this.store.get(`priority:${i.id}`);
+        return t && who ? { ...t, urgency: t.urgency - 0.5, text: `${t.text} (${who} asked for this)` } : t;
+      })
       .filter((t): t is NonNullable<typeof t> => !!t)
       .sort((a, b) => a.urgency - b.urgency)
       .slice(0, 3);
@@ -3137,9 +3166,12 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     force = false,
     topic = "",
     round: Round = this.roundNow(),
+    /** The admin whose account the round is said from, when not the sender's. */
+    voice = "",
   ): Promise<{ asked: number; message: string }> {
     if (this.paused) return { asked: 0, message: `Paused: nothing was posted in ${group.name}. Send **resume** first.` };
     if (this.isWaiting(`gwait:${group.id}`)) return { asked: 0, message: `A message for ${group.name} is already waiting for your approval.` };
+    this.store.set(`gvoice:${group.id}`, voice);
     const date = this.today();
     const due = (await this.syncGroup(group)).filter((p) => {
       // Admins, the director and HR see the question like everyone else, but are not
@@ -3390,7 +3422,11 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           const c = this.store.checkin(p.id, date);
           return c?.status === "open" && this.store.get(`via:${c.id}`) === String(group.id);
         });
-        if (!stillTalking) this.store.set(`gasked:${group.id}`, "");
+        if (!stillTalking) {
+          this.store.set(`gasked:${group.id}`, "");
+          // The round is over: the group is spoken to from the sender's account again.
+          this.store.set(`gvoice:${group.id}`, "");
+        }
       }
     }
   }
@@ -4906,7 +4942,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
             if (one[1]!.toLowerCase() === "group") {
               const group = this.resolveGroup(one[2]!);
               if (typeof group === "string") return await reply(group);
-              return await reply(await this.postInGroup(group, text));
+              return await reply(await this.postInGroup(group, text, this.voiceOf(admin)));
             }
             const target = this.resolveOne(one[2]!);
             if (typeof target === "string") return await reply(target);
@@ -4940,7 +4976,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           if (/^group\b/i.test(arg)) {
             const group = this.resolveGroup(arg.replace(/^group\s*/i, ""));
             if (typeof group === "string") return await reply(group);
-            const asked = await this.askGroup(group, true);
+            const asked = await this.askGroup(group, true, "", this.roundNow(), this.voiceOf(admin));
             // Asked by the other admin and held for approval: say whose it is, and how to cancel it from their own chat.
             const held = this.store.get(`gwait:${group.id}`);
             const forOther = !!held && !!this.selfKey && !!this.direct?.senderEmail && admin.email !== this.direct.senderEmail.toLowerCase();

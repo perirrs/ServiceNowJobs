@@ -33,6 +33,8 @@ interface Sender {
   name: string;
   store: Store;
   engine: Engine;
+  /** This sender's Teams account, so a round they start in another admin's group is said from it. */
+  direct?: DirectChannel;
   /** While an inbox command runs, what the bot says to that admin is also written to the outbox. */
   outbox: { conversationId: string; lines: string[] } | null;
 }
@@ -117,6 +119,7 @@ async function startSender(cfg: Config, required: boolean): Promise<Sender | nul
     name: direct?.senderName ?? senderEmail,
     store,
     engine: undefined as unknown as Engine,
+    direct,
     outbox: null,
   };
 
@@ -292,7 +295,8 @@ async function startSender(cfg: Config, required: boolean): Promise<Sender | nul
           if (!lines.length) continue;
           store.set(key, lines.at(-1)!.createdAt);
           for (const line of lines) {
-            if (line.fromUserId === senderId && fromAssistant(group.id, line)) continue;
+            // The assistant's own posts: from the sender, or from the other admin's account during their round.
+            if (line.fromUserId === senderId ? fromAssistant(group.id, line) : engine.isAssistantGroupText(group.id, line.text)) continue;
             const email =
               line.fromUserId === senderId ? senderEmail : (store.personById(Number(store.get(`aad:${line.fromUserId}`)))?.email ?? "");
             if (email) await engine.groupLine(group.id, email, line.text, line.createdAt);
@@ -379,6 +383,8 @@ if (senders.length > 1) {
   for (const s of senders) {
     if (s !== main) inheritSettings(main.store, s.store);
     s.engine.selfKey = senderKey(s.email);
+    // A round an admin starts in the other admin's group is said from their own account.
+    s.engine.voiceFor = (email) => senders.find((o) => o.email === email)?.direct;
     s.engine.followedElsewhere = followedElsewhereFor(s, senders);
     // Each board lists the other assistants' groups, with a button to ask them for an update.
     s.engine.otherSenders = othersGroupsFor(s, senders);
