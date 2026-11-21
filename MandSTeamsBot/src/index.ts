@@ -10,7 +10,7 @@ import type { DirectChannel, Identity } from "./engine.js";
 import { GraphChat, htmlToText, textToHtml } from "./graph.js";
 import { Base44TalentFlow } from "./ats.js";
 import { Base44 } from "./base44.js";
-import { extraSenders, followedElsewhereFor, othersGroupsFor, routeAdminMessage, senderDataDir, senderKey } from "./senders.js";
+import { extraSenders, followedElsewhereFor, inheritSettings, othersGroupsFor, routeAdminMessage, senderDataDir, senderKey } from "./senders.js";
 import type { SenderKey } from "./senders.js";
 
 const config = loadConfig();
@@ -376,6 +376,8 @@ const keys: SenderKey[] = senders.map((s) => ({ email: s.email, key: senderKey(s
 // One sender per group and per person: each assistant checks the others before adding anyone.
 if (senders.length > 1) {
   for (const s of senders) {
+    if (s !== main) inheritSettings(main.store, s.store);
+    s.engine.selfKey = senderKey(s.email);
     s.engine.followedElsewhere = followedElsewhereFor(s, senders);
     // Each board lists the other assistants' groups, with a button to ask them for an update.
     s.engine.otherSenders = othersGroupsFor(s, senders);

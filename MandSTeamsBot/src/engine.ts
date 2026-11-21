@@ -1374,6 +1374,8 @@ export class Engine {
    * (by email), so the same people are never asked by two senders. Undefined when nobody else does.
    */
   followedElsewhere?: { group(chatId: string): string | undefined; person(email: string): string | undefined };
+  /** The word that reaches this assistant from another admin's chat ("mahanth: …"). */
+  selfKey?: string;
   /** The groups other senders' assistants follow; this board offers to ask them for an update. */
   otherSenders?: () => { name: string; key: string; groups: string[] }[];
 
@@ -4866,7 +4868,15 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           if (/^group\b/i.test(arg)) {
             const group = this.resolveGroup(arg.replace(/^group\s*/i, ""));
             if (typeof group === "string") return await reply(group);
-            return await reply((await this.askGroup(group, true)).message);
+            const asked = await this.askGroup(group, true);
+            // Asked by the other admin and held for approval: say whose it is, and how to cancel it from their own chat.
+            const held = this.store.get(`gwait:${group.id}`);
+            const forOther = !!held && !!this.selfKey && !!this.direct?.senderEmail && admin.email !== this.direct.senderEmail.toLowerCase();
+            return await reply(
+              forOther
+                ? `${asked.message}\n\nIt waits for ${this.direct!.senderName}'s approval (a new group's messages are approved before they go out). To cancel it from here, send **${this.selfKey}: draft skip ${held}**.`
+                : asked.message,
+            );
           }
           const nominees = this.store.nominees();
           const words = arg.toLowerCase().split(/[^a-z0-9@.]+/).filter((w) => w.length > 2);

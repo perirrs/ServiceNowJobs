@@ -54,6 +54,20 @@ export function senderKey(email: string): string {
   return email.trim().toLowerCase().split(/[@.]/)[0]!;
 }
 
+/**
+ * An extra sender's assistant starts with the main sender's timezone and office hours, so "now"
+ * means the same for both (the team is in one place). Whatever the extra sender set is kept.
+ */
+export function inheritSettings(
+  main: { get(key: string): string | undefined },
+  extra: { get(key: string): string | undefined; set(key: string, value: string): void },
+): void {
+  for (const key of ["timezone", "hours"]) {
+    const value = main.get(key);
+    if (value && extra.get(key) === undefined) extra.set(key, value);
+  }
+}
+
 /** What the guard needs from each sender: their name, and what their assistant follows. */
 export interface SenderFollows {
   name: string;
