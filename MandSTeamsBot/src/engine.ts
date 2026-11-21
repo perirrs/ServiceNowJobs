@@ -2029,16 +2029,11 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         (m) => !(m.fromSender && own.has(m.text.replace(/\s+/g, " ").trim())),
       );
       if (fresh.length) {
-        const transcript = fresh
-          .map((m) => `${m.at.slice(0, 10)} ${m.fromSender ? this.direct!.senderName : displayName(person)}: ${m.text.slice(0, 300)}`)
-          .join("\n");
-        const revised = await this.brain.reviseMemory({
-          about: `${displayName(person)}, and how ${this.direct.senderName} works with them`,
-          senderName: this.direct.senderName,
-          memory: this.store.get(key) || "",
-          transcript,
-          today: this.today(),
-        });
+        const revised = await this.foldMemory(
+          `${displayName(person)}, and how ${this.direct.senderName} works with them`,
+          this.store.get(key) || "",
+          fresh.map((m) => `${m.at.slice(0, 10)} ${m.fromSender ? this.direct!.senderName : displayName(person)}: ${m.text.slice(0, 300)}`),
+        );
         if (revised) this.store.set(key, revised);
       }
       this.store.set(`memcursor:${person.id}`, this.now().toISOString());
@@ -2048,7 +2043,45 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     }
   }
 
-  /** The same for a group chat: its whole recent history the first time, then what is new each day. */
+  /** Split a long history into parts the model can read whole, keeping the order (oldest first). */
+  private historyParts<T>(items: T[], size: (item: T) => number): T[][] {
+    const max = this.config.historyChunkChars ?? 250_000;
+    const parts: T[][] = [];
+    let current: T[] = [];
+    let used = 0;
+    for (const item of items) {
+      const n = size(item);
+      if (current.length && used + n > max) {
+        parts.push(current);
+        current = [];
+        used = 0;
+      }
+      current.push(item);
+      used += n;
+    }
+    if (current.length) parts.push(current);
+    return parts;
+  }
+
+  /**
+   * Fold chat lines into a memory part by part, oldest first: the whole history counts, and the
+   * newest part has the last word (what is stale or finished is dropped as later parts come in).
+   */
+  private async foldMemory(about: string, memory: string, lines: string[]): Promise<string> {
+    for (const part of this.historyParts(lines, (l) => l.length + 1)) {
+      const revised = await this.brain.reviseMemory({
+        about,
+        senderName: this.direct?.senderName ?? "",
+        memory,
+        transcript: part.join("\n"),
+        today: this.today(),
+      });
+      if (revised) memory = revised;
+    }
+    return memory;
+  }
+
+  /** The same for a group chat: its whole history the first time, then what is new each day. */
   private async refreshGroupMemory(group: Group, fresh = false): Promise<void> {
     if (!this.personal || !this.direct?.history) return;
     if (!fresh && this.store.get(`gmemday:${group.id}`) === this.today()) return;
@@ -2058,16 +2091,12 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         (m) => !(m.fromSender && m.text.startsWith("Team tracker")),
       );
       if (fresh.length) {
-        const revised = await this.brain.reviseMemory({
-          about: `the group chat "${group.name}" and the work of each person in it`,
-          senderName: this.direct.senderName,
-          memory: this.store.get(`gmemory:${group.id}`) || "",
-          transcript: fresh
-            // Long posts (tables of figures) are kept whole enough to be understood.
-            .map((m) => `${m.at.slice(0, 10)} ${m.fromSender ? this.direct!.senderName : m.from || "Someone"}: ${m.text.slice(0, 6000)}`)
-            .join("\n"),
-          today: this.today(),
-        });
+        const revised = await this.foldMemory(
+          `the group chat "${group.name}" and the work of each person in it`,
+          this.store.get(`gmemory:${group.id}`) || "",
+          // Long posts (tables of figures) are kept whole enough to be understood.
+          fresh.map((m) => `${m.at.slice(0, 10)} ${m.fromSender ? this.direct!.senderName : m.from || "Someone"}: ${m.text.slice(0, 6000)}`),
+        );
         if (revised) this.store.set(`gmemory:${group.id}`, revised);
       }
       this.store.set(`gmemcursor:${group.id}`, this.now().toISOString());
@@ -2099,8 +2128,23 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       let text = "";
       // Enough to learn a tone from, or at least enough to know what is going on.
       if (chat.filter((m) => m.fromSender).length >= 3 || chat.length >= 8) {
-        const learned = await this.brain.learnRapport(person, this.direct.senderName, chat, this.today());
-        text = learned.brief;
+        // A long history is read in full, in parts: the older parts become a memory (oldest
+        // first), and the tone is learned from the newest part, which is how they talk now.
+        const parts = this.historyParts(chat, (m) => Math.min(m.text.length, 300) + 30);
+        const senderName = this.direct.senderName;
+        const earlier =
+          parts.length > 1
+            ? await this.foldMemory(
+                `${displayName(person)}, and how ${senderName} works with them`,
+                "",
+                parts
+                  .slice(0, -1)
+                  .flat()
+                  .map((m) => `${m.at ? `${m.at.slice(0, 10)} ` : ""}${m.fromSender ? senderName : displayName(person)}: ${m.text.slice(0, 300)}`),
+              )
+            : "";
+        const learned = await this.brain.learnRapport(person, senderName, parts.at(-1)!, this.today());
+        text = earlier ? `${learned.brief}\n\nFrom the older chat history:\n${earlier}` : learned.brief;
         // A greeting the admin set by hand is never overwritten by what was learned.
         const address = learned.address.replace(/^hi\b[\s,]*/i, "").replace(/[\n,.!]+/g, " ").trim().slice(0, 30);
         if (address && this.store.get(`greeting:${person.id}`) === undefined) {
@@ -2765,12 +2809,16 @@ So you know how it's used: your answers are summarised each day for the CTO and 
    */
   private async refreshGroupNames(): Promise<void> {
     if (!this.direct?.groupName && !this.direct?.groupMembers) return;
+    // Members every minute, so a joiner is read and a leaver let go straight away; the name hourly.
+    const lastMembers = this.store.get("gmembersat");
+    if (lastMembers && this.now().getTime() - Date.parse(lastMembers) < 60_000) return;
+    this.store.set("gmembersat", this.now().toISOString());
     const last = this.store.get("gnamesat");
-    if (last && this.now().getTime() - Date.parse(last) < 3_600_000) return;
-    this.store.set("gnamesat", this.now().toISOString());
+    const names = !last || this.now().getTime() - Date.parse(last) >= 3_600_000;
+    if (names) this.store.set("gnamesat", this.now().toISOString());
     for (let group of this.store.groups()) {
       try {
-        const name = this.direct.groupName ? await this.direct.groupName(group.chatId) : null;
+        const name = names && this.direct.groupName ? await this.direct.groupName(group.chatId) : null;
         if (name && name !== group.name) {
           this.store.renameGroup(group.id, name);
           this.log(`Group renamed in Teams: "${group.name}" is now "${name}"`);
@@ -2799,13 +2847,27 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     if (before.size) {
       const now = new Set(members.map((p) => p.id));
       const news: string[] = [];
-      for (const p of members) {
+      for (let p of members) {
         if (before.has(p.id) || this.isAdmin(p)) continue;
         const first = displayName(p).split(" ")[0]!.toLowerCase();
+        // Read their whole one-to-one chat with the sender now, as when a group is first added.
+        let read = "";
+        if (this.personal) {
+          try {
+            if (!p.chatId && this.direct?.connect) {
+              const chat = await this.direct.connect(p.email);
+              if (!("notFound" in chat)) p = this.store.upsertPerson(p.email, { chatId: chat.conversationId });
+            }
+            read = (await this.learnRapport(p, true)) ? " I have read their whole chat with you." : " There is no one-to-one chat with you to read.";
+          } catch (err) {
+            this.log(`Could not read the chat with ${p.email}`, err);
+            read = " I could not read their chat with you yet.";
+          }
+        }
         news.push(
           p.profile
-            ? `**${displayName(p)} joined ${group.name}.** I will ask them with the group, as: ${p.profile}`
-            : `**${displayName(p)} joined ${group.name}.** I will ask them with the group. They have no role saved yet: send **profile ${first}: their role and targets** so I ask the right things.`,
+            ? `**${displayName(p)} joined ${group.name}.** I will ask them with the group, as: ${p.profile}.${read}`
+            : `**${displayName(p)} joined ${group.name}.** I will ask them with the group. They have no role saved yet: send **profile ${first}: their role and targets** so I ask the right things.${read}`,
         );
       }
       for (const id of before) {
@@ -3180,7 +3242,9 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     const members = (await this.syncGroup(group)).filter((p) => !this.notAsked(p));
     if (!members.length) return `I found nobody in ${group.name} to track.`;
 
-    const lines = await this.direct.history(group.chatId, this.config.historyMessages);
+    // Open work is in the recent chat: a very long history is cut to its newest part.
+    const all = await this.direct.history(group.chatId, this.config.historyMessages);
+    const lines = this.historyParts(all, (m) => Math.min(m.text.length, 400) + 40).at(-1) ?? [];
     const entries = await this.brain.extractTracker({
       groupName: group.name,
       today: this.today(),
@@ -3209,7 +3273,9 @@ So you know how it's used: your answers are summarised each day for the CTO and 
   /** The work in someone's one-to-one chat with the sender, put on their items. */
   private async trackFromOwnChat(person: Person): Promise<number> {
     if (!this.direct?.history || !person.chatId) return 0;
-    const lines = await this.direct.history(person.chatId, this.config.historyMessages);
+    // Open work is in the recent chat: a very long history is cut to its newest part.
+    const all = await this.direct.history(person.chatId, this.config.historyMessages);
+    const lines = this.historyParts(all, (m) => Math.min(m.text.length, 400) + 40).at(-1) ?? [];
     if (!lines.length) return 0;
     const entries = await this.brain.extractTracker({
       groupName: `one-to-one chat between ${this.direct.senderName} and ${displayName(person)}`,

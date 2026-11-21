@@ -23,6 +23,8 @@ export interface Config {
   idleCloseMinutes: number;
   /** How many of the most recent messages to read from a chat when first learning about a person or group. */
   historyMessages: number;
+  /** How much chat the model reads at once; a longer history is read in parts of this size, oldest first. */
+  historyChunkChars?: number;
   /** Minutes after a group is asked during which replies in the group count as updates. */
   groupWindowMinutes: number;
   /**
@@ -63,7 +65,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     idleCloseMinutes: Number(env.IDLE_CLOSE_MINUTES ?? 30),
     groupWindowMinutes: Number(env.GROUP_WINDOW_MINUTES ?? 120),
     // The whole history by default. The ceiling only guards against a runaway read.
-    historyMessages: Number(env.HISTORY_MESSAGES ?? 20000),
+    // The whole chat history: long histories are read in parts, so there is no need to cut them short.
+    historyMessages: Number(env.HISTORY_MESSAGES ?? 1_000_000),
+    historyChunkChars: Number(env.HISTORY_CHUNK_CHARS ?? 250_000),
   };
 }
 
