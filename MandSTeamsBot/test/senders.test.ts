@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import path from "node:path";
-import { extraSenders, followedElsewhereFor, othersGroupsFor, routeAdminMessage, senderDataDir, senderKey } from "../src/senders.js";
+import { extraSenders, followedElsewhereFor, inheritSettings, othersGroupsFor, routeAdminMessage, senderDataDir, senderKey } from "../src/senders.js";
 
 const SUJITH = "sujith@mergencorp.com";
 const MAHANTH = "mahanth.m@mergencorp.com";
@@ -45,6 +45,23 @@ test("each sender sees the groups the other senders follow, with the name to sen
   assert.deepEqual(othersGroupsFor(sujith, [sujith, mahanth])(), [{ name: "Mahanth M", key: "mahanth", groups: ["Admin & Networking", "Sales"] }]);
   assert.deepEqual(othersGroupsFor(mahanth, [sujith, mahanth])(), [{ name: "Sujith", key: "sujith", groups: ["Recruitment Team"] }]);
   assert.equal(senderKey(MAHANTH), "mahanth");
+});
+
+test("an extra sender without a timezone or office hours of their own takes the main sender's", () => {
+  const kv = (init: Record<string, string>) => {
+    const m = new Map(Object.entries(init));
+    return { get: (k: string) => m.get(k), set: (k: string, v: string) => void m.set(k, v), m };
+  };
+  const main = kv({ timezone: "Asia/Kolkata", hours: "09:30-21:00@Asia/Kolkata" });
+  const fresh = kv({});
+  inheritSettings(main, fresh);
+  assert.equal(fresh.get("timezone"), "Asia/Kolkata");
+  assert.equal(fresh.get("hours"), "09:30-21:00@Asia/Kolkata");
+  // Their own choice is kept.
+  const own = kv({ timezone: "Europe/London" });
+  inheritSettings(main, own);
+  assert.equal(own.get("timezone"), "Europe/London");
+  assert.equal(own.get("hours"), "09:30-21:00@Asia/Kolkata");
 });
 
 test("each sender is told which other sender already follows a group or person", () => {

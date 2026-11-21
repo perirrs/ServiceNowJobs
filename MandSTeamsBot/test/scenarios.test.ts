@@ -207,6 +207,22 @@ test("scenario 2: Sujith asks Mahanth's group for an update from his own board; 
   assert.equal(w.teams.in("g-rec").length, 0);
 });
 
+test("scenario 2b: an ask in the other admin's group that waits for approval says so, and can be cancelled from your own chat", async () => {
+  const w = await setUp();
+  w.mahanth.engine.selfKey = "mahanth";
+  w.mahanth.store.set("approve:g-adm", "2026-11-16"); // a new group's first day: approve before sending
+  await w.press(SUJITH, { cmd: "askOther", key: "mahanth", who: "Admin & Networking" });
+  assert.equal(w.teams.in("g-adm").length, 0); // held, not sent
+  const said = w.toAdmin(SUJITH).at(-1)!;
+  assert.match(said, /waits for Mahanth M's approval/);
+  const id = /mahanth: draft skip (\d+)/.exec(said)?.[1];
+  assert.ok(id);
+  // "Do not send": cancelled from Sujith's own chat, through Mahanth's assistant.
+  await w.botMessage(SUJITH, `mahanth: draft skip ${id}`);
+  assert.match(w.toAdmin(SUJITH).at(-1)!, /Skipped\. Nothing was sent/);
+  assert.equal(w.teams.in("g-adm").length, 0);
+});
+
 test("scenario 3: a reply gets one follow-up in the group, then the rest is only recorded", async () => {
   const w = await setUp();
   w.mahanth.brain.doneAfterUserMessages = 99; // keeps asking, if it were allowed to
