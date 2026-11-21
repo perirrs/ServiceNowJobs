@@ -1184,6 +1184,33 @@ test("someone who joins a followed group has their chat read straight away; some
   assert.match(told, /Ravi Kumar left Recruitment Team/);
 });
 
+test("'reread' reads every followed group and everyone's one-to-one chat again from the start", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  const groupId = g.store.groups()[0]!.id;
+  g.store.set(`gmemory:${groupId}`, "OLD GROUP MEMORY");
+  const priya = g.store.personByEmail(PRIYA)!;
+  g.store.set(`rapport:${priya.id}`, "OLD PRIYA MEMORY");
+  const reads: { chatId: string; since: string }[] = [];
+  (g.engine as unknown as { direct: { history: unknown } }).direct.history = async (chatId: string, _max: number, since = "") => {
+    reads.push({ chatId, since });
+    return [
+      { fromSender: true, from: "Sujith", text: "pls share the list", at: "2026-10-01T10:00:00Z" },
+      { fromSender: false, from: "x", text: "ok sir", at: "2026-10-01T10:01:00Z" },
+      { fromSender: true, from: "Sujith", text: "any update", at: "2026-11-01T10:00:00Z" },
+      { fromSender: true, from: "Sujith", text: "call me", at: "2026-11-02T10:00:00Z" },
+    ];
+  };
+  await g.engine.handleMessage(g.cto, "reread");
+  // From the start, not just what is new.
+  assert.ok(reads.some((r) => r.chatId === "g-rec" && !r.since));
+  assert.ok(reads.some((r) => r.chatId === `chat-${PRIYA}` && !r.since));
+  assert.ok(reads.some((r) => r.chatId === "chat-ravi@acme.test" && !r.since));
+  assert.notEqual(g.store.get(`gmemory:${groupId}`), "OLD GROUP MEMORY");
+  assert.match(g.store.get(`rapport:${priya.id}`)!, /Casual/);
+  assert.match(g.admin.at(-1)!, /Read again from the start: 1 group and 2 people/);
+});
+
 test("a long group history is read in full, in parts, oldest first, each part building on the last", async () => {
   const g = groupSetup();
   (g.engine as unknown as { config: Config }).config.historyChunkChars = 150;
