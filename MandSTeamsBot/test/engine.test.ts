@@ -703,6 +703,60 @@ function boardSetup() {
   return { store, brain, engine, id, sentCards, edits };
 }
 
+test("the board has four buttons at the top: auto and typed updates, for all groups or for everyone", async () => {
+  assert.equal(cardToCommand({ cmd: "autoGroups" }), "ask all groups");
+  assert.equal(cardToCommand({ cmd: "postGroups", manualGroups: " Please send the covering letters by 6 " }), "post groups Please send the covering letters by 6");
+  assert.equal(cardToCommand({ cmd: "postEveryone", manualEveryone: "Office closed Monday" }), "post everyone Office closed Monday");
+
+  const b = boardSetup();
+  await b.engine.handleMessage(b.id(CTO), "board");
+  const card = b.sentCards.at(-1) as { body: Record<string, unknown>[] };
+  // Straight under the title, before anything else.
+  const top = card.body.slice(0, 3).find((x) => x.type === "ActionSet") as { actions: { title: string }[] } | undefined;
+  assert.deepEqual(top?.actions.map((a) => a.title), ["Auto update: all groups", "Auto update: everyone", "Message all groups", "Message everyone"]);
+  const json = JSON.stringify(top);
+  assert.match(json, /"id":"manualGroups"/);
+  assert.match(json, /"id":"manualEveryone"/);
+});
+
+test("'ask all groups' asks every group the usual way, reading first, and nobody one to one", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "add solo@acme.test");
+  await g.engine.handleMessage(g.cto, "ask all groups");
+  assert.deepEqual(g.sent.map((s) => s.to), ["g-rec"]);
+  assert.equal(g.brain.groupAsks.length, 1);
+});
+
+test("a typed message goes out word for word: to every group, or to every group and everyone followed one to one", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "add solo@acme.test");
+  const groupId = g.store.groups()[0]!.id;
+
+  await g.engine.handleMessage(g.cto, "post groups Please send the covering letters by 6 pm.\nThanks");
+  assert.deepEqual(g.sent.map((s) => [s.to, s.text]), [["g-rec", "Please send the covering letters by 6 pm.\nThanks"]]);
+  assert.match(g.admin.at(-1)!, /Posted in \*\*Recruitment Team\*\*/);
+  // The members' replies are now read and followed up, about this.
+  const priya = g.store.personByEmail(PRIYA)!;
+  const checkin = g.store.checkin(priya.id, "2026-11-16")!;
+  assert.equal(g.store.get(`via:${checkin.id}`), String(groupId));
+  assert.equal(g.store.get(`topic:${checkin.id}`), "Please send the covering letters by 6 pm.\nThanks");
+  // And what was said there today includes it, for every later question.
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  assert.match(g.brain.groupAsks.at(-1)!.memory, /covering letters by 6 pm/);
+
+  g.sent.length = 0;
+  await g.engine.handleMessage(g.cto, "post everyone Office closed on Monday");
+  assert.deepEqual(g.sent.map((s) => s.to).sort(), ["chat-solo@acme.test", "g-rec"]); // group members are not messaged twice
+  assert.ok(g.sent.every((s) => s.text === "Office closed on Monday"));
+
+  // With no message, it says how to use it, and sends nothing.
+  g.sent.length = 0;
+  await g.engine.handleMessage(g.cto, "post groups");
+  assert.equal(g.sent.length, 0);
+});
+
 test("the board groups people by where they stand, with a chat link and buttons for each", async () => {
   const b = boardSetup();
   await b.engine.handleMessage(b.id(CTO), `add ${PRIYA}`);
