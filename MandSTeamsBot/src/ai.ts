@@ -204,6 +204,8 @@ export interface Brain {
     memory: string;
     today: string;
     round?: Round;
+    /** One or two people: no team opening; each is asked by name with a complete question. */
+    small?: boolean;
     members: { name: string; role: string; memory: string }[];
   }): Promise<{ opening: string; questions: { name: string; question: string }[] }>;
 }
@@ -786,6 +788,8 @@ ${known.groups.map((g) => `- ${g}`).join("\n") || "(none)"}`,
     memory: string;
     today: string;
     round?: Round;
+    /** One or two people: no team opening; each is asked by name with a complete question. */
+    small?: boolean;
     members: { name: string; role: string; memory: string }[];
   }): Promise<{ opening: string; questions: { name: string; question: string }[] }> {
     const who = this.senderName ?? "the manager";
@@ -809,6 +813,9 @@ Wording: very simple English for readers whose first language is not English, sh
           role: "user",
           content: [
             `Today is ${input.today}. This is the ${input.round === "plan" ? "morning plan message" : input.round === "review" ? "end of day message" : "update message"}.`,
+            input.small
+              ? `Only ${input.members.length === 1 ? "one person is" : "two people are"} being asked, so there is no "Hi team" opening (leave opening empty). Write a question for each of them, complete on its own, as you would write to them directly: it covers what this message is for (the plan for today, or at the end of the day what is done, what is left and what carries over) together with the most important thing for that person, in one or two short lines.`
+              : "",
             `## Wants to know\n${input.topic || "(nothing specific: a general update)"}`,
             `## What is known about the group\n${input.memory || "(nothing yet)"}`,
             `## People\n${input.members

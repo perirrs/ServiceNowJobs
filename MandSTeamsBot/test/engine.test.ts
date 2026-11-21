@@ -1009,7 +1009,7 @@ test("a group is asked with one message; a reply there gets its follow-up in the
   await g.engine.handleMessage(g.cto, "add group Recruitment Team");
   await g.engine.handleMessage(g.cto, "ask group recruitment team");
   assert.deepEqual(g.sent.map((s) => s.to), ["g-rec"]);
-  assert.match(g.sent[0]!.text, /Hi team, end of day: what is complete so far/);
+  assert.match(g.sent[0]!.text, /^\{@0\} end of day: what is complete so far/); // two people: by name, no team opening
 
   g.brain.doneAfterUserMessages = 99;
   await g.engine.handleGroupReply("u-priya", "sent 3 submissions today");
@@ -1085,7 +1085,7 @@ test("everyone asked in the group is tagged, not only those with a question of t
   await g.engine.handleMessage(g.cto, "ask group recruitment team");
   const ask = g.sent.at(-1)!;
   assert.deepEqual(ask.mentions!.map((m) => m.userId).sort(), ["u-priya", "u-ravi"]);
-  assert.match(ask.text, /{@1} please share your update./);
+  assert.match(ask.text, /\{@1\} end of day: what is complete so far/);
 });
 
 test("an update someone posted in the group earlier today counts as their answer: not chased", async () => {
@@ -1225,6 +1225,7 @@ test("a group history is read in full, newest to oldest in batches: the newest i
 
 test("an UPDATE posted by an admin in a group is kept as a standing instruction and its targets take effect", async () => {
   const g = groupSetup();
+  g.members.push({ userId: "u-sam", email: "sam@acme.test", name: "Sam Lee" }); // a team of three: the team message with role lines
   await g.engine.handleMessage(g.cto, "add group Recruitment Team");
   await g.engine.handleMessage(g.cto, "profile priya: Recruiter. Does submissions only.");
   const groupId = g.store.groups()[0]!.id;
@@ -1719,7 +1720,8 @@ test("a long message with several instructions is carried out in a sensible orde
 
   // The group message is worded around the topic, and each member's follow-up knows it.
   assert.equal(g.brain.groupAsks[0]!.topic, "website updates and launch date");
-  assert.equal(g.sent.at(-1)!.text, "Hi team, website updates and launch date?\n{@0} {@1} please share your update.");
+  // Two people: the topic is put to each of them by name.
+  assert.equal(g.sent.at(-1)!.text, "{@0} website updates and launch date?\n{@1} website updates and launch date?");
   g.brain.doneAfterUserMessages = 99;
   await g.engine.handleGroupReply("u-priya", "homepage copy is done");
   assert.equal(g.brain.turns.at(-1)!.topic, "website updates and launch date");
@@ -1821,7 +1823,7 @@ test("the group message tags individuals with their own question, and each follo
   assert.equal(post.to, "g-rec");
   assert.equal(
     post.text,
-    "Hi team, end of day: what is complete so far, will the rest be done before you log off, and what carries over to tomorrow morning? Any blockers?\n{@0} TalentFlow app - where are we?\n{@1} please share your update.",
+    "{@0} TalentFlow app - where are we?\n{@1} end of day: what is complete so far, will the rest be done before you log off, and what carries over to tomorrow morning? Any blockers?",
   );
   assert.deepEqual(post.mentions, [
     { userId: "u-ravi", name: "Ravi Kumar" },
@@ -1951,7 +1953,7 @@ test("asking a group again re-asks those who said nothing, tagged; someone mid-r
   assert.equal(post.to, "g-rec");
   assert.equal(
     post.text,
-    "Hi team, end of day: what is complete so far, will the rest be done before you log off, and what carries over to tomorrow morning? Any blockers?\n{@0} please share your update.",
+    "{@0} end of day: what is complete so far, will the rest be done before you log off, and what carries over to tomorrow morning? Any blockers?",
   );
   assert.deepEqual(post.mentions, [{ userId: "u-ravi", name: "Ravi Kumar" }]);
   assert.match(g.admin.at(-1)!, /\(1 people\)/);
@@ -2004,7 +2006,13 @@ test("when the sender replies to someone in the group himself, the assistant ste
   const groupId = g.store.groups()[0]!.id;
 
   // The assistant's own posts are recognised, with or without the tag in front.
-  assert.equal(g.engine.isAssistantGroupText(groupId, "Hi team, end of day: what is complete so far, will the rest be done before you log off, and what carries over to tomorrow morning? Any blockers? Priya Rao Ravi Kumar please share your update."), true);
+  assert.equal(
+    g.engine.isAssistantGroupText(
+      groupId,
+      "Priya Rao end of day: what is complete so far, will the rest be done before you log off, and what carries over to tomorrow morning? Any blockers? Ravi Kumar end of day: what is complete so far, will the rest be done before you log off, and what carries over to tomorrow morning? Any blockers?",
+    ),
+    true,
+  );
   assert.equal(g.engine.isAssistantGroupText(groupId, "Priya Rao Question 2"), true);
   assert.equal(g.engine.isAssistantGroupText(groupId, "Priya, call me"), false);
 

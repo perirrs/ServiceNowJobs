@@ -3219,6 +3219,8 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         : round === "review"
           ? "Hi team, end of day: what is complete so far, will the rest be done before you log off, and what carries over to tomorrow morning? Any blockers?"
           : "Hi team, please share today's update.";
+    // One or two people are spoken to by name, as anyone would; "Hi team" is for three or more.
+    const small = this.store.groupMembers(group.id).filter((p) => !this.isAdmin(p)).length <= 2;
     let tagged: { person: Person; userId: string; question: string }[] = [];
     if (this.personal || topic) {
       try {
@@ -3228,6 +3230,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           memory: this.groupMemory(group.id),
           today: date,
           round,
+          small,
           members: due.map((p) => ({
             name: displayName(p),
             role: p.profile ?? "",
@@ -3265,7 +3268,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       .filter((t) => t.userId);
     const mentioned = [...tagged, ...alsoTag];
     // What each role should send, unless the admin asked for something specific.
-    const byRole = topic
+    const byRole = topic || small
       ? []
       : roleAskLines(
           this.store.groupMembers(group.id).filter((p) => !this.isAdmin(p)).map((p) => ({ name: displayName(p), profile: p.profile })),
@@ -3274,13 +3277,25 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         );
 
     // {@0}, {@1}... mark where each person's tag goes when the message is sent.
+    // To one or two people: each one by name with their own question, and no team opening.
+    // Asked about something specific: that is the question, put to each of them.
+    const personal = topic
+      ? opening.replace(/^\s*hi team[,!.]?\s*/i, "")
+      : round === "plan"
+        ? "what will you work on today, and what will be finished by the end of the day?"
+        : round === "review"
+          ? "end of day: what is complete so far, will the rest be done before you log off, and what carries over to tomorrow morning? Any blockers?"
+          : "please share today's update.";
     const lines = (name: (i: number) => string) =>
-      [
-        opening,
-        ...byRole,
-        ...tagged.map((t, i) => `${name(i)} ${t.question}`),
-        ...(alsoTag.length ? [`${alsoTag.map((_, i) => name(tagged.length + i)).join(" ")} please share your update.`] : []),
-      ].join("\n");
+      (small
+        ? [...tagged.map((t, i) => `${name(i)} ${t.question}`), ...alsoTag.map((_, i) => `${name(tagged.length + i)} ${personal}`)]
+        : [
+            opening,
+            ...byRole,
+            ...tagged.map((t, i) => `${name(i)} ${t.question}`),
+            ...(alsoTag.length ? [`${alsoTag.map((_, i) => name(tagged.length + i)).join(" ")} please share your update.`] : []),
+          ]
+      ).join("\n");
     const text = lines((i) => `@${displayName(mentioned[i]!.person)}`); // as it reads, for our record
     const result = await this.sendAsSender({
       chatId: group.chatId,
