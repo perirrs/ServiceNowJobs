@@ -778,7 +778,7 @@ function rapportSetup(history: { fromSender: boolean; text: string }[]) {
   return { store, brain, engine, cto, reads: () => reads, later, setDate: (d: string) => (date = new Date(d)) };
 }
 
-test("past chat is read when someone is added, the tone is stored, and asking does not read it again", async () => {
+test("past chat is read when someone is added, the tone is stored, and asking only reads what is new", async () => {
   const r = rapportSetup([
     { fromSender: true, text: "pls share the list" },
     { fromSender: false, text: "ok sir" },
@@ -788,14 +788,15 @@ test("past chat is read when someone is added, the tone is stored, and asking do
   await r.engine.handleMessage(r.cto, `add ${PRIYA}`);
   const afterAdd = r.reads(); // read once for the tone, once for the work
   await r.engine.handleMessage(r.cto, "ask priya");
-  assert.equal(r.reads(), afterAdd);
+  assert.equal(r.reads(), afterAdd + 1); // a look at what is new since: nothing
+  assert.equal(r.brain.revisions.length, 0);
   assert.equal(r.brain.turns.at(-1)!.rapport, "Casual. Says 'pls share'.");
 
   const priya = r.store.personByEmail(PRIYA)!;
   await r.engine.handleDirectReply(priya.id, "done");
   await r.engine.handleMessage(r.cto, "ask priya");
-  assert.equal(r.reads(), afterAdd); // not read again
-  assert.equal(r.brain.rapportCalls.length, 1);
+  assert.equal(r.brain.revisions.length, 0); // nothing new, so the memory is unchanged
+  assert.equal(r.brain.rapportCalls.length, 1); // and the tone is not learned again
 });
 
 test("asking someone by hand first reads what is new in their chat since the last look", async () => {
@@ -806,11 +807,13 @@ test("asking someone by hand first reads what is new in their chat since the las
   ]);
   await r.engine.handleMessage(r.cto, `add ${PRIYA}`);
   await r.engine.handleMessage(r.cto, "ask priya");
+  await r.engine.handleDirectReply(r.store.personByEmail(PRIYA)!.id, "done");
   // Midday, typed by hand in her chat: a new priority.
   r.later.push({ fromSender: true, text: "pls prioritise the covering letter first" });
+  const learned = r.brain.rapportCalls.length;
   await r.engine.handleMessage(r.cto, "ask priya");
   assert.match(r.brain.revisions.at(-1)?.transcript ?? "", /prioritise the covering letter/);
-  assert.equal(r.brain.rapportCalls.length, 1); // the tone is not learned again
+  assert.equal(r.brain.rapportCalls.length, learned); // the tone is not learned again
 });
 
 test("asking a group by hand first reads everything typed there today, then asks", async () => {
@@ -857,7 +860,8 @@ test("with too little past chat nothing is learned, and it does not keep looking
   await r.engine.handleMessage(r.cto, "ask priya");
   await r.engine.handleMessage(r.cto, "ask priya");
   assert.equal(r.brain.rapportCalls.length, 0);
-  assert.equal(r.reads(), afterAdd);
+  assert.equal(r.brain.revisions.length, 0);
+  assert.ok(r.reads() > afterAdd);
   assert.equal(r.brain.turns.at(-1)!.rapport, undefined);
 });
 
@@ -1299,10 +1303,11 @@ test("on a later day, what was said in the chat since is folded into the memory 
   const priya = r.store.personByEmail(PRIYA)!;
   await r.engine.handleDirectReply(priya.id, "done");
 
-  // Same day again: no second look at the chat.
-  const beforeSecondAsk = r.reads();
+  // Same day again, asked by hand: only what is new is read, and nothing is.
   await r.engine.handleMessage(r.cto, "ask priya");
-  assert.equal(r.reads(), beforeSecondAsk);
+  assert.equal(r.brain.revisions.length, 0);
+  const priya2 = r.store.personByEmail(PRIYA)!;
+  await r.engine.handleDirectReply(priya2.id, "done");
 
   // Next day, with something new said in the chat in between.
   r.later.push({ fromSender: false, text: "Globex signed the contract" });

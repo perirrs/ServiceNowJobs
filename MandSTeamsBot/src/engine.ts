@@ -666,6 +666,30 @@ export class Engine {
       .join("\n\n");
   }
 
+  /**
+   * Before asking a group: read everything typed there today (by the sender, other admins and
+   * the team), so nothing said since the last minute-by-minute look is missed. The assistant's own
+   * posts are left out.
+   */
+  private async catchUpGroupToday(group: Group): Promise<void> {
+    if (!this.direct?.history) return;
+    try {
+      const since = new Date(this.now().getTime() - 24 * 3_600_000).toISOString();
+      const lines = await this.direct.history(group.chatId, 200, since);
+      const own = (text: string) =>
+        /^s*(Team tracker|Team progress at|End of day summary)/.test(text) || this.isAssistantGroupText(group.id, text);
+      const today = lines
+        .filter((l) => l.at && todayIn(this.tz, new Date(l.at)) === this.today())
+        .filter((l) => !(l.fromSender && own(l.text)))
+        .map((l) => ({ at: l.at, by: l.fromSender ? this.direct!.senderName : l.from || "Someone", text: l.text.trim().slice(0, 600) }))
+        .filter((l) => l.text)
+        .sort((a, b) => a.at.localeCompare(b.at));
+      if (today.length) this.store.set(`gtoday:${group.id}`, JSON.stringify(today.slice(-40)));
+    } catch (err) {
+      this.log(`Could not read today's messages in ${group.name}`, err);
+    }
+  }
+
   /** What people (the sender, other admins, the team) typed in a group today, oldest first. */
   private groupToday(groupId: number): { at: string; by: string; text: string }[] {
     try {
@@ -693,7 +717,9 @@ export class Engine {
     const author = this.store.personByEmail(authorEmail.trim().toLowerCase());
     if (!author || !text.trim()) return;
     const today = this.groupToday(groupId);
-    today.push({ at: postedAt, by: displayName(author), text: text.trim().slice(0, 600) });
+    const same = (t: string) => t.replace(/s+/g, " ").trim();
+    if (!today.some((l) => same(l.text) === same(text.trim().slice(0, 600)) && Math.abs(Date.parse(l.at) - Date.parse(postedAt)) < 120_000))
+      today.push({ at: postedAt, by: displayName(author), text: text.trim().slice(0, 600) });
     this.store.set(`gtoday:${groupId}`, JSON.stringify(today.slice(-40)));
     await this.noticeLeave(author, text);
     if (!this.isAdmin(author)) return;
@@ -1924,14 +1950,15 @@ So you know how it's used: your answers are summarised each day for the CTO and 
    * them anything: read their chat history the first time, and after that
    * fold in whatever has been said in the chat since the last look, once a day.
    */
-  private async refreshMemory(person: Person): Promise<void> {
+  private async refreshMemory(person: Person, fresh = false): Promise<void> {
     if (!this.personal || !this.direct?.history || !person.chatId) return;
     const key = `rapport:${person.id}`;
     if (this.store.get(key) === undefined) {
       await this.learnRapport(person);
       return;
     }
-    if (this.store.get(`memday:${person.id}`) === this.today()) return;
+    // Once a day, unless asked by hand: then whatever is new is read first.
+    if (!fresh && this.store.get(`memday:${person.id}`) === this.today()) return;
     try {
       const since = this.store.get(`memcursor:${person.id}`) || "";
       const own = new Set(this.store.assistantTexts(person.id).map((t) => t.replace(/\s+/g, " ").trim()));
@@ -2036,7 +2063,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     const existing = this.store.checkin(person.id, date);
     if (!this.dueFor(person, date, round, force)) return false;
 
-    await this.refreshMemory(person);
+    await this.refreshMemory(person, force);
     await this.refreshAtsFacts(person);
     // The opening is written against a provisional record, which is then put back:
     // the ask itself is recorded only when the message really goes out.
@@ -2770,6 +2797,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
 
     // Read before asking: everything new in the group's chat, and (for a small group) each member's own chat with the sender.
     await this.refreshGroupMemory(group, true);
+    await this.catchUpGroupToday(group);
     if (this.personal && due.length <= 12) {
       for (let i = 0; i < due.length; i++) {
         let member = due[i]!;
@@ -2778,7 +2806,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
             const chat = await this.direct!.connect(member.email);
             if (!("notFound" in chat)) member = this.store.upsertPerson(member.email, { chatId: chat.conversationId });
           }
-          await this.refreshMemory(member);
+          await this.refreshMemory(member, force);
           due[i] = member;
         } catch (err) {
           this.log(`Could not read the chat with ${member.email}`, err);
