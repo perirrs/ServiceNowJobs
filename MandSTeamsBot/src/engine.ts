@@ -338,6 +338,16 @@ export function roleAskLines(people: { name: string; profile: string | null }[],
 }
 
 /**
+ * Behind for the time left: most of the time to its due date gone and little done. With no
+ * progress reported, nothing is known yet, so it waits until most of the time is gone.
+ */
+export function isBehind(item: { due: string | null; progress: number | null; firstSeen: string }, today: string): boolean {
+  if (!item.due || daysBetween(today, item.due) < 2) return false;
+  const gone = daysBetween(item.firstSeen, today) / Math.max(1, daysBetween(item.firstSeen, item.due));
+  return item.progress === null ? gone >= 0.6 : gone >= 0.4 && item.progress < gone * 100 - 25;
+}
+
+/**
  * What to ask about one piece of work today, from its due date and progress, or null when
  * nothing is due to be raised. Overdue and due today: every ask. Up to three days off: daily.
  * Up to a week off: every other day. Further off: once a week. Work that is behind for the
@@ -363,12 +373,7 @@ export function deadlineTouchpoint(
   if (since < 1) return null;
   if (days === 1) return touch("due tomorrow. On track, anything blocking?", 2);
 
-  // Behind: most of the time gone and little done.
-  const span = Math.max(1, daysBetween(item.firstSeen, item.due));
-  const gone = daysBetween(item.firstSeen, today) / span;
-  // With no progress reported, nothing is known yet: wait until most of the time is gone.
-  const behind = item.progress === null ? gone >= 0.6 : gone >= 0.4 && item.progress < gone * 100 - 25;
-  if (behind && since >= 2) {
+  if (isBehind(item, today) && since >= 2) {
     const where = item.progress === null ? "no progress reported yet" : `${item.progress}% done`;
     return touch(`due ${label}, ${where}. Can it be prioritised, or is there a new date?`, 2.5);
   }
@@ -3376,7 +3381,11 @@ So you know how it's used: your answers are summarised each day for the CTO and 
                     ? "🔴 Overdue"
                     : i.due === date
                       ? "🟡 Due today"
-                      : "🔵 In progress";
+                      : i.due && daysBetween(date, i.due) === 1
+                        ? "🟡 Due tomorrow"
+                        : isBehind(i, date)
+                          ? "🟠 Behind"
+                          : "🔵 In progress";
             const progress = i.status === "done" ? 100 : i.progress;
             const latest = i.lastUpdate.length > 90 ? `${i.lastUpdate.slice(0, 89).trimEnd()}…` : i.lastUpdate;
             return `<tr><td>${n === 0 ? name : ""}</td><td>${esc(i.title)}</td><td>${i.due ? day(i.due) : "-"}</td><td>${progress === null ? "-" : progressBar(progress)}</td><td>${status}</td><td>${esc(latest)}</td></tr>`;
