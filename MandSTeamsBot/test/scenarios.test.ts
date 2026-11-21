@@ -273,15 +273,23 @@ test("scenario 4c: a question about using the bot is answered from its help, not
   assert.match(asked.material, /add group/);
 });
 
-test("scenario 4d: UPDATE posts (figures, targets, standing rules) and the notes after them are not read as tasks", async () => {
+test("scenario 4d: an UPDATE post (figures, targets, standing rules) is not read as tasks; an instruction right after it still is", async () => {
   const w = await setUp();
+  const ravi = () => w.sujith.store.personByEmail(RAVI.email)!;
   w.sujith.brain.nextInstruction = [{ kind: "add", person: "everyone", itemId: null, title: "5 submissions a day", due: null }];
   w.teams.at("2026-11-16T11:00:00Z");
   w.teams.post("g-rec", SUJITH, "UPDATE\nRecruiters: 5 submissions a day from today.");
-  w.teams.post("g-rec", SUJITH, "Ravi Kumar\nAs a recruiter 7 submissions this month");
   await w.readGroups();
   assert.equal(w.sujith.brain.instructionReads.length, 0);
-  assert.equal(w.sujith.store.activeItems(w.sujith.store.personByEmail(RAVI.email)!.id).length, 0);
+  assert.equal(w.sujith.store.activeItems(ravi().id).length, 0);
+
+  // Five minutes later: kept with the UPDATE, and also read for instructions.
+  w.sujith.brain.nextInstruction = [{ kind: "add", person: "Ravi Kumar", itemId: null, title: "Call the Deloitte SPOC", due: "2026-11-16" }];
+  w.teams.at("2026-11-16T11:05:00Z");
+  w.teams.post("g-rec", SUJITH, "Ravi, call the Deloitte SPOC today");
+  await w.readGroups();
+  assert.match(w.sujith.store.get(`gupdates:${w.sujith.store.groups()[0]!.id}`) ?? "", /call the Deloitte SPOC/);
+  assert.ok(w.sujith.store.activeItems(ravi().id).some((i) => i.title === "Call the Deloitte SPOC"));
 });
 
 test("scenario 5: Mahanth's UPDATE and instructions in Sujith's group count there too", async () => {

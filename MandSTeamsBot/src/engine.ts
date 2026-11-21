@@ -97,6 +97,7 @@ const ADMIN_HELP = `**Daily Check-in: what you can type**
 - **tracker** Group Name: post (or refresh) the tracker table in that group: who is doing what, due dates and status, pinned at the top and kept up to date by me. **tracker Group Name off** stops it.
 - **add group** Group Name: follow a Teams group chat. I first read the group's whole chat history and each member's whole chat with you, then build and pin the tracker. Updates are asked for in the group, and follow-up questions stay there with the person tagged; only something that should not be said in front of the group goes to them one to one. **ask group** Name asks now, **remove group** Name stops.
 - **ask** name: ask them for an update right now. **ask all** asks everyone; **ask all groups** asks every group. Either way I read what was said first and ask follow-up questions from it.
+- **The other admin's groups**: they are listed on your board with one button, **Ask for an update**. It asks from their account, as their own ask would; schedules and everything else stay theirs. In words: **mahanth: ask group Group Name**.
 - **reread**: read every group chat and everyone's chat with you again from the start, and rebuild what I remember from it (long chats are read in parts, oldest first, the newest having the last word).
 - **post groups** your message: posted exactly as you write it in every group. **post everyone** your message: in every group, and to everyone followed one to one. Replies are read and followed up like any other ask. Also on the board, as the four buttons at the top.
 - **profile** name: their role, responsibilities and targets, so the questions fit their job
@@ -801,12 +802,16 @@ export class Engine {
     this.rememberGroupLine(groupId, displayName(author), text, postedAt);
     await this.noticeLeave(author, text);
     if (!this.isAdmin(author)) return;
-    // Any admin, in any followed group: work to add, move, pause, stop or finish.
-    if (text.trim().split(/\s+/).length >= 3) await this.applyInstruction(groupId, author, text);
     const last = this.groupUpdates(groupId).at(-1);
     const gap = last ? Date.parse(postedAt) - Date.parse(last.at) : NaN;
     const continues = !!last && last.by === displayName(author) && gap >= 0 && gap <= 15 * 60_000;
-    if (isUpdatePost(text) || continues) await this.adminGroupPost(groupId, authorEmail, text, postedAt);
+    // An UPDATE (figures, targets, standing rules) is kept as a standing instruction, not read as
+    // tasks. The notes straight after it belong to it, and may also give someone work.
+    const heading = isUpdatePost(text);
+    if (heading || continues) await this.adminGroupPost(groupId, authorEmail, text, postedAt);
+    if (heading) return;
+    // Any admin, in any followed group: work to add, move, pause, stop or finish.
+    if (text.trim().split(/\s+/).length >= 3) await this.applyInstruction(groupId, author, text);
   }
 
   /**
