@@ -10,10 +10,10 @@ Mergen's equivalent of the container is **one incident, INC0048213**, and its eq
 
 | # | Chapter | What the thread does | What Mergen is doing | Lifecycle |
 |---|---------|----------------------|----------------------|-----------|
-| 00 | Follow one ticket | A slow-turning knot of several strands | Hero. Introduces the incident | |
-| 01 | The knot | Turns red as the ticket crawls through nine reassignments | The customer's problem, shown and costed | |
-| 02 | The call | Shrinks and goes quiet. Rings go out from it | The customer contacts Mergen | Advise |
-| 03 | Listen | Calms to blue. Six voices are pinned to it | Discovery: shadowing, interviews, instance scan | Advise |
+| 00 | Opening statement | 130 ticket cards scattered, each tied to its source: email, portal, phone, chat, monitoring, walk-up | Hero: partner status, what Mergen does, four numbers, then the incident | |
+| 01 | The backlog | One ticket zigzags between nine queues, drawing its path as it goes. The crowd reddens with age | The customer's problem, shown and costed | |
+| 02 | The call | The crowd dims. Rings go out | The customer contacts Mergen | Advise |
+| 03 | Listen | The crowd sorts itself into six columns by where each ticket is stuck, with counts | Discovery: shadowing, interviews, instance scan | Advise |
 | 04 | Measure | Pulls straight into a 54-hour timeline. A scan names five gaps | Gap analysis and maturity assessment | Advise |
 | 05 | Propose | Redraws as a dashed five-stop route on a blueprint grid | Roadmap, business case, design rules, operating model | Advise |
 | 06 | Build | Solidifies stop by stop. Each stop gets its ServiceNow module | Sprint delivery, testing, cutover | Build |

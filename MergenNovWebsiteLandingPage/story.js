@@ -27,18 +27,18 @@
 
   const canvas = $('#stage');
   const ctx = canvas.getContext('2d');
-  let W = 0, H = 0, DPR = 1, mobile = false;
+  let W = 0, H = 0, VH = 0, DPR = 1, mobile = false;
   let tops = [], hs = [], storyEnd = 0, docH = 1;
 
   function measure() {
-    W = window.innerWidth; H = window.innerHeight; mobile = W < 820;
+    W = window.innerWidth; VH = window.innerHeight; mobile = W < 1000; H = mobile ? Math.round(VH * .42) : VH;
     DPR = Math.min(window.devicePixelRatio || 1, 2);
     canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR);
     tops = secs.map(s => s.getBoundingClientRect().top + window.scrollY);
     hs = secs.map(s => s.offsetHeight);
     const last = secs.length - 1;
     storyEnd = tops[last] + hs[last];
-    docH = Math.max(1, document.documentElement.scrollHeight - H);
+    docH = Math.max(1, document.documentElement.scrollHeight - VH);
     if (typeof measureKnot === 'function') measureKnot();
   }
 
@@ -48,29 +48,33 @@
   let rot = 0;
 
   const narrow = () => (W < 1200 ? .9 : 1);
-  const KNOT = r => (mobile ? { cx: .5, cy: .27, r: r * .92 } : { cx: .69, cy: .5, r: r * narrow() });
-  const LINE = () => (mobile ? { x0: .08, x1: .92, y: .27 } : { x0: .46, x1: .95, y: .5 });
-  const ROUTE = () => (mobile ? { h: 1, cy: .27, amp: .07 } : { h: 0, cx: .72, amp: .09 });
-  const LOOP = () => (mobile ? { cx: .5, cy: .27, a: .38 } : { cx: .7, cy: .5, a: .19 });
+  const KNOT = (r, mess = 0) => (mobile ? { cx: .5, cy: .27, r: r * .92, mess } : { cx: .69, cy: .5, r: r * narrow(), mess });
+  const LINE = () => (mobile ? { x0: .08, x1: .92, y: .55 } : { x0: .46, x1: .95, y: .5 });
+  const ROUTE = () => (mobile ? { h: 1, cy: .55, amp: .2 } : { h: 0, cx: .72, amp: .09 });
+  const LOOP = () => (mobile ? { cx: .5, cy: .56, a: .36 } : { cx: .7, cy: .5, a: .19 });
 
   function shKnot(out, o, sy, ph = 0, sc = 1) {
     const cx = o.cx * W, cy = o.cy * H, R = o.r * Math.min(W, H) * sc;
-    const ry = rot + sy * .0007 + ph * .9, rx = .42 + ph * .3;
-    const cY = Math.cos(ry), sY = Math.sin(ry), cX = Math.cos(rx), sX = Math.sin(rx);
+    // A (3,4) torus knot: a clean woven form. `mess` bends it out of true as the ticket struggles.
+    const mess = o.mess || 0;
+    const rz = rot + sy * .0007 + ph * .9, rx = .95 + ph * .2, wob = Math.sin(rz * .5) * .22;
+    const cZ = Math.cos(rz), sZ = Math.sin(rz), cX = Math.cos(rx), sX = Math.sin(rx), cW = Math.cos(wob), sW = Math.sin(wob);
     const stem = (H * .8) / R;
     for (let i = 0; i < N; i++) {
       const s = i / (N - 1), a = s * Math.PI * 2 + ph;
-      const x = .66 * Math.sin(2 * a) + .36 * Math.sin(5 * a + .7) + .12 * Math.sin(11 * a + 2.1);
-      const y = .62 * Math.cos(3 * a + .4) + .34 * Math.cos(7 * a + 1.9) + .10 * Math.cos(13 * a);
-      const z = .60 * Math.sin(4 * a + 1.1) + .32 * Math.sin(9 * a + .2);
-      const x1 = x * cY + z * sY, z1 = -x * sY + z * cY;
-      const y1 = y * cX - z1 * sX, z2 = y * sX + z1 * cX;
+      const rad = .64 + .33 * Math.cos(4 * a);
+      const x = rad * Math.cos(3 * a) + mess * (.2 * Math.sin(5 * a + .7) + .1 * Math.sin(11 * a + 2.1));
+      const y = rad * Math.sin(3 * a) + mess * (.2 * Math.cos(7 * a + 1.9) + .1 * Math.cos(13 * a));
+      const z = .33 * Math.sin(4 * a) + mess * .28 * Math.sin(9 * a + .2);
+      const xa = x * cZ - y * sZ, ya = x * sZ + y * cZ;          // spin in its own plane
+      const y1 = ya * cX - z * sX, zb = ya * sX + z * cX;        // tilt toward the viewer
+      const x1 = xa * cW + zb * sW, z2 = -xa * sW + zb * cW;     // slow wobble
       const k = 1 / (1 - z2 * .2);
       // loose ends: the thread arrives from above and leaves below
       const w = smooth(0, .1, s) * (1 - smooth(.9, 1, s));
       const px = x1 * k * w, py = y1 * k * w + lerp(-stem, stem, s) * (1 - w);
       out[i * 3] = cx + px * R; out[i * 3 + 1] = cy + py * R;
-      out[i * 3 + 2] = lerp(.5, clamp((z2 + 1.1) / 2.2), w);
+      out[i * 3 + 2] = lerp(.5, clamp((z2 + .75) / 1.5), w);
     }
   }
   function shLine(out, o) {
@@ -94,20 +98,111 @@
       out[i * 3] = o.cx * W + (a * cs) / d; out[i * 3 + 1] = o.cy * H + (a * sn * cs) / d * 1.25; out[i * 3 + 2] = .85;
     }
   }
-  const SHAPES = { knot: shKnot, line: shLine, route: shRoute, loop: shLoop };
+  // The ticket's as-is path: a zigzag between the nine queues it gets bounced through
+  const REG = () => (mobile ? { x0: .08, x1: .92, y0: .26, y1: .84 } : { x0: .47, x1: .94, y0: .27, y1: .8 });
+  const ZIG = () => (mobile ? { cx: .5, cy: .55, r: .3 } : { cx: .705, cy: .535, r: .2 });
+  const ZN = [[.3, -.75], [.05, .1], [.55, 0], [.2, .5], [.8, .3], [.35, .85], [.95, .7], [.5, .45], [.12, .8], [.75, 1], [.75, 1.7]];
+  let ZS = null;
+  function shZig(out) {
+    if (!ZS) ZS = [0, ...HANDOFFS, 1];
+    const R = REG();
+    let j = 0;
+    for (let i = 0; i < N; i++) {
+      const s = i / (N - 1);
+      while (j < ZS.length - 2 && s > ZS[j + 1]) j++;
+      const t = clamp((s - ZS[j]) / (ZS[j + 1] - ZS[j]));
+      out[i * 3] = lerp(R.x0, R.x1, lerp(ZN[j][0], ZN[j + 1][0], t)) * W;
+      out[i * 3 + 1] = lerp(R.y0, R.y1, lerp(ZN[j][1], ZN[j + 1][1], t)) * H;
+      out[i * 3 + 2] = .8;
+    }
+  }
+  const SHAPES = { knot: shKnot, zig: shZig, line: shLine, route: shRoute, loop: shLoop };
+
+  /* ───────── The crowd: every other ticket in the estate ───────── */
+  const M = 130;
+  const SRC = [
+    ['Email', [72, 209, 204], .3], ['Portal', [47, 127, 232], .22], ['Phone', [255, 181, 71], .16],
+    ['Chat', [167, 139, 250], .14], ['Monitoring', [76, 218, 132], .12], ['Walk-up', [244, 114, 182], .06],
+  ];
+  const TEAMW = [.27, .2, .18, .15, .12, .08];
+  let seed = 48213;
+  const rnd = () => { seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const pick = w => { let r = rnd(), i = 0; while (i < w.length - 1 && r > w[i]) r -= w[i++]; return i; };
+  const teamCount = [0, 0, 0, 0, 0, 0];
+  const TK = Array.from({ length: M }, () => {
+    const team = pick(TEAMW);
+    return { rx: rnd(), ry: rnd(), ph: rnd() * 6.28, f: rnd(), age: rnd(), spd: rnd(), src: pick(SRC.map(s => s[2])), team, rank: teamCount[team]++ };
+  });
+  const hubX = c => (mobile ? lerp(.1, .9, c / 5) : lerp(.61, .95, c / 5));
+  const HUB_Y = .15;
+  const colX = c => (mobile ? lerp(.12, .88, c / 5) : lerp(.5, .93, c / 5)) * W;
+  const cp = [0, 0], cq = [0, 0];
+  function crowdPos(lay, tk, t, out) {
+    if (lay === 'cols') {
+      const cell = mobile ? 15 : 28, per = Math.max(2, Math.min(3, Math.floor(((colX(1) - colX(0)) - 12) / cell)));
+      const base = (mobile ? .9 : .78) * H;
+      out[0] = colX(tk.team) + ((tk.rank % per) - (per - 1) / 2) * cell;
+      out[1] = base - Math.floor(tk.rank / per) * (mobile ? 12 : 20);
+    } else if (lay === 'flow') {
+      const p = pt((tk.f + t * (.03 + tk.spd * .04)) % 1);
+      out[0] = p[0]; out[1] = p[1];
+    } else {
+      const R = REG();
+      if (lay === 'scatterH' && !mobile) { R.x0 = .6; R.y0 = .24; R.y1 = .6; }   // keep clear of the headline and the record card
+      out[0] = lerp(R.x0 - .04, R.x1 + .04, tk.rx) * W + (REDUCE ? 0 : Math.sin(t * .4 + tk.ph) * 9);
+      out[1] = lerp(R.y0 - .04, R.y1 + .07, tk.ry) * H + (REDUCE ? 0 : Math.cos(t * .33 + tk.ph) * 7);
+    }
+  }
+  function crowdState(k, p) {
+    switch (ids[k]) {
+      case 'hero': return { la: 'scatterH', lb: 'scatterH', lt: 0, a: .95, red: 0, sc: 1, link: .6 };
+      case 'knot': { const q = knotQ(p); return { la: 'scatter', lb: 'scatter', lt: 0, a: .95, red: q, sc: 1, link: lerp(.6, .1, q) }; }
+      case 'call': { const t = smooth(0, .6, p); return { la: 'scatter', lb: 'scatter', lt: 0, a: lerp(.95, .45, t), red: lerp(1, .4, t), sc: 1, link: 0 }; }
+      case 'listen': { const t = smooth(.04, .4, p); return { la: 'scatter', lb: 'cols', lt: t, a: lerp(.45, .95, t), red: lerp(.4, .15, t), sc: 1, link: 0 }; }
+      case 'measure': return { la: 'cols', lb: 'cols', lt: 0, a: 0, red: .15, sc: 1, link: 0 };
+      case 'golive': return { la: 'flow', lb: 'flow', lt: 0, a: smooth(.72, 1, p) * .9, red: 0, sc: .2, link: 0 };
+      case 'stay': return { la: 'flow', lb: 'flow', lt: 0, a: .9, red: 0, sc: .2, link: 0 };
+    }
+    return { la: 'flow', lb: 'flow', lt: 0, a: 0, red: 0, sc: .2, link: 0 };
+  }
+  function drawCrowd(k, p, m, t) {
+    const A = crowdState(k, p), B = m > 0 ? crowdState(k + 1, 0) : A, e = m > 0 ? ease(m) : 0;
+    const a = lerp(A.a, B.a, e); if (a < .01) return;
+    const red = lerp(A.red, B.red, e), sc = lerp(A.sc, B.sc, e), link = lerp(A.link, B.link, e) * (mobile ? 0 : 1);
+    const ms = mobile ? .62 : 1;
+    for (const tk of TK) {
+      crowdPos(A.la, tk, t, cp); if (A.lt > 0) { crowdPos(A.lb, tk, t, cq); cp[0] = lerp(cp[0], cq[0], A.lt); cp[1] = lerp(cp[1], cq[1], A.lt); }
+      if (e > 0) { crowdPos(B.la, tk, t, cq); cp[0] = lerp(cp[0], cq[0], e); cp[1] = lerp(cp[1], cq[1], e); }
+      const x = cp[0], y = cp[1];
+      const col = mix(SRC[tk.src][1], C.red, red * (.35 + .65 * tk.age));
+      if (link > .01) {
+        ctx.beginPath(); ctx.moveTo(hubX(tk.src) * W, HUB_Y * H + 12); ctx.lineTo(x, y);
+        ctx.strokeStyle = rgba(SRC[tk.src][1], link * .16 * a); ctx.lineWidth = 1; ctx.stroke();
+      }
+      if (sc < .5) {
+        ctx.beginPath(); ctx.arc(x, y, 2.6, 0, 7); ctx.fillStyle = rgba(C.green, a * (.4 + .6 * tk.age)); ctx.fill();
+        continue;
+      }
+      const w = 24 * ms * sc, h = 15 * ms * sc, x0 = x - w / 2, y0 = y - h / 2;
+      ctx.fillStyle = `rgba(7,28,41,${a})`; ctx.fillRect(x0, y0, w, h);
+      ctx.strokeStyle = rgba(col, .55 * a); ctx.lineWidth = 1; ctx.strokeRect(x0 + .5, y0 + .5, w - 1, h - 1);
+      ctx.fillStyle = rgba(col, a); ctx.fillRect(x0, y0, 3 * ms, h);
+      ctx.fillStyle = rgba(col, .5 * a); ctx.fillRect(x0 + 6 * ms, y0 + 4 * ms, w * .5, 1.5); ctx.fillRect(x0 + 6 * ms, y0 + 9 * ms, w * .32, 1.5);
+    }
+  }
 
   /* ───────── What the stage looks like at chapter k, progress p ───────── */
-  const NUM = ['dash', 'built', 'grid', 'rings', 'spin', 'tick', 'tickU', 'trail', 'scan', 'ghost', 'fx', 'fy'];
-  const base = () => ({ dash: 0, built: 1, grid: 0, rings: 0, spin: .25, tick: 0, tickU: .5, trail: 0, scan: 0, ghost: 0, fx: .7, fy: .5 });
+  const NUM = ['dash', 'built', 'grid', 'rings', 'spin', 'tick', 'tickU', 'trail', 'scan', 'ghost', 'weave', 'ta', 'drawn', 'fx', 'fy'];
+  const base = () => ({ weave: 0, ta: 1, drawn: 1, dash: 0, built: 1, grid: 0, rings: 0, spin: .25, tick: 0, tickU: .5, trail: 0, scan: 0, ghost: 0, fx: .7, fy: .5 });
 
   // The knot chapter's clock follows the timestamps printed in the copy
   const knotSteps = $$('#knot .step[data-min]');
   let anch = [[0, 0], [1, 3248]];
   function measureKnot() {
-    const k = IX.knot, span = Math.max(1, hs[k] - H);
+    const k = IX.knot, span = Math.max(1, hs[k] - VH);
     const a = knotSteps.map(el => {
       const r = el.getBoundingClientRect();
-      return [clamp((r.top + window.scrollY + r.height / 2 - H * .5 - tops[k]) / span), +el.dataset.min];
+      return [clamp((r.top + window.scrollY + r.height / 2 - (mobile ? (H + VH) / 2 : VH * .5) - tops[k]) / span), +el.dataset.min];
     });
     if (a.length >= 2) anch = a;
   }
@@ -122,21 +217,21 @@
 
   function state(k, p) {
     const s = base();
-    if (mobile) { s.fx = .5; s.fy = .27; }
+    if (mobile) { s.fx = .5; s.fy = .55; }
     switch (ids[k]) {
       case 'hero':
-        return Object.assign(s, { shape: 'knot', o: KNOT(.33), cA: C.teal, cB: C.blue, spin: 1, ghost: .8, tick: 1, tickU: .12 });
+        return Object.assign(s, { shape: 'zig', o: ZIG(), cA: C.red, cB: C.red, ta: 0, drawn: .12, tick: 1, tickU: .12 });
       case 'knot': {
-        const q = knotQ(p), t = smooth(0, .85, q);
-        return Object.assign(s, { shape: 'knot', o: KNOT(lerp(.33, .29, smooth(0, .3, q))), cA: mix(C.teal, C.amber, t), cB: mix(C.blue, C.red, t), spin: lerp(1, .45, q), ghost: lerp(.8, 1, q), tick: 1, tickU: lerp(.12, .88, q) });
+        const q = knotQ(p), u = lerp(.12, .88, q);
+        return Object.assign(s, { shape: 'zig', o: ZIG(), cA: C.amber, cB: C.red, ta: smooth(0, .05, q), drawn: u, tick: 1, tickU: u });
       }
       case 'call': {
         const t = smooth(0, .6, p);
-        return Object.assign(s, { shape: 'knot', o: KNOT(lerp(.29, .17, t)), cA: mix(C.amber, C.slate, t), cB: mix(C.red, C.slate, t), spin: .35, ghost: lerp(1, .5, t), rings: smooth(.1, .45, p), tick: lerp(1, .35, t), tickU: .88 });
+        return Object.assign(s, { shape: 'zig', o: ZIG(), cA: mix(C.amber, C.slate, t), cB: mix(C.red, C.slate, t), ta: lerp(1, .6, t), drawn: .88, rings: smooth(.1, .45, p), tick: lerp(1, .6, t), tickU: .88 });
       }
       case 'listen': {
-        const t = smooth(.1, .9, p);
-        return Object.assign(s, { shape: 'knot', o: KNOT(lerp(.17, .27, smooth(0, .3, p))), cA: mix(C.slate, C.teal, t), cB: mix(C.slate, C.blue, t), spin: .22, ghost: lerp(.5, 0, t), tick: .35, tickU: .88 });
+        const t = smooth(.04, .4, p);
+        return Object.assign(s, { shape: 'zig', o: ZIG(), cA: C.slate, cB: C.slate, ta: lerp(.6, 0, t), drawn: .88, tick: lerp(.6, 0, t), tickU: .88 });
       }
       case 'measure': {
         const sc = lerp(.0, 1, smooth(.06, .7, p));
@@ -171,11 +266,14 @@
   const GROUPS = ['Email inbox', 'Phone queue', 'Legacy portal', 'Service desk', 'App team', 'Infrastructure', 'Hosting vendor', 'App team, again', 'Platform team'];
 
   const PINS = {
-    knot: GROUPS.map((t, i) => ({ kind: 'ring', s: HANDOFFS[i], ang: -135 + i * (270 / 8), t, on: () => true, hot: (p, S) => S.tickU >= HANDOFFS[i] })),
+    hero: SRC.map(([t, c], i) => ({ kind: 'fix', cls: 'pin--hub', keep: 1, pos: () => [hubX(i) * W, HUB_Y * H], t: `<i style="background:rgb(${c})"></i>${t}`, on: () => true })),
+    knot: [
+      ...SRC.map(([t, c], i) => ({ kind: 'fix', cls: 'pin--hub', keep: 1, pos: () => [hubX(i) * W, HUB_Y * H], t: `<i style="background:rgb(${c})"></i>${t}`, on: () => true })),
+      ...GROUPS.map((t, i) => ({ kind: 'on', cls: 'pin--ring', s: HANDOFFS[i], side: [0, 1, 0, 0, 1, 1, 0, 1, 1][i] ? 'b' : 'a', far: 16, t, on: () => true, hot: (p, S) => S.tickU >= HANDOFFS[i] })),
+    ],
     listen: [
-      ['Service desk', '3 shifts shadowed'], ['App owners', 'ownership traced'], ['Infrastructure', 'server inventory'],
-      ['Hosting vendor', 'contract and SLA'], ['Security', 'access, certificates'], ['Instance scan', 'config vs. custom'],
-    ].map(([t, d], i) => ({ kind: 'ring', cls: 'pin--calm', s: .16 + i * .135, ang: -120 + i * 48, t, d, on: p => p >= .1 + i * .12 })),
+      'Service desk', 'App owners', 'Infrastructure', 'Hosting vendor', 'Security', 'No owner',
+    ].map((t, i) => ({ kind: 'fix', cls: 'pin--ring pin--calm', pos: () => [colX(i), .78 * H + 34], t, d: `${teamCount[i]} stuck here`, on: p => p >= .3 + i * .04 })),
     measure: [
       { kind: 'on', cls: 'pin--cap', s: 0, side: 'b', t: 'Mon 09:02', d: 'Opened', on: () => true },
       { kind: 'on', cls: 'pin--cap', s: 1, side: 'b', t: 'Wed 15:10', d: 'Resolved', on: (p, S) => S.scan >= .98 },
@@ -228,12 +326,17 @@
     const R = A.shape === 'knot' ? A.o.r * Math.min(W, H) : 0;
     const cx = A.o.cx * W, cy = A.o.cy * H;
     for (const pin of set) {
-      const on = live && pin.on(p, S);
+      const on = (live || pin.keep) && pin.on(p, S);
       const hot = on && !!(pin.hot && pin.hot(p, S));
       if (on !== pin.shown) { pin.el.classList.toggle('is-on', on); pin.shown = on; }
       if (hot !== pin.isHot) { pin.el.classList.toggle('is-hot', hot); pin.isHot = hot; }
       if (!on) continue;
       let lx, ly, tf;
+      if (pin.kind === 'fix') {
+        const q = pin.pos();
+        pin.el.style.transform = `translate3d(${q[0].toFixed(1)}px,${q[1].toFixed(1)}px,0) translate(-50%,-50%)`;
+        continue;
+      }
       if (pin.kind === 'lobe') {
         const a = A.o.a * W;
         pin.el.style.transform = `translate3d(${(cx + pin.dx * a).toFixed(1)}px,${(cy + pin.dy * a).toFixed(1)}px,0) translate(-50%,-50%)`;
@@ -288,7 +391,7 @@
     }
   }
   function drawRings(S, A, t) {
-    if (S.rings < .01 || A.shape !== 'knot') return;
+    if (S.rings < .01 || A.shape !== 'zig') return;
     const cx = A.o.cx * W, cy = A.o.cy * H, R = A.o.r * Math.min(W, H);
     for (let j = 0; j < 3; j++) {
       const f = REDUCE ? (j + 1) / 3.5 : ((t * .22 + j / 3) % 1);
@@ -297,6 +400,7 @@
     }
   }
   // Two fainter strands make the knot read as a tangle of several threads. They fade as it is understood.
+  const SEG = Math.ceil((N - 1) / 2), order = new Uint16Array(SEG);
   const G = [new Float32Array(N * 3), new Float32Array(N * 3)];
   function drawGhosts(S, A, sy) {
     if (S.ghost < .02 || A.shape !== 'knot') return;
@@ -314,13 +418,26 @@
     const mid = mix(S.cA, S.cB, .5);
     ctx.beginPath(); ctx.moveTo(P[0], P[1]);
     for (let i = 1; i < N; i++) ctx.lineTo(P[i * 3], P[i * 3 + 1]);
-    ctx.strokeStyle = rgba(mid, .05); ctx.lineWidth = 26; ctx.stroke();
-    ctx.strokeStyle = rgba(mid, .1); ctx.lineWidth = 9; ctx.stroke();
+    const ua = S.drawn > .99 ? S.ta : 0;
+    ctx.strokeStyle = rgba(mid, .05 * ua); ctx.lineWidth = 26; ctx.stroke();
+    ctx.strokeStyle = rgba(mid, .1 * ua); ctx.lineWidth = 9; ctx.stroke();
 
     const scanOn = ids[k] === 'measure' && m === 0;
-    for (let i = 0; i < N - 1; i += 2) {
+    // Paint back to front, each piece over a dark sleeve, so the strand visibly passes over and under itself
+    const wv = S.weave;
+    for (let n = 0; n < SEG; n++) order[n] = n;
+    if (wv > .01) order.sort((p, q) => P[p * 6 + 2] - P[q * 6 + 2]);
+    for (let n = 0; n < SEG; n++) {
+      const i = order[n] * 2;
       const j = Math.min(N - 1, i + 2), s = i / (N - 1), d = P[i * 3 + 2];
-      let a = .22 + .78 * d, w = 1 + 2 * d, col = mix(S.cA, S.cB, s);
+      if (s > S.drawn || S.ta < .01) continue;
+      let a = lerp(.22 + .78 * d, .55 + .45 * d, wv) * S.ta, w = 1 + 2 * d + wv * (1.2 + 2.4 * d), col = mix(S.cA, S.cB, s);
+      if (wv > .01) {
+        col = mix([4, 18, 27], col, lerp(1, .45 + .55 * d, wv)); a = lerp(a, 1, wv);
+        ctx.lineCap = 'butt'; ctx.strokeStyle = `rgba(4,18,27,${wv})`; ctx.lineWidth = w + 7;
+        ctx.beginPath(); ctx.moveTo(P[i * 3], P[i * 3 + 1]); ctx.lineTo(P[i * 3 + 3], P[i * 3 + 4]); ctx.lineTo(P[j * 3], P[j * 3 + 1]); ctx.stroke();
+        ctx.lineCap = 'round';
+      }
       if (S.dash > .01) {
         if (s > S.built) { a *= ((i >> 1) % 4) >= 2 ? 1 - S.dash : lerp(1, .6, S.dash); w = lerp(w, 1.3, S.dash); }
         else w += .9 * S.dash;
@@ -389,7 +506,7 @@
   function drawTicket(S, k, m, u) {
     const a = S.tick;
     const id = ids[k];
-    const wantChip = !mobile && a > .7 && ((id === 'knot') || (id === 'golive' && m < .2) || (id === 'hero' && m > .5));
+    const wantChip = !mobile && a > .7 && ((id === 'knot') || (id === 'golive' && m < .2) || id === 'hero');
     if (wantChip !== chipOn) { chip.classList.toggle('is-on', wantChip); chipOn = wantChip; }
     if (a < .02) return;
     const [x, y] = pt(u);
@@ -419,7 +536,7 @@
   const TOTAL_MIN = 54 * 60 + 8, TOTAL_LOST = 7820;
   let hudMode = '';
   function updateHud(k, p, S, sy) {
-    const on = k >= IX.knot && sy < storyEnd - H * .9;
+    const on = k >= IX.knot && sy < storyEnd - VH * .9;
     if (on !== hud.classList.contains('is-on')) hud.classList.toggle('is-on', on);
     if (!on) return;
     let mode, tag, st, group, min, hand, lost;
@@ -469,13 +586,13 @@
     if (Math.abs(target - sy) < .1) sy = target;
 
     progress.style.transform = `scaleX(${clamp(sy / docH).toFixed(4)})`;
-    const bs = sy < H * .5 ? 'at-hero' : sy > storyEnd - H * .6 ? 'past-story' : '';
+    const bs = sy < VH * .5 ? 'at-hero' : sy > storyEnd - VH * .6 ? 'past-story' : '';
     if (bs !== bodyState) { document.body.classList.remove('at-hero', 'past-story'); if (bs) document.body.classList.add(bs); bodyState = bs; }
 
     let k = 0;
     for (let i = 0; i < secs.length; i++) if (sy >= tops[i]) k = i;
-    const p = clamp((sy - tops[k]) / Math.max(1, hs[k] - H));
-    const m = k < secs.length - 1 ? clamp((sy - (tops[k] + hs[k] - H)) / H) : 0;
+    const p = clamp((sy - tops[k]) / Math.max(1, hs[k] - VH));
+    const m = k < secs.length - 1 ? clamp((sy - (tops[k] + hs[k] - VH)) / VH) : 0;
 
     if (k !== railK) {
       if (railItems[railK]) railItems[railK].classList.remove('is-active');
@@ -505,8 +622,16 @@
     drawGlow(S);
     drawGrid(S);
     drawRings(S, A, now / 1000);
-    drawGhosts(S, A, sy);
+    drawCrowd(k, p, m, now / 1000);
     drawThread(S, k, m, u);
+    if (ids[k] === 'knot' || ids[k] === 'call') {            // the nine queues
+      const fa = S.ta * (ids[k] === 'call' ? 1 - m : 1);
+      HANDOFFS.forEach(h => {
+        const q = pt(h), hit = u >= h;
+        ctx.beginPath(); ctx.arc(q[0], q[1], 5, 0, 7); ctx.fillStyle = `rgba(4,18,27,${fa})`; ctx.fill();
+        ctx.strokeStyle = hit ? rgba(S.cB, fa) : `rgba(255,255,255,${.35 * fa})`; ctx.lineWidth = 1.5; ctx.stroke();
+      });
+    }
     drawPins(k, p, m, A, S);
     drawStations(k, p, m, S, u);
     drawMeasure(k, p, m, S);
