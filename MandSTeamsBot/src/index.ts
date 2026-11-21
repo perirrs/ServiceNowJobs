@@ -10,7 +10,7 @@ import type { DirectChannel, Identity } from "./engine.js";
 import { GraphChat, htmlToText, textToHtml } from "./graph.js";
 import { Base44TalentFlow } from "./ats.js";
 import { Base44 } from "./base44.js";
-import { extraSenders, followedElsewhereFor, routeAdminMessage, senderDataDir } from "./senders.js";
+import { extraSenders, followedElsewhereFor, othersGroupsFor, routeAdminMessage, senderDataDir, senderKey } from "./senders.js";
 import type { SenderKey } from "./senders.js";
 
 const config = loadConfig();
@@ -372,9 +372,15 @@ for (const email of extraSenders(process.env.EXTRA_SENDERS ?? "", main.email)) {
   }
   senders.push(extra);
 }
-const keys: SenderKey[] = senders.map((s) => ({ email: s.email, key: s.email.split(/[@.]/)[0]!.toLowerCase() }));
+const keys: SenderKey[] = senders.map((s) => ({ email: s.email, key: senderKey(s.email) }));
 // One sender per group and per person: each assistant checks the others before adding anyone.
-if (senders.length > 1) for (const s of senders) s.engine.followedElsewhere = followedElsewhereFor(s, senders);
+if (senders.length > 1) {
+  for (const s of senders) {
+    s.engine.followedElsewhere = followedElsewhereFor(s, senders);
+    // Each board lists the other assistants' groups, with a button to ask them for an update.
+    s.engine.otherSenders = othersGroupsFor(s, senders);
+  }
+}
 const senderFor = (email: string) => senders.find((s) => s.email === email) ?? main;
 
 /** Build an Identity from an inbound activity. Only one-to-one chats count. */

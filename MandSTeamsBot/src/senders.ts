@@ -49,13 +49,30 @@ export function routeAdminMessage(
   return { sender: (own ?? senders[0]!).email, text };
 }
 
+/** The word typed in front of a message to reach a sender's assistant: the first part of their email. */
+export function senderKey(email: string): string {
+  return email.trim().toLowerCase().split(/[@.]/)[0]!;
+}
+
 /** What the guard needs from each sender: their name, and what their assistant follows. */
 export interface SenderFollows {
   name: string;
+  email?: string;
   store: {
-    groups(): { chatId: string }[];
+    groups(): { chatId: string; name?: string }[];
     personByEmail(email: string): { nominated: boolean } | undefined;
   };
+}
+
+/**
+ * For one sender: the groups each other sender follows, so either admin can ask the other's
+ * groups for an update from their own board (through "name: ask group …").
+ */
+export function othersGroupsFor(self: SenderFollows, all: SenderFollows[]): () => { name: string; key: string; groups: string[] }[] {
+  return () =>
+    all
+      .filter((o) => o !== self)
+      .map((o) => ({ name: o.name, key: senderKey(o.email ?? ""), groups: o.store.groups().map((g) => g.name ?? g.chatId) }));
 }
 
 /**

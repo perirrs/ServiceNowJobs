@@ -141,6 +141,9 @@ export function cardToCommand(value: unknown): string {
       return "ask all";
     case "autoGroups":
       return "ask all groups";
+    case "askOther":
+      // A group another admin's assistant follows: the request goes to that assistant.
+      return `${str("key")}: ask group ${str("who")}`;
     case "postGroups":
       return `post groups ${str("manualGroups")}`.trim();
     case "postEveryone":
@@ -1311,6 +1314,8 @@ export class Engine {
    * (by email), so the same people are never asked by two senders. Undefined when nobody else does.
    */
   followedElsewhere?: { group(chatId: string): string | undefined; person(email: string): string | undefined };
+  /** The groups other senders' assistants follow; this board offers to ask them for an update. */
+  otherSenders?: () => { name: string; key: string; groups: string[] }[];
 
   /**
    * What TalentFlow shows for this person: today's figures (fetched at most
@@ -3825,6 +3830,23 @@ So you know how it's used: your answers are summarised each day for the CTO and 
                 submit("Remove group", { cmd: "removeGroup", who: g.name }),
               ],
             },
+          ],
+        });
+      }
+    }
+
+    // Groups another admin's assistant follows: only an ask for an update, nothing to change.
+    for (const other of this.otherSenders?.() ?? []) {
+      if (!other.groups.length) continue;
+      body.push({ type: "TextBlock", text: `Groups followed by ${other.name} (${other.groups.length})`, weight: "Bolder", spacing: "Large", separator: true });
+      for (const name of other.groups) {
+        body.push({
+          type: "Container",
+          spacing: "Small",
+          items: [
+            { type: "TextBlock", text: name, weight: "Bolder", wrap: true },
+            { type: "TextBlock", text: `${other.name} manages it; you can ask it for an update.`, wrap: true, spacing: "None", isSubtle: true },
+            { type: "ActionSet", spacing: "Small", actions: [submit("Ask for an update", { cmd: "askOther", key: other.key, who: name })] },
           ],
         });
       }
