@@ -8,6 +8,7 @@
   const pad = n => String(n).padStart(2, '0');
   const REDUCE = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const WIDE = innerWidth >= 1000;
+  const go = y => (window.__go ? window.__go(y) : scrollTo({ top: y, behavior: 'smooth' }));
   const jobs = [];                                   // run once per scrolled frame
   document.documentElement.classList.add('fx');
 
@@ -37,8 +38,8 @@
         track.style.transform = `translate3d(${(-pos * stepW()).toFixed(1)}px,0,0)`;
         show(pos);
       });
-      const go = d => scrollTo({ top: scrollY + hs.getBoundingClientRect().top - innerHeight * .2 + run() * clamp((cur + d) / (n - 1)) + 2, behavior: 'smooth' });
-      prev.onclick = () => go(-1); next.onclick = () => go(1);
+      const step = d => go(scrollY + hs.getBoundingClientRect().top - innerHeight * .2 + run() * clamp((cur + d) / (n - 1)) + 2);
+      prev.onclick = () => step(-1); next.onclick = () => step(1);
     } else {
       view.addEventListener('scroll', () => show(clamp(view.scrollLeft / stepW(), 0, n - 1)), { passive: true });
       prev.onclick = () => view.scrollBy({ left: -stepW(), behavior: 'smooth' });
@@ -63,7 +64,7 @@
       const pick = () => {
         if (!WIDE) return set(i);
         const run = acc.offsetHeight - pin.offsetHeight;
-        scrollTo({ top: scrollY + acc.getBoundingClientRect().top - innerHeight * .18 + run * (i + .5) / n, behavior: 'smooth' });
+        go(scrollY + acc.getBoundingClientRect().top - innerHeight * .18 + run * (i + .5) / n);
       };
       head.addEventListener('click', pick);
       head.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); } });

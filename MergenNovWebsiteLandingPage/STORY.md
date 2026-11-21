@@ -40,10 +40,18 @@ After the story: proof (delivery numbers, one case study, four principles), indu
 - **Mergen figures** (500+ programmes, 70+ assessments, 120+ modules, 75+ custom applications, and the wealth-manager case study) are taken from the current site at thedemoproject.com/mergen_react_infinity.
 - **Third-party benchmarks** are attributed on the page: New Relic's 2025 Observability Forecast ($2M an hour median, up to $76M a year), ServiceNow's own "Now on Now" service desk story (75 minutes to under 10), and ServiceNow's Wellstar customer story (25 minutes to 9).
 
+## Two pages
+
+- `index.html` is the Mergen home page. Its story is one field of about a thousand points of light on a fixed canvas (`home.js`). Each scene has a shape: the Mergen gem, a globe for Now Intelligence, six clusters for the industries, a rising path for delivery, four rings, the infinity loop for "Every Capability. One Trusted Partner.", then one emblem per capability (ring, growth curve, tiles, network, server stack, cloud, shield, bars, target). Over the last screen of a scene the points swirl out of one form and settle into the next. It covers every section of thedemoproject.com/mergen_react_infinity and links to the ServiceNow page from the nav, the hero, the ServiceNow capability scene, the closing scene and the footer.
+- `servicenow.html` is the ServiceNow page described above (the ticket story). It links back to the home page from the nav and footer.
+- `index.html` is generated content: the nine capability scenes share one template.
+
 ## Files
 
 - `index.html`: all copy and structure
 - `styles.css`: layout, type, the light closing sections
 - `story.js`: the stage. Chapter states are in `state()`, the pinned labels in `PINS`, the savings maths in `calc()`
 - `story-flow.js`: the same stage for phones, one graphic per chapter
+- `gloss.css`: the glossy layer. Mergen's navy, teal and green as gradients, glass cards, sheen, the 3D gem logo, and one colour wash per chapter
+- `motion.js`: smooth scroll (Lenis, loaded from jsDelivr), word-rise headlines, card tilt and pointer light, the type band
 - `effects.js`: the per-section motion (slider, accordion, card stack, word scrub, carousels, picker, marquee)

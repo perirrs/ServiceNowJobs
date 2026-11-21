@@ -3,717 +3,400 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Mergen | ServiceNow: One Platform. Complete Enterprise Transformation.</title>
-<meta name="description" content="Follow one incident through a tangled IT estate, then through the route Mergen rebuilds on ServiceNow: listen, measure, propose, build, go live, stay, and count the return.">
-<meta name="theme-color" content="#04121b">
+<title>Mergen | ServiceNow Premier Partner</title>
+<meta name="description" content="Unlock real value from your ServiceNow platform. Mergen: ServiceNow Premier Partner for advisory, implementation and managed services, with Salesforce, Microsoft, AI, cloud, security and data capabilities.">
+<meta name="theme-color" content="#021d2b">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=11">
+<link rel="stylesheet" href="styles.css?v=12">
+<link rel="stylesheet" href="gloss.css?v=12">
+<link rel="stylesheet" href="home.css?v=1">
 </head>
-<body>
+<body class="home">
 
-<!-- The fixed stage: one thread, drawn on canvas, that the whole story happens to -->
-<div class="stage" aria-hidden="true">
-  <div id="bigword" class="bigword"></div>
-  <canvas id="stage"></canvas>
-  <div id="pins"></div>
-  <div id="chip" class="chip">INC0048213</div>
-</div>
+<div class="intro" aria-hidden="true"><span class="logo3d" aria-hidden="true"><span class="logo3d__gem"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><b>M</b></span></span><b>MERGEN</b><em></em></div>
 
+<!-- The fixed stage: one field of light that takes a new form for every scene -->
+<div class="stage" aria-hidden="true"><canvas id="stage"></canvas></div>
 <div class="progress" aria-hidden="true"><i id="progress"></i></div>
 
 <header class="nav">
   <a class="nav__logo" href="#top" aria-label="Mergen home">
-    <img src="https://thedemoproject.com/mergen_react_infinity/img/mergen-logo.png" alt="Mergen" height="30"
-         onerror="this.replaceWith(Object.assign(document.createElement('b'),{textContent:'MERGEN'}))">
+    <span class="logo3d" aria-hidden="true"><span class="logo3d__gem"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><b>M</b></span></span><b>MERGEN</b>
   </a>
   <nav class="nav__links" aria-label="Page">
-    <a href="#knot">The story</a>
-    <a href="#return">The return</a>
-    <a href="#proof">Proof</a>
+    <a href="servicenow.html">ServiceNow</a>
+    <a href="#capabilities">Capabilities</a>
     <a href="#industries">Industries</a>
+    <a href="#insights">Insights</a>
+    <a href="#leadership">About</a>
   </nav>
-  <a class="btn btn--sm" href="#contact">Talk to an expert</a>
+  <a class="btn btn--sm" href="#contact">Get started</a>
 </header>
 
-<nav class="rail" id="rail" aria-label="Story chapters"></nav>
+<nav class="rail" id="rail" aria-label="Scenes"></nav>
 
-<!-- The ticket's record header. It keeps score for the whole story. -->
 <aside class="hud" id="hud" aria-hidden="true">
-  <div class="hud__id">
-    <span class="hud__tag" id="hudTag">LIVE</span>
-    <b>INC0048213</b>
-    <span class="hud__desc">Order entry unavailable · 340 users</span>
-  </div>
+  <div class="hud__id"><span class="hud__tag" id="hudTag">SCENE 00</span><b id="hudScene">Unlock</b><span class="hud__desc" id="hudDesc">One field of light, reshaped by every capability</span></div>
   <dl class="hud__fields">
-    <div class="hud__f hud__f--wide"><dt>State</dt><dd id="hudState">New</dd></div>
-    <div class="hud__f hud__f--wide"><dt>Assigned to</dt><dd id="hudGroup">Unassigned</dd></div>
-    <div class="hud__f"><dt>Elapsed</dt><dd id="hudElapsed">0m</dd></div>
-    <div class="hud__f"><dt>Reassigned</dt><dd id="hudHand">0×</dd></div>
-    <div class="hud__f"><dt>Hours lost</dt><dd id="hudLost">0</dd></div>
+    <div class="hud__f"><dt>Capabilities lit</dt><dd id="hudLit">0 / 9</dd></div>
+    <div class="hud__f"><dt>Industries</dt><dd>6</dd></div>
+    <div class="hud__f"><dt>Projects delivered</dt><dd>500+</dd></div>
   </dl>
 </aside>
 
 <main>
 
-  <!-- 00 HERO -->
-  <section class="chapter hero" id="top" data-ch="hero">
+  <section class="chapter hero" id="top" data-ch="hero" data-shape="gem">
     <div class="hero__body">
-      <p class="eyebrow"><span class="dot"></span>ServiceNow Enterprise Solutions Partner</p>
-      <h1>One Platform. Complete Enterprise Transformation.</h1>
-      <p class="hero__sub">Mergen delivers ServiceNow strategy, implementation, and managed services that turn platform investment into measurable enterprise outcomes.</p>
-      <div class="hero__cta">
-        <a class="btn" href="#contact">Talk to an expert</a>
-        <a class="btn btn--ghost" href="#cases">View case studies</a>
-      </div>
-      <ul class="hero__stats">
-        <li><b>500+</b><span>Projects delivered</span></li>
-        <li><b>250+</b><span>Certified experts</span></li>
-        <li><b>98%</b><span>Client satisfaction</span></li>
-        <li><b>60%</b><span>Faster resolution</span></li>
-        <li><b>Premier</b><span>ServiceNow Partner</span></li>
-      </ul>
-    </div>
-    <div class="record" aria-label="The incident this story follows">
-      <p class="record__hook">How we work, told through one ticket <span aria-hidden="true">↓</span></p>
-      <div class="record__top"><span>Incident</span><b>INC0048213</b></div>
-      <p class="record__title">Order entry unavailable</p>
-      <dl>
-        <div><dt>Opened</dt><dd>Mon 09:02</dd></div>
-        <div><dt>Priority</dt><dd>1 · Critical</dd></div>
-        <div><dt>Affected</dt><dd>340 users</dd></div>
-        <div><dt>Assigned to</dt><dd class="is-empty">nobody yet</dd></div>
-      </dl>
-    </div>
-    <p class="hero__strip">ITSM / ITOM / HRSD / CSM / SPM / SecOps / GRC / App Engine / Agentic AI</p>
-  </section>
-
-  <!-- 01 THE KNOT -->
-  <section class="chapter" id="knot" data-ch="knot" data-word="BACKLOG" data-label="The backlog">
-    <header class="ch-head">
-      <p class="kicker"><span>01</span>The backlog</p>
-      <h2>09:02. Order entry goes down for 340 sales reps.</h2>
-      <p class="lead">Thousands of tickets a month arrive by email, portal, phone, chat, monitoring and walk-up. The clearest way to show what Mergen does is to follow one of them. This is INC0048213.</p>
-    </header>
-    <div class="step" data-min="0">
-      <p class="when">Mon 09:02</p>
-      <p>One rep emails the help desk. Another phones. A third uses the old portal. That makes three records of one problem, and none of them know about the others.</p>
-    </div>
-    <div class="step" data-min="158">
-      <p class="when">Mon 11:40</p>
-      <p>The service desk can't tell which server runs order entry. That knowledge lives in a spreadsheet nobody has opened since the last reorganisation.</p>
-    </div>
-    <div class="step" data-min="1513">
-      <p class="when">Tue 10:15</p>
-      <p>App team. Infrastructure. The hosting vendor. Back to the app team. Every handoff starts the explanation again, and the clock keeps running while the ticket sits in each queue.</p>
-    </div>
-    <div class="step" data-min="3248">
-      <p class="when">Wed 15:10</p>
-      <p>Someone finally finds it: an expired certificate. The fix takes twelve minutes. Finding the person who could make it took two days and six hours.</p>
-    </div>
-    <div class="step step--fact" data-pos="panel">
-      <p class="fact__n">$2M <small>an hour</small></p>
-      <p>That was one ticket in one application. When an outage is high-impact, this is the median cost.</p>
-      <p class="src">New Relic, 2025 Observability Forecast</p>
-    </div>
-    <div class="step" data-pos="panel">
-      <p class="when">The same problem, elsewhere</p>
-      <ul class="symptoms">
-        <li>Seven tools that each hold part of the truth</li>
-        <li>A CMDB nobody trusts</li>
-        <li>Approvals that live in inboxes</li>
-        <li>A ServiceNow instance customised until it can't upgrade</li>
-        <li>Licences paid for, modules never switched on</li>
-        <li>Audits answered by hand</li>
-      </ul>
-    </div>
-  </section>
-
-  <!-- 02 THE CALL -->
-  <section class="chapter" id="call" data-ch="call" data-word="WHY?" data-label="The call">
-    <header class="ch-head">
-      <p class="kicker"><span>02</span>The call</p>
-      <h2>Then someone asks a better question.</h2>
-      <p class="lead">It stops being “who dropped it?” and becomes “why was it so easy to drop?”</p>
-    </header>
-    <div class="step thread-msgs" data-pos="c">
-      <figure class="msg">
-        <figcaption>CIO, to Mergen</figcaption>
-        <blockquote>We already own ServiceNow. We're still running on email and heroics. Can you take a look?</blockquote>
-      </figure>
-      <figure class="msg msg--us">
-        <figcaption>Mergen</figcaption>
-        <blockquote>Yes. Before we recommend anything, we'd like to watch a ticket move.</blockquote>
-      </figure>
-    </div>
-    <div class="step">
-      <p class="when">How it starts</p>
-      <p>Most of our work begins like this, with a ticket that should have been easy. The architect who answers your first message is the one who scopes the work and leads the delivery. You aren't passed to a different team once the contract is signed.</p>
-    </div>
-  </section>
-
-  <!-- 03 LISTEN -->
-  <section class="chapter" id="listen" data-ch="listen" data-word="LISTEN" data-label="Listen">
-    <header class="ch-head">
-      <p class="kicker"><span>03</span>Listen<em>Discover &amp; Assess</em></p>
-      <h2>First we sit where the work happens.</h2>
-    </header>
-    <div class="step">
-      <p class="when">Week 1</p>
-      <p>We shadow real tickets across your service desk, application owners, infrastructure, security and HR, and sort the whole backlog by where each ticket is stuck. Process documents describe how work is meant to move. We watch how it does.</p>
-    </div>
-    <div class="step">
-      <p class="when">Week 2</p>
-      <p>We scan the instance itself: what is configured, what has been customised, what is licensed and never switched on, and what would break in the next upgrade.</p>
-    </div>
-    <div class="step">
-      <p class="when">The rule</p>
-      <p>By the end, everyone who touched INC0048213 has told us their part of it. No recommendation is made before the evidence has been reviewed.</p>
-    </div>
-  </section>
-
-  <!-- 04 MEASURE -->
-  <section class="chapter" id="measure" data-ch="measure" data-word="54 HOURS" data-label="Measure">
-    <header class="ch-head">
-      <p class="kicker"><span>04</span>Measure<em>Discover &amp; Assess</em></p>
-      <h2>Then we lay its path out straight and measure it.</h2>
-    </header>
-    <div class="step">
-      <p class="when">Gap analysis</p>
-      <p>Laid end to end, INC0048213 is 54 hours and 8 minutes long. Twelve of those minutes are work. The rest is waiting, and every wait has a cause.</p>
-    </div>
-    <div class="step">
-      <p class="when">Scored and sequenced</p>
-      <p>Each gap gets a name, an owner and a cost. Current usage is reviewed module by module, then every fix is scored on value and effort and put in order.</p>
-    </div>
-    <div class="step">
-      <p class="when">What you receive</p>
-      <p>A maturity assessment and gap analysis your leadership can read in ten minutes and defend in a budget meeting.</p>
-    </div>
-    <aside class="step svc" data-pos="panel">
-      <p class="svc__tag">Mergen service</p>
-      <h3>Advisory &amp; Strategy</h3>
-      <ul><li>Maturity Assessment</li><li>Roadmap Design</li><li>Business Case</li><li>Center of Excellence</li></ul>
-      <a href="https://thedemoproject.com/mergen_react_infinity/servicenow-advisory">Explore Advisory &amp; Strategy <span aria-hidden="true">→</span></a>
-    </aside>
-  </section>
-
-  <!-- 05 PROPOSE -->
-  <section class="chapter" id="propose" data-ch="propose" data-word="THE ROUTE" data-label="Propose">
-    <header class="ch-head">
-      <p class="kicker"><span>05</span>Propose<em>Design &amp; Architect</em></p>
-      <h2>A route you can fund.</h2>
-      <p class="lead">The same ticket, redrawn. Five stops where there were nine handoffs.</p>
-    </header>
-    <div class="step">
-      <p class="when">Roadmap</p>
-      <p>Three horizons. Fix the route in the first 90 days. Extend it to HR, security and customer service within six months. Make it predictive within twelve.</p>
-    </div>
-    <div class="step">
-      <p class="when">Business case</p>
-      <p>Cost, return and payback period, built from your own measured baseline. The value is proven before the funding is requested.</p>
-    </div>
-    <div class="step">
-      <p class="when">Design rule</p>
-      <p>Standard configuration before custom code. Every customisation needs a recorded business reason, which is what keeps your upgrades predictable.</p>
-    </div>
-    <div class="step">
-      <p class="when">Operating model</p>
-      <p>Who owns the platform, how changes are governed and what your team needs to learn are decided now, and not left until after go-live.</p>
-    </div>
-  </section>
-
-  <!-- 06 BUILD -->
-  <section class="chapter" id="build" data-ch="build" data-word="BUILD" data-label="Build">
-    <header class="ch-head">
-      <p class="kicker"><span>06</span>Build<em>Build &amp; Deliver</em></p>
-      <h2>Built in sprints. Shown every two weeks.</h2>
-    </header>
-    <div class="step">
-      <p class="when">Sprints 1–2</p>
-      <p>Foundations. A CMDB aligned to the Common Service Data Model, so the platform knows what runs on what. One intake for every channel.</p>
-    </div>
-    <div class="step">
-      <p class="when">Sprints 3–5</p>
-      <p>Routing, service maps and the vendor integration. A ticket now reaches the team that owns the service, with its history attached.</p>
-    </div>
-    <div class="step">
-      <p class="when">Sprints 6–7</p>
-      <p>Now Assist and AI agents for triage and summaries. Knowledge articles written from resolved incidents. Automated tests for every workflow.</p>
-    </div>
-    <div class="step">
-      <p class="when">Cutover</p>
-      <p>User acceptance testing, training and a rehearsed cutover. Migrated records are reconciled against the source, and you see the count.</p>
-    </div>
-    <div class="step">
-      <p class="when">Beyond IT</p>
-      <p>The same route extends to HRSD, CSM, SPM, SecOps, GRC and custom apps on App Engine when the work crosses departments.</p>
-    </div>
-    <aside class="step svc" data-pos="panel">
-      <p class="svc__tag">Mergen service</p>
-      <h3>Implementation &amp; Custom Apps</h3>
-      <ul class="svc__chips">
+      <p class="eyebrow"><span class="dot"></span>ServiceNow Premier Partner</p>
+      <h1>Unlock real value from your ServiceNow platform</h1>
+      <ul class="mods" aria-label="ServiceNow capabilities">
         <li><a href="https://thedemoproject.com/mergen_react_infinity/servicenow-itsm">ITSM</a></li>
         <li><a href="https://thedemoproject.com/mergen_react_infinity/servicenow-itom">ITOM</a></li>
         <li><a href="https://thedemoproject.com/mergen_react_infinity/servicenow-hrsd">HRSD</a></li>
         <li><a href="https://thedemoproject.com/mergen_react_infinity/servicenow-csm">CSM</a></li>
         <li><a href="https://thedemoproject.com/mergen_react_infinity/servicenow-spm">SPM</a></li>
-        <li><a href="https://thedemoproject.com/mergen_react_infinity/servicenow-secops">SecOps / GRC</a></li>
-        <li><a href="https://thedemoproject.com/mergen_react_infinity/servicenow-now-intelligence">Now Intelligence / AI</a></li>
-        <li><a href="https://thedemoproject.com/mergen_react_infinity/servicenow-custom-apps">Custom apps</a></li>
+        <li><a href="https://thedemoproject.com/mergen_react_infinity/servicenow-secops">SecOps</a></li>
+        <li><a href="https://thedemoproject.com/mergen_react_infinity/servicenow-secops">GRC</a></li>
+        <li><a href="https://thedemoproject.com/mergen_react_infinity/servicenow-custom-apps">App Engine</a></li>
+        <li><a href="https://thedemoproject.com/mergen_react_infinity/servicenow-custom-apps">Custom Solutions</a></li>
+        <li><a href="#industries">Industry Solutions</a></li>
+        <li><a href="https://thedemoproject.com/mergen_react_infinity/servicenow-now-intelligence">Agentic AI</a></li>
+        <li><a href="https://thedemoproject.com/mergen_react_infinity/servicenow-now-intelligence">Gen-AI</a></li>
       </ul>
-      <a href="https://thedemoproject.com/mergen_react_infinity/servicenow-implementation">Explore Implementation Services <span aria-hidden="true">→</span></a>
+      <div class="hero__cta">
+        <a class="btn" href="https://thedemoproject.com/mergen_react_infinity/contact">Talk to an Expert</a>
+        <a class="btn btn--ghost" href="servicenow.html">See the ServiceNow story <span aria-hidden="true">→</span></a>
+      </div>
+      <img class="badge" src="https://thedemoproject.com/mergen_react_infinity/img/servicenow-premier-partner.png" alt="ServiceNow Premier Partner. Consulting and Implementation." onerror="this.remove()">
+    </div>
+    <p class="hero__strip">Scroll <span aria-hidden="true">↓</span> one field of light takes the shape of everything Mergen delivers</p>
+  </section>
+
+  <section class="chapter" id="intelligence" data-ch="intelligence" data-shape="sphere" data-label="Intelligence">
+    <header class="ch-head">
+      <p class="kicker"><span>01</span>Now Intelligence</p>
+      <h2>Embed intelligence across every ServiceNow workflow</h2>
+      <p class="lead">Agentic AI and Gen-AI that classify, route, and resolve work in ITSM, CSM, and HRSD.</p>
+    </header>
+    <div class="step statx">
+      <p class="when">now intelligence</p>
+      <p class="statx__n">Agentic AI</p>
+      <p>In production workflows</p>
+      <a class="xlink" href="https://thedemoproject.com/mergen_react_infinity/servicenow-now-intelligence">Explore Now Intelligence <span aria-hidden="true">→</span></a>
+    </div>
+  </section>
+
+  <section class="chapter" id="reach" data-ch="reach" data-shape="six" data-label="Industries">
+    <header class="ch-head">
+      <p class="kicker"><span>02</span>Industries</p>
+      <h2>Delivery that holds across every industry</h2>
+      <p class="lead">Programmes for BFSI, manufacturing, healthcare, retail, telecom, and the public sector.</p>
+    </header>
+    <div class="step statx">
+      <p class="when">industries</p>
+      <p class="statx__n">6</p>
+      <ul class="chips"><li>BFSI</li><li>Manufacturing</li><li>Healthcare</li><li>Retail</li><li>Telecom</li><li>Public Sector</li></ul>
+      <a class="xlink" href="#industries">Explore industries <span aria-hidden="true">→</span></a>
+    </div>
+  </section>
+
+  <section class="chapter" id="delivery" data-ch="delivery" data-shape="rise" data-label="Delivery">
+    <header class="ch-head">
+      <p class="kicker"><span>03</span>Mergen delivery</p>
+      <h2>From advisory through go-live and managed service</h2>
+      <p class="lead">The architects who scope the work stay through implementation, support, and operations.</p>
+    </header>
+    <div class="step statx">
+      <p class="when">Consulting &amp; build</p>
+      <p class="statx__n">500+</p>
+      <p>projects delivered</p>
+      <a class="xlink" href="https://thedemoproject.com/mergen_react_infinity/servicenow-implementation">See implementation <span aria-hidden="true">→</span></a>
+    </div>
+  </section>
+
+  <section class="chapter" id="strengths" data-ch="strengths" data-shape="quad" data-label="Four strengths">
+    <header class="ch-head">
+      <p class="kicker"><span>04</span>Four strengths</p>
+      <h2>ServiceNow. Agentic AI. Industries. Delivery.</h2>
+    </header>
+    <div class="step pill4"><i>1</i><h3>ServiceNow</h3><p>Premier Partner delivery across ITSM, ITOM, and HRSD.</p></div>
+    <div class="step pill4"><i>2</i><h3>Agentic AI</h3><p>Now Intelligence that routes and resolves live workflow.</p></div>
+    <div class="step pill4"><i>3</i><h3>Industries</h3><p>BFSI, healthcare, retail, telecom, and public sector.</p></div>
+    <div class="step pill4"><i>4</i><h3>Delivery</h3><p>Advisory through go-live, support, and operations.</p></div>
+  </section>
+
+  <section class="chapter" id="capabilities" data-ch="capabilities" data-shape="inf" data-label="Every capability">
+    <header class="ch-head">
+      <p class="kicker"><span>05</span>Digital capabilities</p>
+      <h2>Every Capability. One Trusted Partner.</h2>
+    </header>
+    <div class="step">
+      <p class="when">Nine capabilities, one loop</p>
+      <ul class="chips chips--links">
+        <li><a href="#cap-servicenow">ServiceNow</a></li>
+        <li><a href="#cap-salesforce">Salesforce</a></li>
+        <li><a href="#cap-microsoft">Microsoft</a></li>
+        <li><a href="#cap-ai">AI / ML</a></li>
+        <li><a href="#cap-ims">IMS</a></li>
+        <li><a href="#cap-cloud">Cloud</a></li>
+        <li><a href="#cap-cyber">Cybersecurity</a></li>
+        <li><a href="#cap-data">Data Analytics</a></li>
+        <li><a href="#cap-advisory">Advisory</a></li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="chapter cap-ch " id="cap-servicenow" data-ch="cap-servicenow" data-shape="now" data-label="ServiceNow" data-cap="1">
+    <header class="ch-head">
+      <p class="kicker"><span>06</span>ServiceNow<em>1 of 9</em></p>
+      <h2>ServiceNow Transformation Partner</h2>
+      <p class="lead">Mergen holds Premier Partner status with ServiceNow, backed by more than 500 projects delivered across ITSM, ITOM, HRSD, and CSM. Every engagement is led by the same senior architects who scope it, applying an engineering-first methodology that turns platform investment into measurable outcomes.</p>
+    </header>
+    <div class="step">
+      <p class="when">Core Capabilities</p>
+      <ul class="symptoms"><li>IT Service Management (ITSM)</li><li>IT Operations Management (ITOM)</li><li>Human Resources Service Delivery</li><li>Customer Service Management (CSM)</li></ul>
+      <a class="xlink" href="servicenow.html">Explore ServiceNow <span aria-hidden="true">→</span></a>
+    </div>
+    <aside class="step svc">
+      <p class="svc__tag">Full Lifecycle</p>
+      <h3>Advise, Build, Run</h3>
+      <p>Mergen carries ServiceNow work from design through daily operation.</p>
+      <ul class="ticks"><li>Evidence reviewed before any recommendation</li><li>Configured around how teams work</li><li>Upgrades planned and regression tested</li></ul>
     </aside>
   </section>
 
-  <!-- 07 GO LIVE -->
-  <section class="chapter" id="golive" data-ch="golive" data-word="12 MINUTES" data-label="Go live">
+  <section class="chapter cap-ch fx-flip" id="cap-salesforce" data-ch="cap-salesforce" data-shape="growth" data-label="Salesforce" data-cap="2">
     <header class="ch-head">
-      <p class="kicker"><span>07</span>Go live<em>Build &amp; Deliver</em></p>
-      <h2>Same ticket. New route.</h2>
-      <p class="lead">Monday, 09:02 again. Order entry goes down for 340 sales reps.</p>
-    </header>
-    <div class="step" data-pos="l">
-      <p class="when">09:02</p>
-      <p>One record. The email, the phone call and the portal entry attach themselves to it.</p>
-    </div>
-    <div class="step" data-pos="r">
-      <p class="when">09:02</p>
-      <p>Triage reads the error, checks the service map and names the cause: an expired certificate on the order-entry server.</p>
-    </div>
-    <div class="step" data-pos="l">
-      <p class="when">09:03</p>
-      <p>Routed once, to the team that owns that server, with the fix attached.</p>
-    </div>
-    <div class="step" data-pos="r">
-      <p class="when">09:14</p>
-      <p>Resolved. Twelve minutes, because twelve minutes was always the real work.</p>
-      <table class="compare">
-        <thead><tr><th></th><th>Before</th><th>After</th></tr></thead>
-        <tbody>
-          <tr><th>Elapsed</th><td>54h 08m</td><td>12m</td></tr>
-          <tr><th>Reassigned</th><td>9×</td><td>1×</td></tr>
-          <tr><th>Hours lost</th><td>7,820</td><td>68</td></tr>
-        </tbody>
-      </table>
-    </div>
-    <div class="step" data-pos="l">
-      <p class="when">Next quarter</p>
-      <p>No ticket at all. Certificate expiry is flagged 30 days out, and the change is raised, approved and applied before anyone notices.</p>
-    </div>
-  </section>
-
-  <!-- 08 STAY -->
-  <section class="chapter" id="stay" data-ch="stay" data-word="RUN" data-label="Stay">
-    <header class="ch-head">
-      <p class="kicker"><span>08</span>Stay<em>Optimize &amp; Scale</em></p>
-      <h2>Go-live is week one.</h2>
+      <p class="kicker"><span>07</span>Salesforce<em>2 of 9</em></p>
+      <h2>Engineered for Revenue</h2>
+      <p class="lead">Mergen helps enterprises turn Salesforce into a connected, AI-powered platform, combining Agentforce, Data Cloud, and Einstein to drive measurable revenue growth and operational efficiency.</p>
     </header>
     <div class="step">
-      <p class="when">Hypercare</p>
-      <p>For the first weeks the team that built it stays on the floor with your service desk, watching every queue, fixing within hours and tuning what real usage reveals.</p>
+      <p class="when">Core Capabilities</p>
+      <ul class="symptoms"><li>Sales Cloud</li><li>Service Cloud</li><li>Marketing Cloud</li><li>Einstein AI</li></ul>
+      <a class="xlink" href="https://thedemoproject.com/mergen_react_infinity/technology-salesforce">Explore Salesforce <span aria-hidden="true">→</span></a>
     </div>
-    <div class="step">
-      <p class="when">Run</p>
-      <p>After that, 24×7 support and administration. Upgrades are planned ahead and regression-tested before they reach production.</p>
-    </div>
-    <div class="step">
-      <p class="when">Improve</p>
-      <p>Every quarter we pick the next bottleneck on the roadmap. The platform keeps improving, and the savings keep compounding.</p>
-    </div>
-    <div class="step">
-      <p class="when">Handover</p>
-      <p>When your team is ready to run it without us, they already know how. That was designed in at the proposal.</p>
-    </div>
-    <aside class="step svc" data-pos="panel">
-      <p class="svc__tag">Mergen service</p>
-      <h3>Managed Services</h3>
-      <ul><li>ServiceNow Administration</li><li>Continuous Enhancement</li><li>24×7 Support &amp; Optimization</li></ul>
-      <a href="https://thedemoproject.com/mergen_react_infinity/servicenow-managed-services">Explore Managed Services <span aria-hidden="true">→</span></a>
+    <aside class="step svc">
+      <p class="svc__tag">Salesforce Partner</p>
+      <h3>Standard First Delivery</h3>
+      <p>Mergen configures standard features first and tests every release.</p>
+      <ul class="ticks"><li>Custom builds only when needed</li><li>Data cleaned before agents launch</li><li>Each release tested in a sandbox</li></ul>
     </aside>
   </section>
 
-  <!-- 09 THE RETURN -->
-  <section class="return" id="return" data-rail="The return">
-    <div class="wrap">
-      <header class="sec-head">
-        <p class="kicker kicker--dark"><span>09</span>The return</p>
-        <h2>What a clear route is worth.</h2>
-        <p class="lead">The savings come from four places. Put in your own numbers.</p>
+  <section class="chapter cap-ch fx-slide" id="cap-microsoft" data-ch="cap-microsoft" data-shape="tiles" data-label="Microsoft" data-cap="3">
+    <header class="ch-head">
+      <p class="kicker"><span>08</span>Microsoft<em>3 of 9</em></p>
+      <h2>Enterprise Productivity, Reimagined.</h2>
+      <p class="lead">Enterprise cloud transformation across Azure, Microsoft 365, Dynamics 365, and the Power Platform, engineered by Mergen&#x27;s certified architects and aligned to Microsoft&#x27;s agentic AI roadmap, including Copilot, Agent 365, and Microsoft Foundry.</p>
+    </header>
+    <div class="step">
+      <p class="when">Core Capabilities</p>
+      <ul class="symptoms"><li>Azure &amp; Cloud Infrastructure</li><li>Microsoft 365 &amp; Teams</li><li>Dynamics 365 (ERP/CRM)</li><li>Power Platform &amp; Copilot</li></ul>
+      <a class="xlink" href="https://thedemoproject.com/mergen_react_infinity/technology-microsoft">Explore Microsoft <span aria-hidden="true">→</span></a>
+    </div>
+    <aside class="step svc">
+      <p class="svc__tag">Adoption Focused</p>
+      <h3>Ready for Every Update</h3>
+      <p>Mergen assesses first, pilots changes, then trains every user.</p>
+      <ul class="ticks"><li>Environment assessed before any change</li><li>Security policies piloted before rollout</li><li>Training planned with each release</li></ul>
+    </aside>
+  </section>
+
+  <section class="chapter cap-ch fx-zoom" id="cap-ai" data-ch="cap-ai" data-shape="neural" data-label="AI / ML" data-cap="4">
+    <header class="ch-head">
+      <p class="kicker"><span>09</span>AI / ML<em>4 of 9</em></p>
+      <h2>Intelligence Embedded In Every Workflow</h2>
+      <p class="lead">From agentic AI strategy through production deployment and LLMOps, Mergen builds enterprise AI solutions that are governed, scalable, and measurably impactful.</p>
+    </header>
+    <div class="step">
+      <p class="when">Core Capabilities</p>
+      <ul class="symptoms"><li>Predictive Analytics &amp; Forecasting</li><li>Natural Language Processing (NLP)</li><li>Generative AI &amp; LLM Integration</li><li>Computer Vision &amp; MLOps</li></ul>
+      <a class="xlink" href="https://thedemoproject.com/mergen_react_infinity/technology-ai">Explore AI / ML <span aria-hidden="true">→</span></a>
+    </div>
+    <aside class="step svc">
+      <p class="svc__tag">Responsible AI</p>
+      <h3>From Pilot to Production</h3>
+      <p>Mergen plans deployment and monitoring before any model training.</p>
+      <ul class="ticks"><li>Data readiness tested first</li><li>Risk reviews in every phase</li><li>Success metrics agreed upfront</li></ul>
+    </aside>
+  </section>
+
+  <section class="chapter cap-ch " id="cap-ims" data-ch="cap-ims" data-shape="stack" data-label="IMS" data-cap="5">
+    <header class="ch-head">
+      <p class="kicker"><span>10</span>IMS<em>5 of 9</em></p>
+      <h2>Infrastructure Managed, Not Just Monitored</h2>
+      <p class="lead">End-to-end infrastructure management with AIOps-powered observability, intelligent automation, and 24x7 operations across on-prem, cloud, and hybrid environments.</p>
+    </header>
+    <div class="step">
+      <p class="when">Core Capabilities</p>
+      <ul class="symptoms"><li>Cloud Infrastructure Management</li><li>Network Operations &amp; Optimization</li><li>Monitoring &amp; Observability</li><li>DevOps &amp; Disaster Recovery</li></ul>
+      <a class="xlink" href="https://thedemoproject.com/mergen_react_infinity/technology-ims">Explore IMS <span aria-hidden="true">→</span></a>
+    </div>
+    <aside class="step svc">
+      <p class="svc__tag">Always On</p>
+      <h3>Round-the-Clock Engineers</h3>
+      <p>Mergen engineers watch your infrastructure and escalate critical issues.</p>
+      <ul class="ticks"><li>Clear escalation for critical systems</li><li>Security controls in every design</li><li>Compliance checks from day one</li></ul>
+    </aside>
+  </section>
+
+  <section class="chapter cap-ch fx-flip" id="cap-cloud" data-ch="cap-cloud" data-shape="cloud" data-label="Cloud" data-cap="6">
+    <header class="ch-head">
+      <p class="kicker"><span>11</span>Cloud<em>6 of 9</em></p>
+      <h2>Multi-Cloud, Architected to Perform</h2>
+      <p class="lead">Mergen designs and migrates workloads across AWS, Azure, and Google Cloud, optimized for cost and performance from day one.</p>
+    </header>
+    <div class="step">
+      <p class="when">Core Capabilities</p>
+      <ul class="symptoms"><li>AWS Migration &amp; Optimization</li><li>Azure &amp; Hybrid Cloud</li><li>GCP &amp; Multi-Cloud Strategy</li><li>FinOps &amp; Cloud-Native Architecture</li></ul>
+      <a class="xlink" href="https://thedemoproject.com/mergen_react_infinity/technology-cloud">Explore Cloud <span aria-hidden="true">→</span></a>
+    </div>
+    <aside class="step svc">
+      <p class="svc__tag">Accountable Delivery</p>
+      <h3>One Team, Every Cloud</h3>
+      <p>One Mergen team designs, migrates, and runs your workloads.</p>
+      <ul class="ticks"><li>Spend owned by a named team</li><li>Moves planned to limit downtime</li><li>Well-Architected review before go-live</li></ul>
+    </aside>
+  </section>
+
+  <section class="chapter cap-ch fx-slide" id="cap-cyber" data-ch="cap-cyber" data-shape="shield" data-label="Cybersecurity" data-cap="7">
+    <header class="ch-head">
+      <p class="kicker"><span>12</span>Cybersecurity<em>7 of 9</em></p>
+      <h2>Built-In Security</h2>
+      <p class="lead">Mergen designs security controls into infrastructure and applications, not layered on after deployment.</p>
+    </header>
+    <div class="step">
+      <p class="when">Core Capabilities</p>
+      <ul class="symptoms"><li>Security Operations Center (SOC)</li><li>Identity &amp; Access Management (IAM)</li><li>Compliance &amp; Risk Management</li><li>Threat Detection &amp; Response (SIEM/SOAR)</li></ul>
+      <a class="xlink" href="https://thedemoproject.com/mergen_react_infinity/technology-cybersecurity">Explore Cybersecurity <span aria-hidden="true">→</span></a>
+    </div>
+    <aside class="step svc">
+      <p class="svc__tag">Risk-Led Security</p>
+      <h3>Assess First, Then Protect</h3>
+      <p>Mergen ranks your largest risks before recommending any tool.</p>
+      <ul class="ticks"><li>Escalation under procedures you approve</li><li>Controls designed for your regulations</li><li>Progress measured against recognized standards</li></ul>
+    </aside>
+  </section>
+
+  <section class="chapter cap-ch fx-zoom" id="cap-data" data-ch="cap-data" data-shape="bars" data-label="Data Analytics" data-cap="8">
+    <header class="ch-head">
+      <p class="kicker"><span>13</span>Data Analytics<em>8 of 9</em></p>
+      <h2>Turning Data Into Decisions</h2>
+      <p class="lead">Mergen builds data pipelines and analytics platforms that inform real decisions, not dashboards nobody checks.</p>
+    </header>
+    <div class="step">
+      <p class="when">Core Capabilities</p>
+      <ul class="symptoms"><li>Business Intelligence &amp; Dashboards</li><li>Data Warehousing &amp; Lakes</li><li>Real-Time Analytics &amp; Streaming</li><li>Data Governance &amp; Stewardship</li></ul>
+      <a class="xlink" href="https://thedemoproject.com/mergen_react_infinity/technology-data-analytics">Explore Data Analytics <span aria-hidden="true">→</span></a>
+    </div>
+    <aside class="step svc">
+      <p class="svc__tag">Governed Data</p>
+      <h3>Numbers Everyone Trusts</h3>
+      <p>Mergen builds quality rules and access controls into pipelines.</p>
+      <ul class="ticks"><li>Strategy set before any platform choice</li><li>Reports kept running through migrations</li><li>Maintenance and enhancement after launch</li></ul>
+    </aside>
+  </section>
+
+  <section class="chapter cap-ch " id="cap-advisory" data-ch="cap-advisory" data-shape="target" data-label="Advisory" data-cap="9">
+    <header class="ch-head">
+      <p class="kicker"><span>14</span>Advisory<em>9 of 9</em></p>
+      <h2>Strategy Before Implementation</h2>
+      <p class="lead">Mergen advises on technology strategy with the same team that will eventually build it, not a separate consulting arm.</p>
+    </header>
+    <div class="step">
+      <p class="when">Core Capabilities</p>
+      <ul class="symptoms"><li>Digital Transformation Roadmaps</li><li>Platform &amp; Technology Assessment</li><li>Center of Excellence (CoE) Design</li><li>Business Case &amp; ROI Development</li></ul>
+      <a class="xlink" href="https://thedemoproject.com/mergen_react_infinity/technology-advisory">Explore Advisory <span aria-hidden="true">→</span></a>
+    </div>
+    <aside class="step svc">
+      <p class="svc__tag">Workshop Led</p>
+      <h3>Evidence-Backed Direction</h3>
+      <p>Mergen backs each recommendation with interviews and system data.</p>
+      <ul class="ticks"><li>Leaders shape the target state</li><li>Decisions assigned clear owners</li><li>Advisors stay through implementation</li></ul>
+    </aside>
+  </section>
+
+  <!-- INDUSTRIES: a gallery that scroll moves sideways -->
+  <section class="hgal" id="industries">
+    <div class="hgal__pin">
+      <header class="sec-head hgal__head">
+        <p class="kicker"><span>15</span>Industries</p>
+        <h2>Expertise Across Industries</h2>
+        <p class="lead">Our expertise spans <b>6</b> industries, including BFSI, manufacturing, healthcare, retail, telecom, and the public sector.</p>
       </header>
-
-      <div class="calc">
-        <form class="calc__in" id="calc" aria-label="Savings estimate inputs">
-          <label>
-            <span>Tickets a month <output id="oTickets"></output></span>
-            <input type="range" id="iTickets" min="2000" max="60000" step="1000" value="15000">
-          </label>
-          <label>
-            <span>Cost to handle one ticket <output id="oCost"></output></span>
-            <input type="range" id="iCost" min="8" max="60" step="1" value="22">
-          </label>
-          <label>
-            <span>Major-incident hours a year <output id="oHours"></output></span>
-            <input type="range" id="iHours" min="0" max="80" step="1" value="12">
-          </label>
-          <label>
-            <span>Cost of one outage hour <output id="oOutage"></output></span>
-            <input type="range" id="iOutage" min="50" max="2000" step="50" value="300">
-          </label>
-          <label>
-            <span>Overlapping tools you could retire <output id="oTools"></output></span>
-            <input type="range" id="iTools" min="0" max="12" step="1" value="6">
-          </label>
-        </form>
-
-        <div class="calc__out" aria-live="polite">
-          <p class="calc__label">Estimated saving, each year</p>
-          <p class="calc__total" id="cTotal">$4.32M</p>
-          <ul class="calc__rows">
-            <li><span>Tickets that never reach a person</span><b id="cA"></b><i><em id="bA"></em></i></li>
-            <li><span>Less effort on every ticket that does</span><b id="cB"></b><i><em id="bB"></em></i></li>
-            <li><span>Shorter major incidents</span><b id="cC"></b><i><em id="bC"></em></i></li>
-            <li><span>Tools you stop paying for</span><b id="cD"></b><i><em id="bD"></em></i></li>
-          </ul>
-          <figure class="curve" id="curve">
-            <svg viewBox="0 0 600 220" role="img" aria-label="Cumulative saving over 36 months">
-              <line x1="0" y1="200" x2="600" y2="200" class="curve__axis"/>
-              <line x1="66.7" y1="20" x2="66.7" y2="200" class="curve__mark"/>
-              <path id="curveArea" class="curve__area"/>
-              <path id="curveLine" class="curve__line" pathLength="1"/>
-              <circle id="curveDot" r="6" class="curve__dot"/>
-              <text x="74" y="34" class="curve__t">Go-live</text>
-              <text x="0" y="216" class="curve__t">Kick-off</text>
-              <text x="600" y="216" class="curve__t" text-anchor="end">Month 36</text>
-            </svg>
-            <figcaption>Over 36 months, with a four-month build and a five-month ramp: <b id="c36"></b></figcaption>
-          </figure>
-        </div>
-      </div>
-
-      <p class="fine">An estimate, and not a quote. Working assumptions: 30% of tickets resolved by self-service or automation, 35% less effort on the remainder, 40% less major-incident time, $120K a year for each retired tool. In an assessment we replace every one of these with your measured baseline.</p>
-
-      <div class="bench">
-        <article>
-          <p class="bench__n">75 → under 10 <small>minutes</small></p>
-          <p>Level-1 resolution time on ServiceNow's own IT service desk after moving to AI agents.</p>
-          <p class="src">ServiceNow, Now on Now, 2025</p>
-        </article>
-        <article>
-          <p class="bench__n">25 → 9 <small>minutes</small></p>
-          <p>Average service desk handling time at Wellstar Health System, with incident response time down 25%.</p>
-          <p class="src">ServiceNow customer story, Wellstar</p>
-        </article>
-        <article>
-          <p class="bench__n">$76M <small>a year</small></p>
-          <p>What high-impact outages can cost a business annually, at a median of $2M for every hour.</p>
-          <p class="src">New Relic, 2025 Observability Forecast</p>
-        </article>
-      </div>
+      <div class="hgal__view"><div class="hgal__track">
+        <a class="hcard" href="https://thedemoproject.com/mergen_react_infinity/industries/bfsi">
+          <img src="https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&amp;fit=crop&amp;w=900&amp;q=70" alt="" loading="lazy" onerror="this.remove()">
+          <span class="hcard__n">01</span>
+          <div><h3>BFSI</h3><b>Regulated banking and insurance operations that stay measurable in production</b><p>Cases, controls, and reporting stay on one platform so audits and day-to-day operations use the same record.</p></div>
+        </a>
+        <a class="hcard" href="https://thedemoproject.com/mergen_react_infinity/industries/manufacturing">
+          <img src="https://images.unsplash.com/photo-1504917595217-d4dc5ebe6122?auto=format&amp;fit=crop&amp;w=900&amp;q=70" alt="" loading="lazy" onerror="this.remove()">
+          <span class="hcard__n">02</span>
+          <div><h3>Manufacturing</h3><b>Plant, service, and supply workflows running on one connected platform</b><p>Production, service, and supply share one view, so exceptions show up before they stop the line.</p></div>
+        </a>
+        <a class="hcard" href="https://thedemoproject.com/mergen_react_infinity/industries/healthcare">
+          <img src="https://images.unsplash.com/photo-1519494026892-80bbd2d6fd0d?auto=format&amp;fit=crop&amp;w=900&amp;q=70" alt="" loading="lazy" onerror="this.remove()">
+          <span class="hcard__n">03</span>
+          <div><h3>Healthcare</h3><b>Care, employee, and compliance journeys designed for the people who use them</b><p>Patient, workforce, and compliance work runs on journeys clinicians and staff can follow without extra steps.</p></div>
+        </a>
+        <a class="hcard" href="https://thedemoproject.com/mergen_react_infinity/industries/retail">
+          <img src="https://images.unsplash.com/photo-1441986300917-64674bd600d8?auto=format&amp;fit=crop&amp;w=900&amp;q=70" alt="" loading="lazy" onerror="this.remove()">
+          <span class="hcard__n">04</span>
+          <div><h3>Retail</h3><b>Store and customer operations that hold up through peak demand</b><p>Stores, inventory, and customer requests stay coordinated when volume spikes and teams are stretched.</p></div>
+        </a>
+        <a class="hcard" href="https://thedemoproject.com/mergen_react_infinity/industries/telecom">
+          <img src="https://images.unsplash.com/photo-1519389950473-47ba0277781c?auto=format&amp;fit=crop&amp;w=900&amp;q=70" alt="" loading="lazy" onerror="this.remove()">
+          <span class="hcard__n">05</span>
+          <div><h3>Telecom</h3><b>Network, field, and customer service delivered as one estate</b><p>Field work, network events, and support share one view of the customer and the asset.</p></div>
+        </a>
+        <a class="hcard" href="https://thedemoproject.com/mergen_react_infinity/industries/public-sector">
+          <img src="https://images.unsplash.com/photo-1523292562811-8fa7962a78c8?auto=format&amp;fit=crop&amp;w=900&amp;q=70" alt="" loading="lazy" onerror="this.remove()">
+          <span class="hcard__n">06</span>
+          <div><h3>Public Sector</h3><b>Citizen services that stay secure, auditable, and available</b><p>Requests, cases, and records stay traceable so the service remains available and accountable.</p></div>
+        </a>
+      </div></div>
+      <div class="hgal__bar"><b id="hgalN">01</b><i><em id="hgalFill"></em></i><span>06</span></div>
     </div>
   </section>
 
-  <!-- PROOF -->
-  <section class="proof" id="proof">
-    <div class="wrap">
-      <header class="sec-head">
-        <p class="kicker"><span>10</span>Proof</p>
-        <h2>We have done this before.</h2>
-      </header>
-
-      <ul class="stats">
-        <li><b data-count="500">0</b><i>+</i><span>programmes in production</span></li>
-        <li><b data-count="70">0</b><i>+</i><span>assessments and roadmaps</span></li>
-        <li><b data-count="120">0</b><i>+</i><span>modules implemented</span></li>
-        <li><b data-count="75">0</b><i>+</i><span>custom applications built</span></li>
-      </ul>
-
-      <div class="proof__grid">
-        <article class="case">
-          <p class="when">Case study · BFSI · CSM</p>
-          <h3>A global wealth manager, 14 regulators, one complaint workflow.</h3>
-          <p>Complaint handling ran on email and could not be audited in any jurisdiction. Mergen rebuilt it on ServiceNow CSM. Each complaint is tagged at intake with its regulator, and the workflow enforces that regulator's clock and escalation rules.</p>
-          <dl class="case__nums">
-            <div><dt>100%</dt><dd>closed inside regulatory windows</dd></div>
-            <div><dt>89%</dt><dd>faster response to audits</dd></div>
-            <div><dt>+18</dt><dd>complainant NPS</dd></div>
-          </dl>
-        </article>
-
-        <div class="principles">
-          <article>
-            <h3>One partner from plan to platform</h3>
-            <p>The team that assesses your ServiceNow estate also delivers it, so recommendations come from people who will have to build them.</p>
-          </article>
-          <article>
-            <h3>Standard before custom</h3>
-            <p>Every design starts from out-of-the-box capability, which keeps future upgrades predictable.</p>
-          </article>
-          <article>
-            <h3>Evidence at every decision</h3>
-            <p>Assessments, business cases, test suites and migration reconciliation, before each commitment and not after it.</p>
-          </article>
-          <article>
-            <h3>Ownership designed in</h3>
-            <p>Operating model, governance and skills plans are part of the engagement, so your team runs the platform when Mergen steps back.</p>
-          </article>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- THE MERGEN ADVANTAGE + PROVEN APPROACH (from the ServiceNow page) -->
-  <section class="adv" id="advantage">
-    <div class="wrap">
-      <header class="sec-head">
-        <p class="kicker"><span>11</span>The Mergen advantage</p>
-        <h2>The Mergen Advantage Across Every Engagement.</h2>
-        <p class="lead">Proven expertise. Scalable solutions. Measurable outcomes.</p>
-      </header>
-      <ol class="adv__grid">
-        <li><i>01</i><h3>Advisory &amp; Strategy</h3><p>Mergen aligns ServiceNow roadmaps to business outcomes through platform assessments, maturity modeling, CoE design, and strategic business case development.</p></li>
-        <li><i>02</i><h3>Implementation</h3><p>Mergen delivers ServiceNow implementations through fixed-scope engagements, rapid deployment methodologies, and senior delivery teams that ensure predictable timelines and confident go-lives.</p></li>
-        <li><i>03</i><h3>Managed Services</h3><p>Mergen provides 24x7 platform monitoring, proactive optimization, and continuous improvement that sustain ServiceNow performance and reliability across the enterprise.</p></li>
-        <li><i>04</i><h3>Engineering Excellence</h3><p>Mergen's 250+ certified ServiceNow architects deliver engineering-first solutions that optimize, automate, and modernize enterprise platforms.</p></li>
-      </ol>
-      <header class="sec-head adv__second">
-        <h2>Our Proven Approach to ServiceNow Success.</h2>
-        <p class="lead">The four phases you just scrolled through.</p>
-      </header>
-      <ol class="adv__grid adv__grid--line">
-        <li><i>01</i><h3>Discover &amp; Assess</h3><p>Evaluate current-state platform maturity, workflows, and business priorities to define a clear, outcome-driven roadmap.</p><a href="#listen">Chapters 03–04 ↑</a></li>
-        <li><i>02</i><h3>Design &amp; Architect</h3><p>Translate business requirements into scalable ServiceNow architecture, governance frameworks, and integration design.</p><a href="#propose">Chapter 05 ↑</a></li>
-        <li><i>03</i><h3>Build &amp; Deliver</h3><p>Configure, build, and deploy solutions using proven accelerators and senior delivery teams for predictable, on-time go-lives.</p><a href="#build">Chapters 06–07 ↑</a></li>
-        <li><i>04</i><h3>Optimize &amp; Scale</h3><p>Continuously monitor, enhance, and expand the platform to sustain performance and maximize long-term return on investment.</p><a href="#stay">Chapter 08 ↑</a></li>
-      </ol>
-    </div>
-  </section>
-
-  <section class="insights" id="cases">
-    <div class="wrap">
-      <header class="sec-head">
-        <p class="kicker kicker--dark"><span>12</span>Case studies</p>
-        <h2>Platform Transformations.</h2>
-        <p class="lead">Mergen's ServiceNow expertise across every engagement.</p>
-      </header>
-      <div class="news news--4">
-        <a href="https://thedemoproject.com/mergen_react_infinity/case-studies/wealth-manager-csm-complaint-handling"><span>Case study · May 9, 2026</span><b>Global Wealth Manager: Regulator-Grade Complaint Handling on CSM</b><em>Read more →</em></a>
-        <a href="https://thedemoproject.com/mergen_react_infinity/case-studies/wealth-advisor-einstein-nba"><span>Case study · May 9, 2026</span><b>Wealth Manager: Einstein Next-Best-Action for Advisor Productivity</b><em>Read more →</em></a>
-        <a href="https://thedemoproject.com/mergen_react_infinity/case-studies/value-based-care-data-analytics"><span>Case study · May 9, 2026</span><b>Value-Based-Care Organization: Outcomes Analytics on Snowflake + Power BI</b><em>Read more →</em></a>
-        <a href="https://thedemoproject.com/mergen_react_infinity/case-studies/us-state-tax-d365-modernization"><span>Case study · May 9, 2026</span><b>US State Tax Authority: Dynamics 365 Modernization for Citizen-Facing Tax Services</b><em>Read more →</em></a>
-        <a href="https://thedemoproject.com/mergen_react_infinity/case-studies/tower-operator-spm-deployment"><span>Case study · May 9, 2026</span><b>Wireless Tower Operator: SPM for $800M Deployment Portfolio</b><em>Read more →</em></a>
-        <a href="https://thedemoproject.com/mergen_react_infinity/case-studies/tier1-telco-spm-5g-rollout"><span>Case study · May 9, 2026</span><b>Tier-1 Telco: SPM Coordinating $1.8B 5G Rollout Across 4 Markets</b><em>Read more →</em></a>
-        <a href="https://thedemoproject.com/mergen_react_infinity/case-studies/tier1-telco-itsm-modernization"><span>Case study · May 9, 2026</span><b>Tier-1 Telco: ITSM Modernization for Wholesale + Retail Operations</b><em>Read more →</em></a>
-        <a href="https://thedemoproject.com/mergen_react_infinity/case-studies/tier1-bank-tri-platform-integration"><span>Case study · May 9, 2026</span><b>Tier-1 Bank: ServiceNow + Salesforce + Microsoft Tri-Platform Integration</b><em>Read more →</em></a>
-      </div>
-      <a class="more" href="https://thedemoproject.com/mergen_react_infinity/case-studies?topic=servicenow">View all case studies →</a>
-    </div>
-  </section>
-
-  <!-- INDUSTRIES -->
-  <section class="industries" id="industries">
-    <div class="wrap">
-      <header class="sec-head">
-        <p class="kicker"><span>13</span>Industries</p>
-        <h2>Every industry gets stuck somewhere different.</h2>
-      </header>
-      <ol class="ind">
-        <li><h3>BFSI</h3><p><b>Regulated banking and insurance operations that stay measurable in production.</b> Cases, controls and reporting on one platform, so audits and daily operations use the same record.</p></li>
-        <li><h3>Manufacturing</h3><p><b>Plant, service, and supply workflows running on one connected platform.</b> Production, service and supply share one view, so exceptions show up before they stop the line.</p></li>
-        <li><h3>Healthcare</h3><p><b>Care, employee, and compliance journeys designed for the people who use them.</b> Patient, workforce and compliance journeys that clinicians and staff can follow without extra steps.</p></li>
-        <li><h3>Retail</h3><p><b>Store and customer operations that hold up through peak demand.</b> Stores, inventory and customer requests stay coordinated when volume spikes and teams are stretched.</p></li>
-        <li><h3>Telecom</h3><p><b>Network, field, and customer service delivered as one estate.</b> Field work, network events and support share one view of the customer and the asset.</p></li>
-        <li><h3>Public sector</h3><p><b>Citizen services that stay secure, auditable, and available.</b> Requests, cases and records stay traceable, so the service remains available and accountable.</p></li>
-      </ol>
-    </div>
-  </section>
-
-  <!-- SERVICENOW TRANSFORMATION PARTNER (from the current landing page) -->
-  <section class="partner" id="partner">
-    <div class="wrap">
-      <header class="sec-head">
-        <p class="kicker"><span>14</span>ServiceNow</p>
-        <h2>ServiceNow Transformation Partner.</h2>
-      </header>
-      <ol class="pillars">
-        <li><i>1</i><h3>ServiceNow</h3><p>Premier Partner delivery across ITSM, ITOM and HRSD.</p></li>
-        <li><i>2</i><h3>Agentic AI</h3><p>Now Intelligence that routes and resolves live workflow.</p></li>
-        <li><i>3</i><h3>Industries</h3><p>BFSI, healthcare, retail, telecom and public sector.</p></li>
-        <li><i>4</i><h3>Delivery</h3><p>Advisory through go-live, support and operations.</p></li>
-      </ol>
-      <div class="partner__grid">
-        <div>
-          <p>Mergen holds Premier Partner status with ServiceNow, backed by more than 500 projects delivered across ITSM, ITOM, HRSD and CSM. Every engagement is led by the same senior architects who scope it, applying an engineering-first methodology that turns platform investment into measurable outcomes.</p>
-          <ul class="links">
-            <li><a href="https://thedemoproject.com/mergen_react_infinity/servicenow-itsm">IT Service Management (ITSM) <span aria-hidden="true">→</span></a></li>
-            <li><a href="https://thedemoproject.com/mergen_react_infinity/servicenow-itom">IT Operations Management (ITOM) <span aria-hidden="true">→</span></a></li>
-            <li><a href="https://thedemoproject.com/mergen_react_infinity/servicenow-hrsd">Human Resources Service Delivery <span aria-hidden="true">→</span></a></li>
-            <li><a href="https://thedemoproject.com/mergen_react_infinity/servicenow-csm">Customer Service Management (CSM) <span aria-hidden="true">→</span></a></li>
-            <li><a href="https://thedemoproject.com/mergen_react_infinity/servicenow">Explore ServiceNow <span aria-hidden="true">→</span></a></li>
-          </ul>
-        </div>
-        <article class="abr">
-          <p class="when">Full lifecycle</p>
-          <h3>Advise, Build, Run</h3>
-          <p>Mergen carries ServiceNow work from design through daily operation.</p>
-          <ul>
-            <li>Evidence reviewed before any recommendation</li>
-            <li>Configured around how teams work</li>
-            <li>Upgrades planned and regression tested</li>
-          </ul>
-        </article>
-      </div>
-      <div class="capsx" id="capabilities">
-        <h3 class="capsx__title">Every Capability. One Trusted Partner.</h3>
-        <p class="capsx__lead">A structured methodology refined across 500+ enterprise ServiceNow engagements ensures predictable outcomes and accelerated time-to-value.</p>
-        <div class="capsx__tabs" role="tablist" aria-label="ServiceNow capabilities"><button type="button" role="tab" aria-selected="true" data-tab="0">ITSM</button><button type="button" role="tab" aria-selected="false" data-tab="1">ITOM</button><button type="button" role="tab" aria-selected="false" data-tab="2">HRSD</button><button type="button" role="tab" aria-selected="false" data-tab="3">CSM</button><button type="button" role="tab" aria-selected="false" data-tab="4">SPM</button><button type="button" role="tab" aria-selected="false" data-tab="5">SecOps / GRC</button><button type="button" role="tab" aria-selected="false" data-tab="6">Now Intelligence / AI</button></div>
-        <article class="cap is-on" role="tabpanel" data-panel="0">
-          <div>
-            <p class="when">IT Service Management (ITSM)</p>
-            <h3>Intelligent IT Service Delivery</h3>
-            <p>Mergen transforms IT service management from reactive ticket handling into proactive, predictive support. We configure ServiceNow ITSM with AI-powered virtual agents and automated workflows so enterprises resolve issues faster, lower operational costs, and give employees a support experience they trust.</p>
-            <ul class="links"><li><span>Incident Management</span></li><li><span>Problem Management</span></li><li><span>Change Management</span></li><li><span>Service Catalog &amp; Request Fulfillment</span></li><li><a href="https://thedemoproject.com/mergen_react_infinity/servicenow-itsm">Explore ITSM <span aria-hidden="true">→</span></a></li></ul>
-          </div>
-          <div class="abr">
-            <p class="when">ITSM excellence</p>
-            <h3>Proactive Service Desk</h3>
-            <p>Automated triage, smart routing, and self-service that free agents for complex work.</p>
-            <ul><li>Faster resolution</li><li>Higher deflection</li><li>Safer changes</li></ul>
-            <a class="btn btn--sm" href="#contact">Talk to a specialist</a>
-          </div>
-        </article>
-        <article class="cap" role="tabpanel" data-panel="1">
-          <div>
-            <p class="when">IT Operations Management (ITOM)</p>
-            <h3>Full Visibility Across Your Infrastructure</h3>
-            <p>Mergen gives IT teams a live, accurate picture of every service, server, and cloud resource. We implement ServiceNow ITOM to discover assets, map service dependencies, and detect issues before users feel them, so operations teams shift from firefighting to prevention.</p>
-            <ul class="links"><li><span>Discovery &amp; Service Mapping</span></li><li><span>Event Management &amp; AIOps</span></li><li><span>CMDB Health &amp; Governance</span></li><li><span>Cloud &amp; Infrastructure Visibility</span></li><li><a href="https://thedemoproject.com/mergen_react_infinity/servicenow-itom">Explore ITOM <span aria-hidden="true">→</span></a></li></ul>
-          </div>
-          <div class="abr">
-            <p class="when">ITOM excellence</p>
-            <h3>Trusted CMDB Foundation</h3>
-            <p>An accurate, governed CMDB that gives every ServiceNow workflow reliable data.</p>
-            <ul><li>Fewer outages</li><li>Faster root cause</li><li>Reliable data</li></ul>
-            <a class="btn btn--sm" href="#contact">Talk to a specialist</a>
-          </div>
-        </article>
-        <article class="cap" role="tabpanel" data-panel="2">
-          <div>
-            <p class="when">HR Service Delivery (HRSD)</p>
-            <h3>Employee Experiences That Just Work</h3>
-            <p>Mergen helps HR teams deliver fast, consistent support from an employee's first day to their last. We implement ServiceNow HRSD to bring HR cases, knowledge, and lifecycle journeys into one experience, reducing manual effort and giving employees answers without waiting.</p>
-            <ul class="links"><li><span>HR Case &amp; Knowledge Management</span></li><li><span>Employee Center</span></li><li><span>Onboarding &amp; Lifecycle Events</span></li><li><span>HR Agent Workspace</span></li><li><a href="https://thedemoproject.com/mergen_react_infinity/servicenow-hrsd">Explore HRSD <span aria-hidden="true">→</span></a></li></ul>
-          </div>
-          <div class="abr">
-            <p class="when">HRSD excellence</p>
-            <h3>Connected Employee Journeys</h3>
-            <p>HR, IT, and facilities tasks unified, so new hires start ready on day one.</p>
-            <ul><li>Faster onboarding</li><li>Lighter HR workload</li><li>Consistent answers</li></ul>
-            <a class="btn btn--sm" href="#contact">Talk to a specialist</a>
-          </div>
-        </article>
-        <article class="cap" role="tabpanel" data-panel="3">
-          <div>
-            <p class="when">Customer Service Management (CSM)</p>
-            <h3>Customer Service That Fixes Root Causes</h3>
-            <p>Mergen helps service organizations move beyond answering the same complaint repeatedly. We implement ServiceNow CSM to connect front-line agents with the middle and back-office teams who fix underlying issues, so customers get faster resolutions and fewer repeat problems.</p>
-            <ul class="links"><li><span>Case Management</span></li><li><span>Omnichannel Engagement</span></li><li><span>Customer Self-Service Portal</span></li><li><span>Agent Workspace &amp; Playbooks</span></li><li><a href="https://thedemoproject.com/mergen_react_infinity/servicenow-csm">Explore CSM <span aria-hidden="true">→</span></a></li></ul>
-          </div>
-          <div class="abr">
-            <p class="when">CSM excellence</p>
-            <h3>Front-to-Back Service</h3>
-            <p>Customer cases linked directly to the teams that own the fix.</p>
-            <ul><li>Faster resolution</li><li>Fewer repeat cases</li><li>Happier customers</li></ul>
-            <a class="btn btn--sm" href="#contact">Talk to a specialist</a>
-          </div>
-        </article>
-        <article class="cap" role="tabpanel" data-panel="4">
-          <div>
-            <p class="when">Strategic Portfolio Management (SPM)</p>
-            <h3>Turn Strategy Into Delivered Outcomes</h3>
-            <p>Mergen helps leaders fund the right work and track it to completion. We implement ServiceNow SPM to connect business goals, investment decisions, and delivery teams in one place, so portfolios stay aligned to strategy as priorities change.</p>
-            <ul class="links"><li><span>Portfolio &amp; Investment Planning</span></li><li><span>Demand Management</span></li><li><span>Project &amp; Agile Delivery</span></li><li><span>Resource &amp; Capacity Planning</span></li><li><a href="https://thedemoproject.com/mergen_react_infinity/servicenow-spm">Explore SPM <span aria-hidden="true">→</span></a></li></ul>
-          </div>
-          <div class="abr">
-            <p class="when">SPM excellence</p>
-            <h3>Strategy-Linked Portfolio</h3>
-            <p>Every project tied to a business goal, with live insight into investment value.</p>
-            <ul><li>Clear goal alignment</li><li>Faster reprioritization</li><li>Better capacity use</li></ul>
-            <a class="btn btn--sm" href="#contact">Talk to a specialist</a>
-          </div>
-        </article>
-        <article class="cap" role="tabpanel" data-panel="5">
-          <div>
-            <p class="when">Security Operations (SecOps) &amp; Governance, Risk, and Compliance (GRC)</p>
-            <h3>Unified Security and Risk Management</h3>
-            <p>Mergen helps organizations connect security response with risk and compliance on one platform. We implement ServiceNow Security Operations and Integrated Risk Management to prioritize threats by business impact, automate control monitoring, and give leaders a live view of their security and compliance posture.</p>
-            <ul class="links"><li><span>Security Incident Response</span></li><li><span>Vulnerability Response</span></li><li><span>Policy &amp; Compliance Management</span></li><li><span>Risk &amp; Audit Management</span></li><li><a href="https://thedemoproject.com/mergen_react_infinity/servicenow-secops">Explore SecOps / GRC <span aria-hidden="true">→</span></a></li></ul>
-          </div>
-          <div class="abr">
-            <p class="when">SecOps / GRC excellence</p>
-            <h3>Connected Risk Posture</h3>
-            <p>Security findings and compliance controls linked, so critical risks get fixed first.</p>
-            <ul><li>Faster remediation</li><li>Lighter audit prep</li><li>Real-time risk view</li></ul>
-            <a class="btn btn--sm" href="#contact">Talk to a specialist</a>
-          </div>
-        </article>
-        <article class="cap" role="tabpanel" data-panel="6">
-          <div>
-            <p class="when">Now Intelligence &amp; AI (Now Assist and AI Agents)</p>
-            <h3>AI That Acts, Not Just Advises</h3>
-            <p>Mergen helps enterprises put ServiceNow AI to work inside the workflows they already run. We configure generative AI and autonomous agents that summarize, resolve, and route work across IT, HR, and customer service, with governance built in from day one.</p>
-            <ul class="links"><li><span>Now Assist Generative AI</span></li><li><span>AI Agents &amp; Orchestration</span></li><li><span>Virtual Agent</span></li><li><span>AI Governance &amp; Control Tower</span></li><li><a href="https://thedemoproject.com/mergen_react_infinity/servicenow-now-intelligence">Explore AI <span aria-hidden="true">→</span></a></li></ul>
-          </div>
-          <div class="abr">
-            <p class="when">AI excellence</p>
-            <h3>Governed AI Rollout</h3>
-            <p>High-value AI use cases deployed with guardrails your risk team approves.</p>
-            <ul><li>Measurable productivity</li><li>Higher adoption</li><li>Auditable AI use</li></ul>
-            <a class="btn btn--sm" href="#contact">Talk to a specialist</a>
-          </div>
-        </article>
-      </div>
-    </div>
-  </section>
-
-  <!-- NEWS AND INSIGHTS -->
   <section class="insights" id="insights">
     <div class="wrap">
       <header class="sec-head">
-        <p class="kicker kicker--dark"><span>15</span>News and insights</p>
-        <h2>News and insights.</h2>
-        <p class="lead">Stay connected with the platforms, partners and capabilities that power Mergen delivery.</p>
+        <p class="kicker kicker--dark"><span>16</span>News and insights</p>
+        <h2>News and insights</h2>
+        <p class="lead">Stay connected with the platforms, partners, and capabilities that power Mergen delivery.</p>
       </header>
-      <div class="news">
-        <a href="https://thedemoproject.com/mergen_react_infinity/blog/why-servicenow-msps-are-essential-for-scaling-enterprises-in-2026"><span>Blog · July 10, 2026</span><b>Why ServiceNow MSPs Are Essential for Scaling Enterprises in 2026</b><em>Read more →</em></a>
-        <a href="https://thedemoproject.com/mergen_react_infinity/blog"><span>Blog · July 10, 2026</span><b>How the Digital Employee Experience Starts with Identity and Integration</b><em>Read more →</em></a>
-        <a href="https://thedemoproject.com/mergen_react_infinity/blog"><span>Blog · July 10, 2026</span><b>Customization vs Configuration Defines Your ServiceNow Cost</b><em>Read more →</em></a>
-        <a href="https://thedemoproject.com/mergen_react_infinity/blog"><span>Blog · July 9, 2026</span><b>Explore the New Features of ServiceNow Yokohama Release: How It Differs from Xanadu?</b><em>Read more →</em></a>
-        <a href="https://thedemoproject.com/mergen_react_infinity/blog"><span>Blog · July 9, 2026</span><b>ServiceNow Officially Enters the CRM Market: Unlocking New Possibilities with Mergen</b><em>Read more →</em></a>
-        <a href="https://thedemoproject.com/mergen_react_infinity/press-releases/mergen-earns-servicenow-premier-partner-status"><span>News</span><b>Mergen Earns ServiceNow Premier Partner Status</b><em>Read more →</em></a>
+      <div class="news news--img">
+        <a href="https://thedemoproject.com/mergen_react_infinity/blog/why-servicenow-msps-are-essential-for-scaling-enterprises-in-2026"><img src="https://thedemoproject.com/mergen_react_infinity/uploads/cms/a023cd44-7e68-4b66-8d38-439bdf404c8a.jpg" alt="" loading="lazy" onerror="this.remove()"><span>Blog · July 10, 2026</span><b>Why ServiceNow MSPs Are Essential for Scaling Enterprises in 2026</b><em>Read more →</em></a>
+        <a href="https://thedemoproject.com/mergen_react_infinity/blog/how-the-digital-employee-experience-starts-with-identity-and-integration"><img src="https://thedemoproject.com/mergen_react_infinity/uploads/cms/e7b55fc2-db05-4914-98ea-1da782f0961c.jpg" alt="" loading="lazy" onerror="this.remove()"><span>Blog · July 10, 2026</span><b>How the Digital Employee Experience Starts with Identity and Integration</b><em>Read more →</em></a>
+        <a href="https://thedemoproject.com/mergen_react_infinity/blog/customization-vs-configuration-defines-your-servicenow-cost"><img src="https://thedemoproject.com/mergen_react_infinity/uploads/cms/883317c6-e165-4b07-85cd-2a3100d7b1b6.jpg" alt="" loading="lazy" onerror="this.remove()"><span>Blog · July 10, 2026</span><b>Customization vs Configuration Defines Your ServiceNow Cost</b><em>Read more →</em></a>
+        <a href="https://thedemoproject.com/mergen_react_infinity/blog/explore-the-new-features-of-servicenow-yokohama-release-how-it-differs-from-xanadu"><img src="https://thedemoproject.com/mergen_react_infinity/uploads/cms/d5d421fd-f442-4824-a8d2-6d881cace246.jpg" alt="" loading="lazy" onerror="this.remove()"><span>Blog · July 09, 2026</span><b>Explore the New Features of ServiceNow Yokohama Release: How It Differs from Xanadu?</b><em>Read more →</em></a>
+        <a href="https://thedemoproject.com/mergen_react_infinity/blog/servicenow-officially-enters-the-crm-market-unlocking-new-possibilities-with-mergen"><img src="https://thedemoproject.com/mergen_react_infinity/uploads/cms/45675b7c-998d-4fce-b87d-514a86e54814.jpg" alt="" loading="lazy" onerror="this.remove()"><span>Blog · July 09, 2026</span><b>ServiceNow Officially Enters the CRM Market: Unlocking New Possibilities with Mergen</b><em>Read more →</em></a>
       </div>
       <a class="more" href="https://thedemoproject.com/mergen_react_infinity/blog">View all insights →</a>
     </div>
   </section>
 
-  <!-- A WORD FROM OUR CEO -->
-  <section class="ceo" id="ceo">
+  <section class="ceo" id="leadership">
     <div class="wrap ceo__grid">
-      <img src="https://thedemoproject.com/mergen_react_infinity/img/ceo-mahanth.png?v=5" alt="Mahanth Mallikarjuna, Founder and CEO of Mergen" loading="lazy" onerror="this.remove()">
+      <img src="https://thedemoproject.com/mergen_react_infinity/img/ceo-mahanth.png?v=5" alt="Mahanth Mallikarjuna, Our Founder &amp; CEO" loading="lazy" onerror="this.remove()">
       <div>
-        <p class="kicker"><span>16</span>A word from our CEO</p>
-        <h2>A brief message from Mahanth Mallikarjuna, our Founder &amp; CEO.</h2>
-        <p>Mahanth Mallikarjuna brings over 15 years of leadership in the IT industry and a global network of technology experts to Mergen. A member of the Forbes Technology Council, he is committed to advancing next-generation intelligent platforms that accelerate time-to-market and catalyze strategic business innovation. His background spans data engineering, analytics and enterprise architecture across sectors including financial services, insurance, staffing and construction.</p>
-        <a href="https://thedemoproject.com/mergen_react_infinity">Read more →</a>
+        <p class="kicker"><span>17</span>A word from our CEO</p>
+        <h2>A Brief Message From Mahanth Mallikarjuna, Our Founder &amp; CEO</h2>
+        <p>Mahanth Mallikarjuna brings over 15 years of leadership in the IT industry and a global network of technology experts to Mergen. A member of the Forbes Technology Council, he is committed to advancing next-generation intelligent platforms that accelerate time-to-market and catalyze strategic business innovation. His background spans data engineering, analytics, and enterprise architecture across sectors including financial services, insurance, staffing, and construction.</p>
+        <a href="https://thedemoproject.com/mergen_react_infinity/who-we-are?leader=mahanth#our-leaders">Read more →</a>
       </div>
     </div>
   </section>
 
-  <!-- TRUSTED BY -->
-  <section class="trust">
+  <section class="trust" id="partners">
     <div class="wrap">
-      <p>Trusted across 500+ programmes in production.</p>
+      <div class="trust__top"><p>Trusted across <b data-count="500">500</b>+ programmes in production</p><a class="btn" href="https://thedemoproject.com/mergen_react_infinity/contact">Book a call</a></div>
       <div class="logos">
         <img src="https://thedemoproject.com/mergen_react_infinity/img/clients/nesma.png" alt="Nesma &amp; Partners" loading="lazy" onerror="this.remove()">
         <img src="https://thedemoproject.com/mergen_react_infinity/img/clients/deloitte.png" alt="Deloitte" loading="lazy" onerror="this.remove()">
@@ -736,7 +419,7 @@
         <img src="https://thedemoproject.com/mergen_react_infinity/img/clients/tmx.png" alt="TMX Finance" loading="lazy" onerror="this.remove()">
         <img src="https://thedemoproject.com/mergen_react_infinity/img/clients/efg.png" alt="EFG Companies" loading="lazy" onerror="this.remove()">
       </div>
-      <p class="trust__sub">Our technology partnerships &amp; certifications</p>
+      <p class="trust__sub">Our Technology Partnerships &amp; Certifications</p>
       <div class="logos logos--certs">
         <img src="https://thedemoproject.com/mergen_react_infinity/img/partners/servicenow.png" alt="ServiceNow Premier Partner" loading="lazy" onerror="this.remove()">
         <img src="https://thedemoproject.com/mergen_react_infinity/img/partners/partner-badge.png" alt="Implementation partner" loading="lazy" onerror="this.remove()">
@@ -749,15 +432,14 @@
     </div>
   </section>
 
-  <!-- CTA -->
-  <section class="cta" id="contact">
+  <section class="chapter cta cta--stage" id="contact" data-ch="end" data-shape="gem">
     <div class="wrap">
-      <p class="eyebrow"><span class="dot"></span>Start here</p>
-      <h2>Bring us your worst ticket.</h2>
-      <p class="lead">Tell us where you are on ServiceNow today. We'll trace one real ticket with you and show you where the time goes, before we propose anything.</p>
+      <p class="eyebrow"><span class="dot"></span>ServiceNow Premier Partner</p>
+      <h2>Every Capability. One Trusted Partner.</h2>
+      <p class="lead">Mergen holds Premier Partner status with ServiceNow, backed by more than 500 projects delivered across ITSM, ITOM, HRSD, and CSM.</p>
       <div class="hero__cta">
-        <a class="btn" href="mailto:info@mergenit.com?subject=Trace%20a%20ticket%20with%20Mergen">Talk to an expert</a>
-        <a class="btn btn--ghost" href="#top">Replay the story <span aria-hidden="true">↑</span></a>
+        <a class="btn" href="https://thedemoproject.com/mergen_react_infinity/contact">Talk to an Expert</a>
+        <a class="btn btn--ghost" href="servicenow.html">See the ServiceNow story <span aria-hidden="true">→</span></a>
       </div>
     </div>
   </section>
@@ -767,48 +449,61 @@
 <footer class="foot">
   <div class="wrap">
     <nav class="foot__nav" aria-label="Site">
-      <div><h4>ServiceNow services</h4>
+      <div><h4>ServiceNow Services</h4>
+        <a href="servicenow.html">Overview</a>
         <a href="https://thedemoproject.com/mergen_react_infinity/servicenow-advisory">Advisory &amp; Strategy</a>
         <a href="https://thedemoproject.com/mergen_react_infinity/servicenow-implementation">Implementation Services</a>
         <a href="https://thedemoproject.com/mergen_react_infinity/servicenow-custom-apps">Custom App Development</a>
+        <a href="https://thedemoproject.com/mergen_react_infinity/servicenow-managed-services">Managed Services</a>
         <a href="https://thedemoproject.com/mergen_react_infinity/servicenow-administration">ServiceNow Administration</a>
         <a href="https://thedemoproject.com/mergen_react_infinity/servicenow-enhancement">Continuous Enhancement</a>
         <a href="https://thedemoproject.com/mergen_react_infinity/servicenow-support">24×7 Support &amp; Optimization</a></div>
-      <div><h4>Platform specializations</h4>
-        <a href="https://thedemoproject.com/mergen_react_infinity/servicenow-itsm">ITSM</a>
-        <a href="https://thedemoproject.com/mergen_react_infinity/servicenow-itom">ITOM</a>
-        <a href="https://thedemoproject.com/mergen_react_infinity/servicenow-hrsd">HRSD</a>
-        <a href="https://thedemoproject.com/mergen_react_infinity/servicenow-csm">CSM</a>
-        <a href="https://thedemoproject.com/mergen_react_infinity/servicenow-spm">SPM</a>
-        <a href="https://thedemoproject.com/mergen_react_infinity/servicenow-secops">SecOps / GRC</a>
-        <a href="https://thedemoproject.com/mergen_react_infinity/servicenow-now-intelligence">Now Intelligence / AI</a></div>
       <div><h4>Industries</h4>
         <a href="https://thedemoproject.com/mergen_react_infinity/industries/bfsi">BFSI</a>
         <a href="https://thedemoproject.com/mergen_react_infinity/industries/manufacturing">Manufacturing</a>
         <a href="https://thedemoproject.com/mergen_react_infinity/industries/healthcare">Healthcare</a>
         <a href="https://thedemoproject.com/mergen_react_infinity/industries/retail">Retail</a>
         <a href="https://thedemoproject.com/mergen_react_infinity/industries/telecom">Telecom</a>
-        <a href="https://thedemoproject.com/mergen_react_infinity/industries/public-sector">Public Sector</a></div>
-      <div><h4>Insights</h4>
+        <a href="https://thedemoproject.com/mergen_react_infinity/industries/public-sector">Public Sector</a>
+</div>
+      <div><h4>Technologies</h4>
+        <a href="https://thedemoproject.com/mergen_react_infinity/technology-microsoft">Microsoft</a>
+        <a href="https://thedemoproject.com/mergen_react_infinity/technology-salesforce">Salesforce</a>
+        <a href="https://thedemoproject.com/mergen_react_infinity/technology-ai">AI / ML</a>
+        <a href="https://thedemoproject.com/mergen_react_infinity/technology-ims">IMS</a>
+        <a href="https://thedemoproject.com/mergen_react_infinity/technology-cybersecurity">Cybersecurity</a>
+        <a href="https://thedemoproject.com/mergen_react_infinity/technology-data-analytics">Data Analytics</a>
+        <a href="https://thedemoproject.com/mergen_react_infinity/technology-advisory">Advisory</a>
+        <a href="https://thedemoproject.com/mergen_react_infinity/technology-cloud">Cloud</a>
+</div>
+      <div><h4>Insights &amp; Thought Leadership</h4>
         <a href="https://thedemoproject.com/mergen_react_infinity/blog">Blogs</a>
-        <a href="https://thedemoproject.com/mergen_react_infinity/press-releases/mergen-earns-servicenow-premier-partner-status">Newsroom</a>
-        <a href="https://thedemoproject.com/mergen_react_infinity/case-studies/wealth-manager-csm-complaint-handling">Case studies</a></div>
+        <a href="https://thedemoproject.com/mergen_react_infinity/press-releases">Newsroom / Press Releases</a>
+        <a href="https://thedemoproject.com/mergen_react_infinity/case-studies">Case Studies / Success Stories</a></div>
+      <div><h4>About Us</h4>
+        <a href="https://thedemoproject.com/mergen_react_infinity/who-we-are">Who We Are</a>
+        <a href="https://thedemoproject.com/mergen_react_infinity/about-us/corporate-social-responsibility">CSR (Corporate Social Responsibility)</a>
+        <a href="https://thedemoproject.com/mergen_react_infinity/about-us/esg">ESG (Environmental, Social and Governance)</a>
+        <a href="https://thedemoproject.com/mergen_react_infinity/about-us/corporate-sustainability">Corporate Sustainability</a>
+        <a href="https://thedemoproject.com/mergen_react_infinity/about-us/ethics-and-compliance">Ethics and Compliance</a>
+        <a href="https://thedemoproject.com/mergen_react_infinity/about-us/diversity-equity-inclusion">Diversity, Equity &amp; Inclusion</a>
+        <a href="https://thedemoproject.com/mergen_react_infinity/who-we-are#mission-vision">Vision, Mission &amp; Values</a>
+        <a href="https://thedemoproject.com/mergen_react_infinity/who-we-are#our-leaders">Leadership Team</a>
+        <a href="https://thedemoproject.com/mergen_react_infinity/contact#locations">Global Presence / Locations</a>
+        <a href="#partners">Partners &amp; Alliances</a></div>
+      <div><h4>Careers</h4>
+        <a href="https://thedemoproject.com/mergen_react_infinity/life-at-mergen">Life at Mergen</a>
+        <a href="https://thedemoproject.com/mergen_react_infinity/open-positions">Open Positions</a>
+        <a href="https://thedemoproject.com/mergen_react_infinity/life-at-mergen#learning-growth">Learning &amp; Growth</a></div>
     </nav>
-    <p><b>Mergen</b> · ServiceNow Premier Partner · Advise, Build, Run</p>
-    <p>INC0048213 is an illustrative incident. Benchmarks are cited to their publishers. <a href="mailto:info@mergenit.com">info@mergenit.com</a></p>
+    <p><b>MERGEN</b> · ServiceNow Premier Partner · <a href="mailto:info@mergenit.com">info@mergenit.com</a> · <a href="https://www.linkedin.com/company/mergen-corp/">LinkedIn</a></p>
+    <p><a href="https://thedemoproject.com/mergen_react_infinity/sitemap">Sitemap</a> · <a href="https://thedemoproject.com/mergen_react_infinity/privacy-policy">Privacy Policy</a> · © 2026 Mergen. All rights reserved.</p>
   </div>
 </footer>
 
-<script>
-// Wide screens: the story runs beside the copy (story.js). Below 1000px: each chapter carries its own graphic in the flow (story-flow.js).
-(function () {
-  var narrow = innerWidth < 1000, s = document.createElement('script');
-  s.src = (narrow ? 'story-flow.js' : 'story.js') + '?v=11';
-  // effects.js then gives each section its own motion: slider, accordion, card stack, carousels, marquee
-  s.onload = function () { var e = document.createElement('script'); e.src = 'effects.js?v=11'; document.body.appendChild(e); };
-  document.body.appendChild(s);
-  addEventListener('resize', function () { if ((innerWidth < 1000) !== narrow) location.reload(); });
-})();
-</script>
+<script src="https://cdn.jsdelivr.net/npm/lenis@1.1.14/dist/lenis.min.js"></script>
+<script src="home.js?v=1"></script>
+<script src="effects.js?v=12"></script>
+<script src="motion.js?v=12"></script>
 </body>
 </html>

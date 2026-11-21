@@ -426,8 +426,10 @@
     ctx.beginPath(); ctx.moveTo(P[0], P[1]);
     for (let i = 1; i < N; i++) ctx.lineTo(P[i * 3], P[i * 3 + 1]);
     const ua = S.drawn > .99 ? S.ta : 0;
-    ctx.strokeStyle = rgba(mid, .05 * ua); ctx.lineWidth = 26; ctx.stroke();
-    ctx.strokeStyle = rgba(mid, .1 * ua); ctx.lineWidth = 9; ctx.stroke();
+    // a wide soft bloom under the strand, so it reads as a lit, glossy ribbon
+    ctx.strokeStyle = rgba(mid, .035 * ua); ctx.lineWidth = 64; ctx.stroke();
+    ctx.strokeStyle = rgba(mid, .08 * ua); ctx.lineWidth = 30; ctx.stroke();
+    ctx.strokeStyle = rgba(mid, .16 * ua); ctx.lineWidth = 12; ctx.stroke();
 
     const scanOn = ids[k] === 'measure' && m === 0;
     // Paint back to front, each piece over a dark sleeve, so the strand visibly passes over and under itself
@@ -438,7 +440,7 @@
       const i = order[n] * 2;
       const j = Math.min(N - 1, i + 2), s = i / (N - 1), d = P[i * 3 + 2];
       if (s > S.drawn || S.ta < .01) continue;
-      let a = lerp(.22 + .78 * d, .55 + .45 * d, wv) * S.ta, w = 1 + 2 * d + wv * (1.2 + 2.4 * d), col = mix(S.cA, S.cB, s);
+      let a = lerp(.22 + .78 * d, .55 + .45 * d, wv) * S.ta, w = 2.4 + 3.6 * d + wv * (1.2 + 2.4 * d), col = mix(S.cA, S.cB, s);
       if (wv > .01) {
         col = mix([4, 18, 27], col, lerp(1, .45 + .55 * d, wv)); a = lerp(a, 1, wv);
         ctx.lineCap = 'butt'; ctx.strokeStyle = `rgba(4,18,27,${wv})`; ctx.lineWidth = w + 7;
@@ -459,6 +461,14 @@
       ctx.strokeStyle = rgba(col, a); ctx.lineWidth = w;
       ctx.beginPath(); ctx.moveTo(P[i * 3], P[i * 3 + 1]);
       ctx.lineTo(P[i * 3 + 3], P[i * 3 + 4]); ctx.lineTo(P[j * 3], P[j * 3 + 1]); ctx.stroke();
+      // gloss: a thin specular line along the nearer side of the strand
+      const dashed = S.dash > .01 && s > S.built;
+      if (!scanOn && !dashed && w > 2.2) {
+        ctx.strokeStyle = `rgba(255,255,255,${(.5 * a * (.35 + .65 * d)).toFixed(3)})`; ctx.lineWidth = Math.max(.8, w * .28);
+        const off = -w * .22;
+        ctx.beginPath(); ctx.moveTo(P[i * 3], P[i * 3 + 1] + off);
+        ctx.lineTo(P[i * 3 + 3], P[i * 3 + 4] + off); ctx.lineTo(P[j * 3], P[j * 3 + 1] + off); ctx.stroke();
+      }
     }
   }
   function drawStations(k, p, m, S, u) {
