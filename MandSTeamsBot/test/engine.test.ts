@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 // Variety is chosen at random; pin it so each test sees the same choices.
 Math.random = () => 0;
-import type { AdminAction, Brain, CheckinContext, DigestPerson, NoteResult, Turn } from "../src/ai.js";
+import type { AdminAction, Brain, CheckinContext, DigestPerson, InstructionAction, InstructionInput, NoteResult, Turn } from "../src/ai.js";
 import type { Config } from "../src/config.js";
 import { Store } from "../src/db.js";
 import { cardToCommand, chunk, Engine, isUpdatePost, leaveToday, parseTime, roleAskLines, roleOf, takeZone } from "../src/engine.js";
@@ -136,6 +136,12 @@ class FakeBrain implements Brain {
   async learnRapport(_p: unknown, _s: string, chat: { fromSender: boolean; text: string }[]) {
     this.rapportCalls.push(chat.map((m) => ({ fromSender: m.fromSender, text: m.text })));
     return { brief: "Casual. Says 'pls share'.", address: this.learnedAddress };
+  }
+  instructionReads: InstructionInput[] = [];
+  nextInstruction: InstructionAction[] = [];
+  async readInstruction(input: InstructionInput): Promise<InstructionAction[]> {
+    this.instructionReads.push(input);
+    return this.nextInstruction;
   }
 }
 
@@ -1337,6 +1343,89 @@ test("what people type in the group during the day shapes the next ask and every
   g.setDate("2026-11-17T09:00:00Z");
   await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
   assert.doesNotMatch(g.brain.groupAsks.at(-1)!.memory, /covering letter/);
+});
+
+test("an admin's instruction in a group puts work on the tracker, from either admin", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  const groupId = g.store.groups()[0]!.id;
+  const ravi = g.store.personByEmail("ravi@acme.test")!;
+
+  g.brain.nextInstruction = [{ kind: "add", person: "Ravi Kumar", itemId: null, title: "Make the TalentFlow website live", due: "2026-11-16" }];
+  await g.engine.groupLine(groupId, CTO, "Ravi, can you make the TalentFlow website live today, urgent", "2026-11-16T17:05:00Z");
+  const added = g.store.activeItems(ravi.id).find((i) => i.title === "Make the TalentFlow website live")!;
+  assert.equal(added.due, "2026-11-16");
+  assert.match(g.admin.at(-1)!, /Ravi Kumar: Make the TalentFlow website live \(due 2026-11-16\)/);
+  // What the reader was given: who is in the group, and what is on their tracker, with ids.
+  const read = g.brain.instructionReads.at(-1)!;
+  assert.deepEqual(read.members.map((m) => m.name).sort(), ["Priya Rao", "Ravi Kumar"]);
+  assert.ok(read.items.some((i) => i.id === added.id && i.person === "Ravi Kumar"));
+  assert.match(read.today, /Monday 2026-11-16/);
+
+  // The other admin's instructions count the same; "everyone" means every member.
+  g.brain.nextInstruction = [{ kind: "add", person: "everyone", itemId: null, title: "Update TalentFlow by 6 pm", due: "2026-11-16" }];
+  await g.engine.groupLine(groupId, CEO, "Everyone, update TalentFlow by 6 pm", "2026-11-16T17:06:00Z");
+  assert.ok(g.store.activeItems(ravi.id).some((i) => i.title === "Update TalentFlow by 6 pm"));
+  assert.ok(g.store.activeItems(g.store.personByEmail(PRIYA)!.id).some((i) => i.title === "Update TalentFlow by 6 pm"));
+
+  // Team members' messages and short acknowledgements are not instructions.
+  const reads = g.brain.instructionReads.length;
+  await g.engine.groupLine(groupId, PRIYA, "Ravi please do the website first", "2026-11-16T17:07:00Z");
+  await g.engine.groupLine(groupId, CTO, "ok thanks", "2026-11-16T17:08:00Z");
+  assert.equal(g.brain.instructionReads.length, reads);
+});
+
+test("admin instructions move, pause, resume, stop and finish work on the tracker, and it is all remembered", async () => {
+  const g = groupSetup(); // Monday 2026-11-16
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  const groupId = g.store.groups()[0]!.id;
+  const ravi = g.store.personByEmail("ravi@acme.test")!;
+  const item = (title: string) => g.store.addItem(ravi.id, title, "open", "", "2026-11-16", "2026-11-16");
+  const status = (id: number) => g.store.itemsOf(ravi.id).find((i) => i.id === id)!;
+  const onTracker = (id: number) => g.store.trackerItems(ravi.id, "2026-11-16").some((i) => i.id === id);
+  const say = async (text: string, actions: InstructionAction[]) => {
+    g.brain.nextInstruction = actions;
+    await g.engine.groupLine(groupId, CTO, text, "2026-11-16T17:10:00Z");
+  };
+
+  // "Do it on Monday": off today's tracker, back on it on Monday, due then.
+  const website = item("Website launch");
+  await say("Ravi, leave the website for now, do it on Monday", [{ kind: "reschedule", person: "Ravi Kumar", itemId: website, title: "", due: "2026-11-23" }]);
+  assert.equal(status(website).status, "paused");
+  assert.equal(onTracker(website), false);
+  assert.match(g.admin.at(-1)!, /Website launch: moved to 2026-11-23/);
+  g.setDate("2026-11-23T09:00:00Z");
+  await g.engine.tick();
+  assert.equal(status(website).status, "open");
+  assert.equal(status(website).due, "2026-11-23");
+  g.setDate("2026-11-16T17:10:00Z");
+
+  // "Stop for now", then "carry on".
+  const report = item("Monthly report");
+  await say("Ravi stop the report for now", [{ kind: "pause", person: "Ravi Kumar", itemId: report, title: "", due: null }]);
+  assert.equal(status(report).status, "paused");
+  assert.equal(onTracker(report), false);
+  assert.ok(!g.store.activeItems(ravi.id).some((i) => i.id === report)); // not chased or asked about
+  await say("Ravi, carry on with the report", [{ kind: "resume", person: "Ravi Kumar", itemId: report, title: "", due: null }]);
+  assert.equal(status(report).status, "open");
+
+  // "Do not work on this at all": off the tracker for good, but kept in memory.
+  const deck = item("Sales deck");
+  await say("Ravi, drop the sales deck completely", [{ kind: "cancel", person: "Ravi Kumar", itemId: deck, title: "", due: null }]);
+  assert.equal(status(deck).status, "dropped");
+  assert.match(status(deck).lastUpdate, /Sujith|cto/i);
+
+  // "That is done" and "this first".
+  const mail = item("Mail setup");
+  await say("mail setup is done, thanks Ravi", [{ kind: "done", person: "Ravi Kumar", itemId: mail, title: "", due: null }]);
+  assert.equal(status(mail).status, "done");
+  const port = g.store.addItem(ravi.id, "SQL port fix", "open", "", "2026-11-16", "2026-11-20");
+  await say("Ravi, SQL port fix first, today", [{ kind: "prioritise", person: "Ravi Kumar", itemId: port, title: "", due: "2026-11-16" }]);
+  assert.equal(status(port).due, "2026-11-16");
+
+  // The instruction itself is also kept with what was said in the group today.
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  assert.match(g.brain.groupAsks.at(-1)!.memory, /SQL port fix first, today/);
 });
 
 test("who a message says is on leave, sick or away today", () => {
