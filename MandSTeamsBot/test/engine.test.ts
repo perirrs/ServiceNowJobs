@@ -2727,12 +2727,14 @@ test("on approve-first, messages become drafts: sent as edited, or skipped and t
   assert.ok(!g.store.messages(g.store.checkin(priya.id, "2026-11-16")!.id).some((m) => m.role === "bot" && m.text.includes("Question")));
 });
 
-test("approve-first is on for the rest of the day a group is added, then off by itself", async () => {
+test("autopilot from the first day a group is added; approve-first only where an admin turned it on", async () => {
   const g = groupSetup();
-  (g.engine as unknown as { config: Config }).config.approveFirstDay = true;
+  (g.engine as unknown as { config: Config }).config.approveFirstDay = true; // no longer holds anything back
   await g.engine.handleMessage(g.cto, "add group Recruitment Team");
   await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
-  assert.equal(g.sent.length, 0);
+  assert.equal(g.sent.length, 1);
+  // Turned on by hand, it still holds messages for approval.
+  await g.engine.handleMessage(g.cto, "approve Recruitment Team");
   g.setDate("2026-11-17T17:00:00Z");
   await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
   assert.equal(g.sent.length, 1);

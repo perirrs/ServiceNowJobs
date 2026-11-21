@@ -63,7 +63,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     pollSeconds: Math.max(10, Number(env.POLL_SECONDS ?? 20)),
     discloseAutomation: env.DISCLOSE_AUTOMATION !== "false",
     humanDelay: env.HUMAN_DELAY !== "false",
-    approveFirstDay: env.APPROVE_FIRST_DAY !== "false",
+    // Autopilot: nothing waits for approval unless an admin turns it on for a chat ("approve X").
+    approveFirstDay: env.APPROVE_FIRST_DAY === "true",
     idleCloseMinutes: Number(env.IDLE_CLOSE_MINUTES ?? 30),
     groupWindowMinutes: Number(env.GROUP_WINDOW_MINUTES ?? 120),
     // The whole history by default. The ceiling only guards against a runaway read.
