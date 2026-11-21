@@ -96,6 +96,7 @@ const ADMIN_HELP = `**Daily Check-in: what you can type**
 - **tracker** Group Name: post (or refresh) the tracker table in that group: who is doing what, due dates and status, pinned at the top and kept up to date by me. **tracker Group Name off** stops it.
 - **add group** Group Name: follow a Teams group chat. I first read the group's whole chat history and each member's whole chat with you, then build and pin the tracker. Updates are asked for in the group, and follow-up questions stay there with the person tagged; only something that should not be said in front of the group goes to them one to one. **ask group** Name asks now, **remove group** Name stops.
 - **ask** name: ask them for an update right now. **ask all** asks everyone; **ask all groups** asks every group. Either way I read what was said first and ask follow-up questions from it.
+- **reread**: read every group chat and everyone's chat with you again from the start, and rebuild what I remember from it (long chats are read in parts, oldest first, the newest having the last word).
 - **post groups** your message: posted exactly as you write it in every group. **post everyone** your message: in every group, and to everyone followed one to one. Replies are read and followed up like any other ask. Also on the board, as the four buttons at the top.
 - **profile** name: their role, responsibilities and targets, so the questions fit their job
 - **style** name: what I learned from your past chat about how you write to them. **style name refresh** reads the chat again.
@@ -4578,6 +4579,38 @@ So you know how it's used: your answers are summarised each day for the CTO and 
             : "No check-in notes yet.";
           return await reply(
             `**${displayName(target)}**\n\n**Open items**\n${renderItems(this.store.activeItems(target.id), this.today())}\n\n${body}`,
+          );
+        }
+
+        case "reread": {
+          // Every followed group, and everyone's one-to-one chat with the sender, read again from the start.
+          if (!this.personal || !this.direct?.history) return await reply("Reading chats needs messages to be sent from your own Teams account.");
+          await reply("Reading every group chat and everyone's chat with you again from the start. This can take a while; I will tell you when it is done.");
+          const groups = this.store.groups();
+          for (const group of groups) {
+            for (const key of ["gmemory", "gmemcursor", "gmemday"]) this.store.set(`${key}:${group.id}`, "");
+            await this.refreshGroupMemory(group);
+          }
+          let people = 0;
+          const missed: string[] = [];
+          for (let p of this.store.nominees()) {
+            if (this.isAdmin(p)) continue;
+            try {
+              if (!p.chatId && this.direct.connect) {
+                const chat = await this.direct.connect(p.email);
+                if (!("notFound" in chat)) p = this.store.upsertPerson(p.email, { chatId: chat.conversationId });
+              }
+              if (!p.chatId) continue;
+              await this.learnRapport(p, true);
+              people++;
+            } catch (err) {
+              this.log(`Could not read the chat with ${p.email}`, err);
+              missed.push(displayName(p));
+            }
+          }
+          return await reply(
+            `Read again from the start: ${groups.length} group${groups.length === 1 ? "" : "s"} and ${people} ${people === 1 ? "person" : "people"}.` +
+              (missed.length ? ` I could not read: ${missed.join(", ")}.` : ""),
           );
         }
 
