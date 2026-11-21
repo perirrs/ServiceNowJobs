@@ -292,6 +292,36 @@ test("scenario 4d: an UPDATE post (figures, targets, standing rules) is not read
   assert.ok(w.sujith.store.activeItems(ravi().id).some((i) => i.title === "Call the Deloitte SPOC"));
 });
 
+test("scenario 4e: a promise made in a reply is followed day by day until it is due, and after", async () => {
+  const w = await setUp();
+  // Monday: Ravi says the profiles will go on Monday next week; the note puts that on his tracker.
+  w.sujith.brain.nextNote = {
+    note: { summary: "Working on Deloitte.", progressVsTargets: "", blockers: [], painPoints: [], helpNeeded: [], followUpTomorrow: [] },
+    items: [{ itemId: null, title: "Deloitte profiles", status: "open", update: "Will send on Monday", due: "2026-11-23", progress: -1, waitingOn: "" }],
+  } as never;
+  await w.botMessage(SUJITH, "ask group Recruitment Team");
+  w.teams.at("2026-11-16T10:05:00Z");
+  w.teams.post("g-rec", RAVI, "Working on the Deloitte profiles, I will send them on Monday");
+  await w.readGroups();
+  const ravi = w.sujith.store.personByEmail(RAVI.email)!;
+  assert.equal(w.sujith.store.activeItems(ravi.id).find((i) => i.title === "Deloitte profiles")?.due, "2026-11-23");
+
+  // Each following day's ask: what is raised with Ravi about it.
+  const raised: Record<string, string> = {};
+  for (const day of ["17", "18", "19", "20", "23", "24"]) {
+    w.teams.at(`2026-11-${day}T10:00:00Z`);
+    await w.botMessage(SUJITH, "ask group Recruitment Team");
+    const memory = (w.sujith.brain.groupAsks.at(-1)!.members.find((m) => m.name === "Ravi Kumar") as { memory?: string } | undefined)?.memory ?? "";
+    raised[day] = /Deloitte profiles: ([^\n]*)/.exec(memory.split("Deadlines to raise now")[1] ?? "")?.[1] ?? "";
+  }
+  assert.match(raised["17"]!, /due 23 Nov\. How far along|due Monday/); // a week off: raised
+  assert.equal(raised["18"], ""); // every other day
+  assert.match(raised["19"]!, /How far along is it/);
+  assert.match(raised["20"]!, /due Monday\. How is it going, any blockers\?/); // three days off: daily
+  assert.match(raised["23"]!, /due today\. Is it done\?/);
+  assert.match(raised["24"]!, /was due 23 Nov, still open\. What is left, and what is the new date\?/);
+});
+
 test("scenario 5: Mahanth's UPDATE and instructions in Sujith's group count there too", async () => {
   const w = await setUp();
   const ravi = () => w.sujith.store.personByEmail(RAVI.email)!;

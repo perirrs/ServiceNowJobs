@@ -337,6 +337,46 @@ export function roleAskLines(people: { name: string; profile: string | null }[],
   return lines;
 }
 
+/**
+ * What to ask about one piece of work today, from its due date and progress, or null when
+ * nothing is due to be raised. Overdue and due today: every ask. Up to three days off: daily.
+ * Up to a week off: every other day. Further off: once a week. Work that is behind for the
+ * time left (most of the time gone, little done) is asked whether it can be put first or
+ * needs a new date. `lastTouched` is the day it was last raised.
+ */
+export function deadlineTouchpoint(
+  item: { id: number; title: string; due: string | null; progress: number | null; firstSeen: string; status: string },
+  today: string,
+  lastTouched = "",
+): { itemId: number; text: string; urgency: number } | null {
+  if (!item.due || (item.status !== "open" && item.status !== "blocked")) return null;
+  const days = daysBetween(today, item.due);
+  const since = lastTouched ? daysBetween(lastTouched, today) : Infinity;
+  const label =
+    days >= 2 && days <= 6
+      ? new Date(`${item.due}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "long", timeZone: "UTC" })
+      : new Date(`${item.due}T12:00:00Z`).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
+  const touch = (text: string, urgency: number) => ({ itemId: item.id, text: `${item.title}: ${text}`, urgency });
+
+  if (days < 0) return touch(`was due ${label}, still open. What is left, and what is the new date?`, 0);
+  if (days === 0) return touch("due today. Is it done?", 1);
+  if (since < 1) return null;
+  if (days === 1) return touch("due tomorrow. On track, anything blocking?", 2);
+
+  // Behind: most of the time gone and little done.
+  const span = Math.max(1, daysBetween(item.firstSeen, item.due));
+  const gone = daysBetween(item.firstSeen, today) / span;
+  // With no progress reported, nothing is known yet: wait until most of the time is gone.
+  const behind = item.progress === null ? gone >= 0.6 : gone >= 0.4 && item.progress < gone * 100 - 25;
+  if (behind && since >= 2) {
+    const where = item.progress === null ? "no progress reported yet" : `${item.progress}% done`;
+    return touch(`due ${label}, ${where}. Can it be prioritised, or is there a new date?`, 2.5);
+  }
+  if (days <= 3) return touch(`due ${label}. How is it going, any blockers?`, 3);
+  if (days <= 7) return since >= 2 ? touch(`due ${label}. How far along is it, anything in the way?`, 4) : null;
+  return since >= 7 ? touch(`coming up on ${label}. Has it started, and how far along is it?`, 5) : null;
+}
+
 /** "post groups <message>", "post everyone <message>": the sender's own words, sent as they are. */
 const MANUAL_POST = /^(all\s+groups|groups?|everyone|everybody)\b[ \t:,-]*([\s\S]*)$/i;
 
@@ -2118,7 +2158,24 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       facts: this.ats ? this.factsFor(person) : undefined,
       opening,
       greeting: this.personal ? this.store.get(`greeting:${person.id}`) || undefined : undefined,
+      // Raised when a conversation opens; follow-ups see the same list without marking it again.
+      touchpoints: this.touchpoints(person, checkin.date, opening),
     };
+  }
+
+  /**
+   * The deadlines to raise with this person now, most urgent first (at most three). With
+   * `mark`, they count as raised today, so far-off ones wait for their next turn.
+   */
+  private touchpoints(person: Person, date: string, mark = false): string[] {
+    const due = this.store
+      .activeItems(person.id)
+      .map((i) => deadlineTouchpoint(i, date, this.store.get(`touched:${i.id}`) || ""))
+      .filter((t): t is NonNullable<typeof t> => !!t)
+      .sort((a, b) => a.urgency - b.urgency)
+      .slice(0, 3);
+    if (mark) for (const t of due) this.store.set(`touched:${t.itemId}`, date);
+    return due.map((t) => t.text);
   }
 
   /** What the assistant remembers about a person: their own memory, plus that of any group they are in. */
@@ -3098,6 +3155,7 @@ So you know how it's used: your answers are summarised each day for the CTO and 
             memory: [
               this.store.get(`rapport:${p.id}`) || "",
               `On the tracker:\n${renderItems(this.store.activeItems(p.id), date)}`,
+              ((t) => (t.length ? `Deadlines to raise now (most urgent first):\n${t.map((x) => `- ${x}`).join("\n")}` : ""))(this.touchpoints(p, date, true)),
             ]
               .filter(Boolean)
               .join("\n\n"),

@@ -1397,6 +1397,20 @@ test("group asks raise each person's most urgent deadlines, and a far-off one is
   assert.doesNotMatch(next.memory, /Annual client report: coming up/);
 });
 
+test("the tracker marks what is due tomorrow and what is behind for the time left", async () => {
+  const g = groupSetup(); // Monday 2026-11-16
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  const ravi = g.store.personByEmail("ravi@acme.test")!;
+  g.store.addItem(ravi.id, "Profiles", "open", "", "2026-11-16", "2026-11-17");
+  const late = g.store.addItem(ravi.id, "Report", "open", "", "2026-11-06", "2026-11-20", 10);
+  g.store.addItem(ravi.id, "Deck", "open", "", "2026-11-16", "2026-12-10");
+  const { html } = (g.engine as unknown as { trackerTable: (g: unknown) => { html: string } }).trackerTable(g.store.groups()[0]!);
+  assert.match(html, /Profiles<\/td>.*?🟡 Due tomorrow/);
+  assert.match(html, /Report<\/td>.*?🟠 Behind/);
+  assert.match(html, /Deck<\/td>.*?🔵 In progress/);
+  assert.ok(late);
+});
+
 test("a one-to-one opening is briefed with the person's deadline touchpoints", async () => {
   const t = setup();
   await onboard(t);

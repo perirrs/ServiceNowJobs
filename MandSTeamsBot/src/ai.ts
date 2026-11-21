@@ -36,6 +36,8 @@ export interface CheckinContext {
   facts?: string;
   /** True when this turn starts a new round (a new ask), possibly later on a day already talked on. */
   opening?: boolean;
+  /** Deadlines to raise now, most urgent first: due today, due soon, behind, or coming up. */
+  touchpoints?: string[];
 }
 
 /** New targets read from an admin's post. Null where the post does not set that figure. */
@@ -249,6 +251,9 @@ function renderPersonBrief(ctx: CheckinContext): string {
     `Person: ${displayName(person)}`,
     `## Role, responsibilities and targets (written by leadership)\n${person.profile ?? "(not provided yet: ask about their work in general terms)"}`,
     `## Items still open\n${renderItems(activeItems, date)}`,
+    ctx.touchpoints?.length
+      ? `## Deadlines to raise now (most urgent first)\n${ctx.touchpoints.map((t) => `- ${t}`).join("\n")}\nWork the first one into your question, in your own words and in that spirit (due today: is it done; due tomorrow: on track; behind: can it be put first, or is there a new date; coming up: has it started, how far along). Raise the others only if there is room, and never all at once.`
+      : "",
     `## This conversation\n${ROUND_BRIEF[ctx.round ?? "update"]}`,
     `## Notes from their recent check-ins\n${notes}`,
     rapport ? `## How you normally write to this person, and what is going on between you (from your past chat)\n${rapport}` : "",
@@ -663,7 +668,8 @@ export class ClaudeBrain implements Brain {
 
   async writeNote(ctx: CheckinContext): Promise<NoteResult> {
     const content = [
-      `Date: ${ctx.date}`,
+      // The weekday too, so "on Monday" or "day after tomorrow" becomes the right date.
+      `Date: ${new Date(`${ctx.date}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "long", timeZone: "UTC" })} ${ctx.date}`,
       `Person: ${displayName(ctx.person)}`,
       `## Role, responsibilities and targets\n${ctx.person.profile ?? "(not provided)"}`,
       `## Items open before today\n${renderItems(ctx.activeItems)}`,
@@ -794,6 +800,7 @@ questions: a specific question for an individual, only where there is something 
 - ${who} named that person or their work in what they want to know, or
 - their tracker items, or the notes, show something due today, overdue, or gone quiet: ask about that item by name ("TalentFlow app - where are we, when is it done?"). The tracker comes first: it is what the team sees pinned at the top of the chat.
 - In the morning, someone with tracker items due today or overdue is asked which of them will be finished today.
+- Someone with "Deadlines to raise now" is asked about the first of them, in that spirit: overdue, what is left and the new date; due today, is it done; due tomorrow, on track; behind for the time left, can it be put first or is there a new date; coming up, has it started and how far along. This comes before anything else for that person.
 At most one question per person, and pick the one that matters most now. Every question fits the person's role: never ask someone whose role says they do no submissions (an account manager) about submissions; ask them about new requirements, spots and SPOCs. Leave out anything old enough to have lapsed or been overtaken (a festival video a month after the festival, a request from several months ago with nothing since): asking about it makes the message look out of touch. If you cannot tell whether an old item still matters, do not tag anyone for it. Leave a person out when there is nothing specific; the opening already covers them. Use each name exactly as given in the list.
 
 Wording: very simple English for readers whose first language is not English, short common words, each question one short line. Firmer where something is overdue, light where things are on track. No thanks, no emojis, and no mention of a bot, assistant, summary or automation.`,
