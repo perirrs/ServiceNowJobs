@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import path from "node:path";
-import { extraSenders, followedElsewhereFor, inheritSettings, othersGroupsFor, routeAdminMessage, senderDataDir, senderKey } from "../src/senders.js";
+import { extraSenders, followedElsewhereFor, inheritSettings, othersGroupsFor, ReplyRouter, routeAdminMessage, senderDataDir, senderKey } from "../src/senders.js";
 
 const SUJITH = "sujith@mergencorp.com";
 const MAHANTH = "mahanth.m@mergencorp.com";
@@ -26,6 +26,35 @@ test("a leading name sends the message to that sender instead, for admins only",
   assert.deepEqual(routeAdminMessage("Mahanth: hello", "priya@mergencorp.com", senders, false), { sender: SUJITH, text: "Mahanth: hello" });
   // A name that is not a sender is left alone.
   assert.deepEqual(routeAdminMessage("Madan: call me", SUJITH, senders, true), { sender: SUJITH, text: "Madan: call me" });
+});
+
+test("after talking to the other assistant, typed replies go there for 30 minutes; commands and buttons stay with your own", () => {
+  const router = new ReplyRouter(senders);
+  const at = (min: number) => Date.parse("2026-11-21T11:00:00Z") + min * 60_000;
+  const typed = (text: string, min: number, from = SUJITH) => router.route(text, from, true, true, at(min)).sender;
+
+  // Nothing said to Mahanth's assistant yet: everything is Sujith's.
+  assert.equal(typed("who replied today?", 0), SUJITH);
+  // A button for Mahanth's group (or "mahanth: …").
+  assert.deepEqual(router.route("mahanth: ask group Admin & Networking", SUJITH, true, false, at(1)), { sender: MAHANTH, text: "ask group Admin & Networking" });
+  // The reply that follows goes to Mahanth's assistant…
+  assert.equal(typed("No, that's an old message, do not send", 2), MAHANTH);
+  assert.equal(typed("also ask him about the domain renewal", 20), MAHANTH); // each reply keeps it open
+  // …but commands and board buttons stay with Sujith's own.
+  assert.equal(typed("add group Sales Team", 21), SUJITH);
+  assert.equal(router.route("ask group Recruitment Team", SUJITH, true, false, at(21)).sender, SUJITH);
+  // Half an hour of quiet: back to his own.
+  assert.equal(typed("who has not replied?", 51), SUJITH);
+  // "sujith: …" brings it straight back.
+  router.route("mahanth: board", SUJITH, true, false, at(60));
+  router.route("sujith: board", SUJITH, true, true, at(61));
+  assert.equal(typed("thanks", 62), SUJITH);
+  // The same the other way round, for Mahanth.
+  router.route("sujith: ask group Recruitment Team", MAHANTH, true, false, at(70));
+  assert.equal(typed("ok skip that", 71, MAHANTH), SUJITH);
+  assert.equal(typed("list", 72, MAHANTH), MAHANTH);
+  // Someone who is not an admin is never routed this way.
+  assert.equal(router.route("no", "priya@mergencorp.com", false, true, at(73)).sender, SUJITH);
 });
 
 test("extra senders are read from the setting, each with a data folder of its own", () => {

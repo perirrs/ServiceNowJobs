@@ -11,7 +11,7 @@ import type { Config } from "../src/config.js";
 import { Store } from "../src/db.js";
 import { cardToCommand, Engine } from "../src/engine.js";
 import type { DirectChannel, Identity } from "../src/engine.js";
-import { followedElsewhereFor, othersGroupsFor, routeAdminMessage, senderKey } from "../src/senders.js";
+import { followedElsewhereFor, othersGroupsFor, ReplyRouter, senderKey } from "../src/senders.js";
 import { FakeBrain } from "./fakes.js";
 
 type User = { userId: string; email: string; name: string };
@@ -131,16 +131,19 @@ function world() {
     s.engine.followedElsewhere = followedElsewhereFor(s, senders);
     s.engine.otherSenders = othersGroupsFor(s, senders);
     s.engine.adminChat = (email) => senders.map((o) => o.store.personByEmail(email)?.conversationId).find(Boolean) ?? undefined;
+    s.engine.selfKey = senderKey(s.email);
   }
   const keys = senders.map((s) => ({ email: s.email, key: senderKey(s.email) }));
   const idOf = (u: User): Identity => ({ teamsUserId: `t-${u.userId}`, conversationId: `bot-${u.userId}`, name: u.name, lookupEmail: async () => u.email });
 
   /** Someone types in their bot chat (or presses a button): routed as index.ts does. */
-  const botMessage = async (u: User, text: string) => {
-    const route = routeAdminMessage(text, u.email, keys, config.adminEmails.includes(u.email));
+  const router = new ReplyRouter(keys);
+  const send = async (u: User, text: string, typed: boolean) => {
+    const route = router.route(text, u.email, config.adminEmails.includes(u.email), typed, teams.now.getTime());
     await senders.find((s) => s.email === route.sender)!.engine.handleMessage(idOf(u), route.text);
   };
-  const press = (u: User, value: Record<string, unknown>) => botMessage(u, cardToCommand(value));
+  const botMessage = (u: User, text: string) => send(u, text, true);
+  const press = (u: User, value: Record<string, unknown>) => send(u, cardToCommand(value), false);
 
   /** One pass of each assistant's group readers, as index.ts runs them every minute. */
   const readGroups = async () => {
@@ -230,6 +233,27 @@ test("scenario 2c: Sujith's manual ask in Mahanth's group: his words go out from
   w.teams.post("g-adm", JITENDER, "Not yet, waiting on the invoice from GoDaddy");
   await w.readGroups();
   assert.equal(w.teams.in("g-adm").filter((m) => m.byAssistant).length, 2);
+});
+
+test("scenario 2d: after asking Mahanth's group, Sujith's reply goes to Mahanth's assistant, which says it is the one answering", async () => {
+  const w = await setUp();
+  await w.press(SUJITH, { cmd: "askOther", key: "mahanth", who: "Admin & Networking" });
+  assert.match(w.toAdmin(SUJITH).at(-1)!, /^\*\*Mahanth M's assistant\*\* · Posted in \*\*Admin & Networking\*\*/);
+
+  // A question that follows is answered by Mahanth's assistant, about his group.
+  w.teams.at("2026-11-16T10:10:00Z");
+  await w.botMessage(SUJITH, "Has Jitender replied yet?");
+  assert.equal(w.mahanth.brain.questions.length, 1);
+  assert.equal(w.sujith.brain.questions.length, 0);
+  // A command is still Sujith's own.
+  await w.botMessage(SUJITH, "list");
+  assert.match(w.toAdmin(SUJITH).at(-1)!, /Recruitment Team/);
+  assert.doesNotMatch(w.toAdmin(SUJITH).at(-1)!, /Mahanth M's assistant/);
+  // Sujith's own assistant never labels itself.
+  await w.botMessage(SUJITH, "sujith: board");
+  w.teams.at("2026-11-16T10:12:00Z");
+  await w.botMessage(SUJITH, "Who is behind today?");
+  assert.equal(w.sujith.brain.questions.length, 1);
 });
 
 test("scenario 3: a reply gets one follow-up in the group, then the rest is only recorded", async () => {
