@@ -54,7 +54,8 @@ export interface ChatMessage {
   at: string;
 }
 
-export type ItemStatus = "open" | "blocked" | "done" | "dropped";
+/** paused: put on hold by an admin, off the tracker and not asked about until resumed (or until `resumeOn`). */
+export type ItemStatus = "open" | "blocked" | "done" | "dropped" | "paused";
 
 /** A tracked piece of work. Open and blocked items are the bot's memory between days. */
 export interface WorkItem {
@@ -73,6 +74,8 @@ export interface WorkItem {
   waitingOn: string | null;
   /** The date it became blocked; null when it is not blocked. */
   blockedSince: string | null;
+  /** When paused with a date ("do it Monday"): the day it comes back. */
+  resumeOn: string | null;
 }
 
 /** The structured note the AI writes at the end of each person's check-in. */
@@ -209,6 +212,7 @@ function toItem(r: Row): WorkItem {
     progress: typeof r.progress === "number" ? (r.progress as number) : null,
     waitingOn: (r.waiting_on as string | null) || null,
     blockedSince: (r.blocked_since as string | null) || null,
+    resumeOn: (r.resume_on as string | null) || null,
   };
 }
 
@@ -247,6 +251,7 @@ export class Store {
     if (!itemColumns.some((c) => c.name === "progress")) this.db.exec("ALTER TABLE items ADD COLUMN progress INTEGER");
     if (!itemColumns.some((c) => c.name === "waiting_on")) this.db.exec("ALTER TABLE items ADD COLUMN waiting_on TEXT");
     if (!itemColumns.some((c) => c.name === "blocked_since")) this.db.exec("ALTER TABLE items ADD COLUMN blocked_since TEXT");
+    if (!itemColumns.some((c) => c.name === "resume_on")) this.db.exec("ALTER TABLE items ADD COLUMN resume_on TEXT");
   }
 
   close(): void {
@@ -496,6 +501,24 @@ export class Store {
          WHERE id = ?`,
       )
       .run(status, waitingOn, status, date, itemId);
+  }
+
+  /** Every item of this person's, whatever its status. */
+  itemsOf(personId: number): WorkItem[] {
+    return this.db.prepare("SELECT * FROM items WHERE person_id = ? ORDER BY id").all(personId).map(toItem);
+  }
+
+  /** The day a paused item comes back (`""`: no date, it waits for an admin). */
+  setResumeOn(itemId: number, date: string): void {
+    this.db.prepare("UPDATE items SET resume_on = ? WHERE id = ?").run(date || null, itemId);
+  }
+
+  /** Bring back paused items whose day has come. Returns how many. */
+  resumeDue(date: string): number {
+    const res = this.db
+      .prepare("UPDATE items SET status = 'open', resume_on = NULL, last_seen = ? WHERE status = 'paused' AND resume_on IS NOT NULL AND resume_on <= ?")
+      .run(date, date);
+    return Number(res.changes);
   }
 
   /** Every open or blocked item, for everyone. */

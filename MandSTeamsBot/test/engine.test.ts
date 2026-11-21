@@ -1347,6 +1347,7 @@ test("what people type in the group during the day shapes the next ask and every
 
 test("an admin's instruction in a group puts work on the tracker, from either admin", async () => {
   const g = groupSetup();
+  g.members.push({ userId: "u-ceo", email: CEO, name: "Mahanth M" }); // the other admin is in the group too
   await g.engine.handleMessage(g.cto, "add group Recruitment Team");
   const groupId = g.store.groups()[0]!.id;
   const ravi = g.store.personByEmail("ravi@acme.test")!;
@@ -1359,12 +1360,13 @@ test("an admin's instruction in a group puts work on the tracker, from either ad
   // What the reader was given: who is in the group, and what is on their tracker, with ids.
   const read = g.brain.instructionReads.at(-1)!;
   assert.deepEqual(read.members.map((m) => m.name).sort(), ["Priya Rao", "Ravi Kumar"]);
-  assert.ok(read.items.some((i) => i.id === added.id && i.person === "Ravi Kumar"));
   assert.match(read.today, /Monday 2026-11-16/);
 
   // The other admin's instructions count the same; "everyone" means every member.
   g.brain.nextInstruction = [{ kind: "add", person: "everyone", itemId: null, title: "Update TalentFlow by 6 pm", due: "2026-11-16" }];
   await g.engine.groupLine(groupId, CEO, "Everyone, update TalentFlow by 6 pm", "2026-11-16T17:06:00Z");
+  // The reader is shown what is already on the tracker, with ids, so it can refer to it.
+  assert.ok(g.brain.instructionReads.at(-1)!.items.some((i) => i.id === added.id && i.person === "Ravi Kumar"));
   assert.ok(g.store.activeItems(ravi.id).some((i) => i.title === "Update TalentFlow by 6 pm"));
   assert.ok(g.store.activeItems(g.store.personByEmail(PRIYA)!.id).some((i) => i.title === "Update TalentFlow by 6 pm"));
 

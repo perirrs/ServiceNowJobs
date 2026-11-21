@@ -1,8 +1,8 @@
 import { displayName, renderItems, renderNote } from "./ai.js";
-import type { AdminAction, Brain, CheckinContext, DigestPerson, Round, TrackerEntry } from "./ai.js";
+import type { AdminAction, Brain, CheckinContext, DigestPerson, InstructionAction, Round, TrackerEntry } from "./ai.js";
 import { todayIn } from "./config.js";
 import type { Config } from "./config.js";
-import type { ChatMessage, Checkin, Group, Person, Store, WorkItem } from "./db.js";
+import type { ChatMessage, Checkin, Group, ItemStatus, Person, Store, WorkItem } from "./db.js";
 import { describeCounts, describeProgress } from "./ats.js";
 import type { Ats, TeamFigures } from "./ats.js";
 
@@ -77,6 +77,7 @@ export interface Identity {
 const ADMIN_HELP = `**Daily Check-in: what you can type**
 
 - **UPDATE** in a group: post a message in any followed group with UPDATE as its first word or on a line of its own (notes you post within 15 minutes after it count as part of it), and I keep it as a standing instruction for that team and follow it from then on. New targets in it (for example "recruiters 5 a day, 25% L1, 2 joins a month") replace the old ones in the tables, the 75% line and the group messages. I confirm here what I understood.
+- **Instructions in any group:** what you or any other admin tells the team in a followed group (whoever follows it) acts on the tracker: new work is added ("Ravi, make the website live today"), work is put first, moved to a day ("do it Monday": off the tracker until then), paused ("stop for now"), resumed, stopped for good ("don't work on it") or marked done. Everything is kept in memory, and I tell you what changed.
 - **In the groups, all day:** I read what you, the other admins and the team type by hand as it is posted. A new priority given during the day ("prioritise the covering letter") is what I follow up on, not the morning ask. Anyone said to be on leave, sick or away today is not asked or chased, and I tell you here.
 - **progress Group Name**: post the TalentFlow progress table in that group now, instead of waiting for the hour.
 - **hours 09:30-18:30**: office hours, Monday to Friday. Outside them I send nothing to anyone (no replies, chases or scheduled messages), but still record what people write. **hours off** allows any time.
@@ -787,10 +788,112 @@ export class Engine {
     this.rememberGroupLine(groupId, displayName(author), text, postedAt);
     await this.noticeLeave(author, text);
     if (!this.isAdmin(author)) return;
+    // Any admin, in any followed group: work to add, move, pause, stop or finish.
+    if (text.trim().split(/\s+/).length >= 3) await this.applyInstruction(groupId, author, text);
     const last = this.groupUpdates(groupId).at(-1);
     const gap = last ? Date.parse(postedAt) - Date.parse(last.at) : NaN;
     const continues = !!last && last.by === displayName(author) && gap >= 0 && gap <= 15 * 60_000;
     if (isUpdatePost(text) || continues) await this.adminGroupPost(groupId, authorEmail, text, postedAt);
+  }
+
+  /**
+   * An admin's message in a group, read for instructions about the team's work, and acted on:
+   * new work goes on the tracker; existing work is put first, moved to a later day (off the
+   * tracker until then), paused, resumed, stopped for good or marked done. Nothing is deleted:
+   * each item keeps who said what. The admins are told what changed.
+   */
+  private async applyInstruction(groupId: number, author: Person, text: string): Promise<void> {
+    const group = this.store.groups().find((g) => g.id === groupId);
+    if (!group || !this.brain.readInstruction) return;
+    const members = this.store.groupMembers(groupId).filter((p) => !this.notAsked(p));
+    if (!members.length) return;
+    const date = this.today();
+    const live = (i: WorkItem) => i.status === "open" || i.status === "blocked" || i.status === "paused";
+    const items = members.flatMap((p) => this.store.itemsOf(p.id).filter(live).map((i) => ({ item: i, person: p })));
+    let actions: InstructionAction[];
+    try {
+      actions = await this.brain.readInstruction({
+        text,
+        author: displayName(author),
+        groupName: group.name,
+        today: `${new Date(`${date}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "long", timeZone: "UTC" })} ${date}`,
+        members: members.map((p) => ({ name: displayName(p), role: p.profile ?? "" })),
+        items: items.map(({ item, person }) => ({ id: item.id, person: displayName(person), title: item.title, status: item.status, due: item.due })),
+      });
+    } catch (err) {
+      this.log(`Could not read an instruction in ${group.name}`, err);
+      return;
+    }
+
+    const note = `${displayName(author)} in ${group.name}: "${text.trim().slice(0, 200)}"`;
+    const named = (name: string): Person[] => {
+      const n = name.trim().toLowerCase();
+      if (!n || ["everyone", "all", "team", "the team", "everybody"].includes(n)) return members;
+      const full = members.filter((p) => displayName(p).toLowerCase() === n);
+      if (full.length) return full;
+      const first = members.filter((p) => displayName(p).toLowerCase().split(" ")[0] === n.split(" ")[0]);
+      return first.length === 1 ? first : [];
+    };
+    const lines: string[] = [];
+    for (const a of actions) {
+      const found = a.itemId !== null ? items.find(({ item }) => item.id === a.itemId) : undefined;
+      if (a.kind === "add" || (a.kind === "prioritise" && !found)) {
+        const title = a.title.trim();
+        if (!title) continue;
+        const due = a.due ?? (a.kind === "prioritise" ? date : "");
+        for (const p of named(a.person)) {
+          const same = this.store.itemByTitle(p.id, title);
+          if (same && live(same)) {
+            this.store.updateItem(p.id, same.id, "open", note, date, due);
+            this.store.setResumeOn(same.id, "");
+          } else {
+            this.store.addItem(p.id, title, "open", note, date, due);
+          }
+          lines.push(`${displayName(p)}: ${title}${due ? ` (due ${due})` : ""}`);
+        }
+        continue;
+      }
+      if (!found) continue;
+      const { item, person } = found;
+      const set = (status: ItemStatus, due = "", resumeOn = "") => {
+        this.store.updateItem(person.id, item.id, status, note, date, due);
+        this.store.setResumeOn(item.id, resumeOn);
+      };
+      switch (a.kind) {
+        case "prioritise":
+          set("open", a.due ?? date);
+          lines.push(`${displayName(person)}: ${item.title}: first, due ${a.due ?? date}`);
+          break;
+        case "reschedule":
+          if (a.due && a.due > date) {
+            set("paused", a.due, a.due);
+            lines.push(`${displayName(person)}: ${item.title}: moved to ${a.due} (off the tracker until then)`);
+          } else {
+            set("open", a.due ?? "");
+            lines.push(`${displayName(person)}: ${item.title}: due ${a.due ?? "date not given"}`);
+          }
+          break;
+        case "pause":
+          set("paused");
+          lines.push(`${displayName(person)}: ${item.title}: on hold, off the tracker until an admin says to carry on`);
+          break;
+        case "resume":
+          set("open", a.due ?? "");
+          lines.push(`${displayName(person)}: ${item.title}: back on the tracker`);
+          break;
+        case "cancel":
+          set("dropped");
+          lines.push(`${displayName(person)}: ${item.title}: stopped for good, off the tracker (kept in memory)`);
+          break;
+        case "done":
+          set("done");
+          lines.push(`${displayName(person)}: ${item.title}: done`);
+          break;
+      }
+    }
+    if (!lines.length) return;
+    await this.notifyAdmins(`**${displayName(author)}'s instruction in ${group.name}.** The tracker now has:\n\n${lines.map((l) => `- ${l}`).join("\n")}`);
+    await this.refreshTrackers(group).catch((err) => this.log(`Could not update the tracker in ${group.name}`, err));
   }
 
   /** Someone said that they, or people they named, are on leave today: stop asking and chasing them, and tell the admins once. */
@@ -3471,6 +3574,8 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     await this.runGroupReports();
     await this.routeBlockers();
     await this.refreshGroupNames();
+    // Work an admin moved to a later day ("do it Monday") comes back on that day.
+    if (this.store.resumeDue(this.today())) await this.refreshTrackers().catch((err) => this.log("Could not update the trackers", err));
     // The weekly read of everyone's TalentFlow history: slow, and nothing waits for it.
     void this.refreshTrackRecords().catch((err) => this.log("Could not read the TalentFlow history", err));
     this.backupDaily();
