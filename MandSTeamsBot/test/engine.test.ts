@@ -602,20 +602,36 @@ function boardSetup() {
   return { store, brain, engine, id, sentCards, edits };
 }
 
-test("the board shows the other admin's groups with one button only: ask for an update", async () => {
+test("every ask on the board comes as a pair: auto ask and manual ask, for each group, person and the other admin's groups", async () => {
+  // What each button sends.
   assert.equal(cardToCommand({ cmd: "askOther", key: "mahanth", who: "Admin & Networking" }), "mahanth: ask group Admin & Networking");
+  assert.equal(cardToCommand({ cmd: "postGroup", who: "Recruitment Team", field: "m_g1", m_g1: " Send the covering letters by 6 " }), "post group Recruitment Team\nSend the covering letters by 6");
+  assert.equal(cardToCommand({ cmd: "postPerson", who: "priya@acme.test", field: "m_p2", m_p2: "Offer letters today please" }), "post to priya@acme.test\nOffer letters today please");
+  assert.equal(
+    cardToCommand({ cmd: "postOther", key: "mahanth", who: "Admin & Networking", field: "m_o0_0", m_o0_0: "Is the domain renewed?" }),
+    "mahanth: post group Admin & Networking\nIs the domain renewed?",
+  );
 
   const b = boardSetup();
+  await b.engine.handleMessage(b.id(CTO), `add ${PRIYA}`);
+  await b.engine.handleInstall(b.id(PRIYA));
   b.engine.otherSenders = () => [{ name: "Mahanth M", key: "mahanth", groups: ["Admin & Networking"] }];
   await b.engine.handleMessage(b.id(CTO), "board");
-  const card = JSON.stringify(b.sentCards.at(-1));
-  assert.match(card, /Groups followed by Mahanth M/);
-  const section = (b.sentCards.at(-1) as { body: { type: string; items?: unknown[] }[] }).body.find(
-    (x) => x.type === "Container" && JSON.stringify(x).includes("Admin & Networking"),
-  )!;
-  const actions = JSON.stringify(section).match(/"type":"Action\.[A-Za-z]+"/g) ?? [];
-  assert.equal(actions.length, 1); // no times, no remove: only asking
-  assert.match(JSON.stringify(section), /"title":"Ask for an update","data":\{"cmd":"askOther","key":"mahanth","who":"Admin & Networking"\}/);
+  const card = b.sentCards.at(-1) as { body: { type: string }[]; actions: { title: string }[] };
+  const json = JSON.stringify(card);
+  const titles = (part: unknown) => [...JSON.stringify(part).matchAll(/"title":"([^"]+)"/g)].map((m) => m[1]);
+
+  // The other admin's group: only the two asks.
+  const other = card.body.find((x) => x.type === "Container" && JSON.stringify(x).includes("Admin & Networking"))!;
+  assert.deepEqual(titles(other), ["Auto ask for update", "Manual ask for update", "Post in Admin & Networking"]);
+  assert.match(JSON.stringify(other), /"cmd":"askOther","key":"mahanth","who":"Admin & Networking"/);
+  assert.match(JSON.stringify(other), /"cmd":"postOther","key":"mahanth","who":"Admin & Networking"/);
+  // A person: both asks, next to the rest.
+  assert.match(json, /"title":"Auto ask for update","data":\{"cmd":"ask","who":"priya@acme.test"\}/);
+  assert.match(json, /"cmd":"postPerson","who":"priya@acme.test"/);
+  // Nothing called just "Ask now" is left, and no second "ask everyone" at the bottom.
+  assert.doesNotMatch(json, /"title":"Ask now"|"title":"Ask group now"|"title":"Ask everyone now"/);
+  assert.ok(!card.actions.some((a) => /ask/i.test(a.title)));
 
   // Nobody else's groups: no section.
   b.engine.otherSenders = () => [{ name: "Mahanth M", key: "mahanth", groups: [] }];
@@ -623,7 +639,7 @@ test("the board shows the other admin's groups with one button only: ask for an 
   assert.doesNotMatch(JSON.stringify(b.sentCards.at(-1)), /Groups followed by/);
 });
 
-test("the board has four buttons at the top: auto and typed updates, for all groups or for everyone", async () => {
+test("the board's top row: auto and manual asks, for all groups or for everyone", async () => {
   assert.equal(cardToCommand({ cmd: "autoGroups" }), "ask all groups");
   assert.equal(cardToCommand({ cmd: "postGroups", manualGroups: " Please send the covering letters by 6 " }), "post groups Please send the covering letters by 6");
   assert.equal(cardToCommand({ cmd: "postEveryone", manualEveryone: "Office closed Monday" }), "post everyone Office closed Monday");
@@ -633,10 +649,44 @@ test("the board has four buttons at the top: auto and typed updates, for all gro
   const card = b.sentCards.at(-1) as { body: Record<string, unknown>[] };
   // Straight under the title, before anything else.
   const top = card.body.slice(0, 3).find((x) => x.type === "ActionSet") as { actions: { title: string }[] } | undefined;
-  assert.deepEqual(top?.actions.map((a) => a.title), ["Auto update: all groups", "Auto update: everyone", "Message all groups", "Message everyone"]);
+  assert.deepEqual(top?.actions.map((a) => a.title), ["Auto ask: all groups", "Auto ask: everyone", "Manual ask: all groups", "Manual ask: everyone"]);
   const json = JSON.stringify(top);
   assert.match(json, /"id":"manualGroups"/);
   assert.match(json, /"id":"manualEveryone"/);
+});
+
+test("autopilot: asks go straight out, a new group's first day included; nothing waits as a draft unless an admin asked for that", async () => {
+  const g = groupSetup();
+  (g.engine as unknown as { config: Config }).config.approveFirstDay = true; // the old setting is ignored
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  assert.equal(g.sent.filter((s) => s.to === "g-rec").length, 1);
+  assert.doesNotMatch(g.admin.at(-1)!, /approval/);
+});
+
+test("a manual ask in one group or to one person: your words first, then replies and follow-ups on autopilot", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "add solo@acme.test");
+  await g.engine.handleMessage(g.cto, "post group Recruitment Team\nPlease share the Deloitte shortlist by 6 pm.");
+  assert.deepEqual(g.sent.map((s) => [s.to, s.text]), [["g-rec", "Please share the Deloitte shortlist by 6 pm."]]);
+  assert.match(g.admin.at(-1)!, /Posted in \*\*Recruitment Team\*\*/);
+  // Ravi's reply gets the usual follow-up, about that message.
+  g.brain.doneAfterUserMessages = 99;
+  await g.engine.handleGroupReply("u-ravi", "working on it");
+  assert.equal(g.sent.filter((s) => s.to === "g-rec").length, 2);
+  const ravi = g.store.personByEmail("ravi@acme.test")!;
+  assert.equal(g.store.get(`topic:${g.store.checkin(ravi.id, "2026-11-16")!.id}`), "Please share the Deloitte shortlist by 6 pm.");
+
+  await g.engine.handleMessage(g.cto, "post to solo@acme.test\nCan you send the offer letter today?");
+  assert.deepEqual(g.sent.at(-1), { to: "chat-solo@acme.test", text: "Can you send the offer letter today?", mentions: undefined, quote: undefined });
+  const solo = g.store.personByEmail("solo@acme.test")!;
+  assert.equal(g.store.checkin(solo.id, "2026-11-16")!.status, "open"); // their reply is read and followed up
+
+  // No such group or person: nothing is sent.
+  const before = g.sent.length;
+  await g.engine.handleMessage(g.cto, "post group Nowhere\nhello");
+  assert.equal(g.sent.length, before);
 });
 
 test("'ask all groups' asks every group the usual way, reading first, and nobody one to one", async () => {

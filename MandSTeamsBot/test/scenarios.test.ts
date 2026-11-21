@@ -207,20 +207,29 @@ test("scenario 2: Sujith asks Mahanth's group for an update from his own board; 
   assert.equal(w.teams.in("g-rec").length, 0);
 });
 
-test("scenario 2b: an ask in the other admin's group that waits for approval says so, and can be cancelled from your own chat", async () => {
+test("scenario 2b: an auto ask in the other admin's group goes straight out, even on that group's first day", async () => {
   const w = await setUp();
-  w.mahanth.engine.selfKey = "mahanth";
-  w.mahanth.store.set("approve:g-adm", "2026-11-16"); // a new group's first day: approve before sending
+  w.mahanth.store.set("approve:g-adm", "2026-11-16"); // what a first day used to set
   await w.press(SUJITH, { cmd: "askOther", key: "mahanth", who: "Admin & Networking" });
-  assert.equal(w.teams.in("g-adm").length, 0); // held, not sent
-  const said = w.toAdmin(SUJITH).at(-1)!;
-  assert.match(said, /waits for Mahanth M's approval/);
-  const id = /mahanth: draft skip (\d+)/.exec(said)?.[1];
-  assert.ok(id);
-  // "Do not send": cancelled from Sujith's own chat, through Mahanth's assistant.
-  await w.botMessage(SUJITH, `mahanth: draft skip ${id}`);
-  assert.match(w.toAdmin(SUJITH).at(-1)!, /Skipped\. Nothing was sent/);
-  assert.equal(w.teams.in("g-adm").length, 0);
+  assert.equal(w.teams.in("g-adm").filter((m) => m.byAssistant).length, 1);
+  assert.match(w.toAdmin(SUJITH).at(-1)!, /Posted in \*\*Admin & Networking\*\*/);
+});
+
+test("scenario 2c: Sujith's manual ask in Mahanth's group: his words go out from Mahanth's account, then replies run on autopilot", async () => {
+  const w = await setUp();
+  w.mahanth.brain.doneAfterUserMessages = 99;
+  await w.press(SUJITH, { cmd: "postOther", key: "mahanth", who: "Admin & Networking", field: "m_o0_0", m_o0_0: "Jitender, is the domain renewal done?" });
+  const posted = w.teams.in("g-adm").filter((m) => m.byAssistant);
+  assert.deepEqual(
+    posted.map((m) => [m.from.name, m.text]),
+    [["Mahanth M", "Jitender, is the domain renewal done?"]],
+  );
+  assert.match(w.toAdmin(SUJITH).at(-1)!, /Posted in \*\*Admin & Networking\*\*/);
+  // Jitender answers: the follow-up is automatic.
+  w.teams.at("2026-11-16T10:05:00Z");
+  w.teams.post("g-adm", JITENDER, "Not yet, waiting on the invoice from GoDaddy");
+  await w.readGroups();
+  assert.equal(w.teams.in("g-adm").filter((m) => m.byAssistant).length, 2);
 });
 
 test("scenario 3: a reply gets one follow-up in the group, then the rest is only recorded", async () => {
