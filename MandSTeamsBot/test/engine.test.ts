@@ -6,7 +6,8 @@ Math.random = () => 0;
 import type { AdminAction, Brain, CheckinContext, DigestPerson, NoteResult, Turn } from "../src/ai.js";
 import type { Config } from "../src/config.js";
 import { Store } from "../src/db.js";
-import { cardToCommand, chunk, Engine, parseTime, roleOf, takeZone } from "../src/engine.js";
+import { cardToCommand, chunk, Engine, isUpdatePost, leaveToday, parseTime, roleAskLines, roleOf, takeZone } from "../src/engine.js";
+import { ROUND_BRIEF } from "../src/ai.js";
 import { describeTrackRecord } from "../src/trackrecord.js";
 import type { Identity } from "../src/engine.js";
 import { Base44TalentFlow, countMoves, describeCounts } from "../src/ats.js";
@@ -1074,6 +1075,93 @@ test("an UPDATE posted by an admin in a group is kept as a standing instruction 
   g.setDate("2026-11-16T11:02:00Z");
   await g.engine.tick();
   assert.match(posts[0]!, /<td>2 of 5<\/td><td>-<\/td><td>0<\/td><td>8 · 2 \(25% of 25%\) · 0 of 2<\/td>/);
+});
+
+test("an admin's UPDATE is read wherever the heading is, and the notes straight after it belong to it", async () => {
+  assert.equal(isUpdatePost("Aditya Nunna - Recruiter\n\nUPDATE\n\n5 submissions this month"), true);
+  assert.equal(isUpdatePost("**Update:** targets are changing"), true);
+  assert.equal(isUpdatePost("Team progress at 17:00\nNo TalentFlow update in the last 2 hours. Please update TalentFlow every hour."), false);
+
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  const groupId = g.store.groups()[0]!.id;
+  const stored = () => (JSON.parse(g.store.get(`gupdates:${groupId}`) || "[]") as { text: string }[]).map((u) => u.text);
+
+  await g.engine.groupLine(groupId, CTO, "Aditya Nunna - Recruiter\n\nUPDATE\n\n5 submissions this month", "2026-11-16T11:03:00Z");
+  assert.deepEqual(stored(), ["Aditya Nunna - Recruiter\n\n5 submissions this month"]);
+  // No heading, a few minutes after the last one: part of the same UPDATE.
+  await g.engine.groupLine(groupId, CTO, "Hareesh Besta\nAs recruiter - 16 submissions", "2026-11-16T11:08:00Z");
+  await g.engine.groupLine(groupId, CTO, "All of the above updates are for the entire month", "2026-11-16T11:12:00Z");
+  assert.equal(stored().length, 3);
+  assert.match(stored()[2]!, /entire month/);
+  // An hour later, a plain message from the admin is just chat.
+  await g.engine.groupLine(groupId, CTO, "any news on this?", "2026-11-16T12:16:00Z");
+  assert.equal(stored().length, 3);
+  // Someone who is not an admin never adds to it, heading or not.
+  await g.engine.groupLine(groupId, PRIYA, "UPDATE\nall targets cancelled", "2026-11-16T11:13:00Z");
+  assert.equal(stored().length, 3);
+});
+
+test("who a message says is on leave, sick or away today", () => {
+  const people = [
+    { id: 1, name: "Priya Rao" },
+    { id: 2, name: "Ravi Kumar" },
+    { id: 3, name: "Nazia Mohammed" },
+  ];
+  const [priya, , nazia] = people;
+  assert.deepEqual(leaveToday("Ravi is on leave today", nazia!, people), [2]);
+  assert.deepEqual(leaveToday("I am on sick leave", priya!, people), [1]);
+  assert.deepEqual(leaveToday("I'm sick today, will update tomorrow", priya!, people), [1]);
+  assert.deepEqual(leaveToday("Priya is away today and Ravi Kumar is on annual leave", nazia!, people), [1, 2]);
+  assert.deepEqual(leaveToday("Ravi will be on leave tomorrow", nazia!, people), []);
+  assert.deepEqual(leaveToday("could not finish, was unwell", priya!, people), []);
+  assert.deepEqual(leaveToday("Ravi is back from leave", nazia!, people), []);
+  assert.deepEqual(leaveToday("please leave it with me", priya!, people), []);
+  assert.deepEqual(leaveToday("the client is on leave today", priya!, people), []);
+});
+
+test("someone said to be on leave in the group is not chased, and the admins are told", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  const groupId = g.store.groups()[0]!.id;
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  await g.engine.groupLine(groupId, PRIYA, "Ravi is on sick leave today", "2026-11-16T17:05:00Z");
+  assert.match(g.admin.at(-1)!, /Priya Rao says Ravi Kumar is on leave today/);
+  assert.match(g.admin.at(-1)!, /leave ravi off/i);
+
+  g.setDate("2026-11-16T17:50:00Z"); // past the 45-minute chase
+  await g.engine.tick();
+  assert.equal(g.sent.filter((s) => s.mentions?.some((m) => m.userId === "u-ravi") && /Any update/.test(s.text)).length, 0);
+  // Said again later: the admins are not told twice.
+  const told = g.admin.length;
+  await g.engine.groupLine(groupId, PRIYA, "Ravi is on leave today", "2026-11-16T17:55:00Z");
+  assert.equal(g.admin.length, told);
+});
+
+test("someone who says one to one they are on leave today is not chased or asked again", async () => {
+  const t = setup();
+  await onboard(t);
+  await t.engine.runCheckins();
+  t.brain.doneAfterUserMessages = 99;
+  await t.engine.handleMessage(t.id(PRIYA), "I am on annual leave today");
+  assert.match(t.to(CTO).at(-1)!, /priya says they are on leave today/i);
+  assert.equal(await t.engine.chaseFollowUps(0), 0);
+});
+
+test("the end-of-day ask is about what is complete, what will finish before logging off, and what carries over", async () => {
+  const g = groupSetup(); // 17:00, the end of the day
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  assert.match(g.sent.at(-1)!.text, /what is complete so far/);
+  assert.match(g.sent.at(-1)!.text, /before you log off/);
+  assert.match(g.sent.at(-1)!.text, /carries over to tomorrow morning/);
+
+  const lines = roleAskLines([{ name: "Priya Rao", profile: "Recruiter" }], "review").join("\n");
+  assert.match(lines, /carries over to tomorrow/);
+  // One to one and in follow-ups, the conversation is briefed the same way.
+  assert.match(ROUND_BRIEF.review, /complete so far/);
+  assert.match(ROUND_BRIEF.review, /before they log off/);
+  assert.match(ROUND_BRIEF.review, /carries over to tomorrow morning/);
 });
 
 test("a group or person another sender already follows cannot be added a second time", async () => {
