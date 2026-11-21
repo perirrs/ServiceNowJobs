@@ -9,9 +9,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=12">
-<link rel="stylesheet" href="gloss.css?v=12">
-<link rel="stylesheet" href="home.css?v=1">
+<link rel="stylesheet" href="styles.css?v=13">
+<link rel="stylesheet" href="gloss.css?v=13">
+<link rel="stylesheet" href="home.css?v=2">
 </head>
 <body class="home">
 
@@ -26,6 +26,7 @@
     <span class="logo3d" aria-hidden="true"><span class="logo3d__gem"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><b>M</b></span></span><b>MERGEN</b>
   </a>
   <nav class="nav__links" aria-label="Page">
+    <a href="#story">Our story</a>
     <a href="servicenow.html">ServiceNow</a>
     <a href="#capabilities">Capabilities</a>
     <a href="#industries">Industries</a>
@@ -35,7 +36,7 @@
   <a class="btn btn--sm" href="#contact">Get started</a>
 </header>
 
-<nav class="rail" id="rail" aria-label="Scenes"></nav>
+<nav class="rail" id="rail" aria-label="Scenes" data-title="Our story"></nav>
 
 <aside class="hud" id="hud" aria-hidden="true">
   <div class="hud__id"><span class="hud__tag" id="hudTag">SCENE 00</span><b id="hudScene">Unlock</b><span class="hud__desc" id="hudDesc">One field of light, reshaped by every capability</span></div>
@@ -75,8 +76,39 @@
     <p class="hero__strip">Scroll <span aria-hidden="true">↓</span> one field of light takes the shape of everything Mergen delivers</p>
   </section>
 
+  <section class="opener" id="story" aria-labelledby="storyTitle">
+    <header class="ch-head">
+      <p class="kicker"><span>Our story</span>Fourteen scenes</p>
+      <h2 id="storyTitle">What Mergen delivers, one scene at a time.</h2>
+      <p class="lead">The numbered scenes below are the Mergen story in two parts: first what Mergen brings to every ServiceNow programme, then the nine capabilities it delivers. The light beside the text takes a new shape for each scene.</p>
+    </header>
+    <nav class="step toc" aria-label="Scenes">
+      <div class="toc__g"><h3>Part 1 · What Mergen brings</h3><ol>
+        <li><a href="#intelligence"><i>01</i><span>Now Intelligence</span><em>Agentic AI in production</em></a></li>
+        <li><a href="#reach"><i>02</i><span>Industries</span><em>Six sectors</em></a></li>
+        <li><a href="#delivery"><i>03</i><span>Delivery</span><em>Advisory to managed service</em></a></li>
+        <li><a href="#strengths"><i>04</i><span>Four strengths</span></a></li>
+      </ol></div>
+      <div class="toc__g"><h3>Part 2 · Nine capabilities</h3><ol>
+        <li><a href="#capabilities"><i>05</i><span>Every capability, one partner</span></a></li>
+
+        <li><a href="#cap-servicenow"><i>06</i><span>ServiceNow</span></a></li>
+        <li><a href="#cap-salesforce"><i>07</i><span>Salesforce</span></a></li>
+        <li><a href="#cap-microsoft"><i>08</i><span>Microsoft</span></a></li>
+        <li><a href="#cap-ai"><i>09</i><span>AI / ML</span></a></li>
+        <li><a href="#cap-ims"><i>10</i><span>IMS</span></a></li>
+        <li><a href="#cap-cloud"><i>11</i><span>Cloud</span></a></li>
+        <li><a href="#cap-cyber"><i>12</i><span>Cybersecurity</span></a></li>
+        <li><a href="#cap-data"><i>13</i><span>Data Analytics</span></a></li>
+        <li><a href="#cap-advisory"><i>14</i><span>Advisory</span></a></li>
+      </ol></div>
+      <p class="toc__after">After the story: <a href="#industries">industries</a>, <a href="#insights">insights</a>, <a href="#leadership">leadership</a> and <a href="#partners">clients</a>.</p>
+    </nav>
+  </section>
+
   <section class="chapter" id="intelligence" data-ch="intelligence" data-shape="sphere" data-label="Intelligence">
     <header class="ch-head">
+      <p class="part">Part 1 · What Mergen brings</p>
       <p class="kicker"><span>01</span>Now Intelligence</p>
       <h2>Embed intelligence across every ServiceNow workflow</h2>
       <p class="lead">Agentic AI and Gen-AI that classify, route, and resolve work in ITSM, CSM, and HRSD.</p>
@@ -130,6 +162,7 @@
 
   <section class="chapter" id="capabilities" data-ch="capabilities" data-shape="inf" data-label="Every capability">
     <header class="ch-head">
+      <p class="part">Part 2 · Nine capabilities</p>
       <p class="kicker"><span>05</span>Digital capabilities</p>
       <h2>Every Capability. One Trusted Partner.</h2>
     </header>
@@ -502,8 +535,8 @@
 </footer>
 
 <script src="https://cdn.jsdelivr.net/npm/lenis@1.1.14/dist/lenis.min.js"></script>
-<script src="home.js?v=1"></script>
-<script src="effects.js?v=12"></script>
-<script src="motion.js?v=12"></script>
+<script src="home.js?v=2"></script>
+<script src="effects.js?v=13"></script>
+<script src="motion.js?v=13"></script>
 </body>
 </html>

@@ -53,6 +53,10 @@
   addEventListener('resize', paint); addEventListener('load', paint);
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(paint);
 
+  /* the story's introduction arrives like any other block, on both layouts */
+  const arrive = new IntersectionObserver(es => { for (const e of es) if (e.isIntersecting) e.target.classList.add('in'); }, { threshold: .1 });
+  $$('.opener .ch-head, .opener .step').forEach(e => (REDUCE ? e.classList.add('in') : arrive.observe(e)));
+
   /* ───────── Glass panes ───────── */
   $$('.svc, .hs__card, .fx-flip > .step:not(.svc), .stack > .step, .case, .abr, .calc__out').forEach(e => e.classList.add('gl'));
   $$('.news > a').forEach(e => e.classList.add('gl', 'gl--light'));

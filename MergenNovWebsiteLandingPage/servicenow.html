@@ -9,8 +9,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=12">
-<link rel="stylesheet" href="gloss.css?v=12">
+<link rel="stylesheet" href="styles.css?v=13">
+<link rel="stylesheet" href="gloss.css?v=13">
 </head>
 <body>
 
@@ -32,7 +32,7 @@
   </a>
   <nav class="nav__links" aria-label="Page">
     <a href="index.html">Mergen home</a>
-    <a href="#knot">The story</a>
+    <a href="#story">The story</a>
     <a href="#return">The return</a>
     <a href="#proof">Proof</a>
     <a href="#industries">Industries</a>
@@ -40,7 +40,7 @@
   <a class="btn btn--sm" href="#contact">Talk to an expert</a>
 </header>
 
-<nav class="rail" id="rail" aria-label="Story chapters"></nav>
+<nav class="rail" id="rail" aria-label="Story chapters" data-title="The story"></nav>
 
 <!-- The ticket's record header. It keeps score for the whole story. -->
 <aside class="hud" id="hud" aria-hidden="true">
@@ -92,9 +92,34 @@
     <div class="hero__strip hero__mods"><p class="when">The ServiceNow core</p><ul class="mods mods--lg" aria-label="ServiceNow modules"><li><a href="#capabilities" data-go-tab="0">ITSM</a></li><li><a href="#capabilities" data-go-tab="1">ITOM</a></li><li><a href="#capabilities" data-go-tab="2">HRSD</a></li><li><a href="#capabilities" data-go-tab="3">CSM</a></li><li><a href="#capabilities" data-go-tab="4">SPM</a></li><li><a href="#capabilities" data-go-tab="5">SecOps</a></li><li><a href="#capabilities" data-go-tab="5">GRC</a></li><li><a href="https://thedemoproject.com/mergen_react_infinity/servicenow-custom-apps">App Engine</a></li><li><a href="#capabilities" data-go-tab="6">Agentic AI</a></li></ul></div>
   </section>
 
+  <!-- THE STORY: what the numbered chapters are -->
+  <section class="opener" id="story" aria-labelledby="storyTitle">
+    <header class="ch-head">
+      <p class="kicker"><span>The story</span>Our approach, in eight chapters</p>
+      <h2 id="storyTitle">How Mergen works, told through one ticket.</h2>
+      <p class="lead">The eight chapters below follow a single incident, INC0048213, from the morning it breaks to the day it can no longer happen. Each chapter is one step in how Mergen delivers ServiceNow, and the graphic beside the text plays that step out.</p>
+    </header>
+    <nav class="step toc" aria-label="Chapters">
+      <div class="toc__g"><h3>Part 1 · The problem</h3><ol>
+        <li><a href="#knot"><i>01</i><span>The backlog</span><em>One ticket, 54 hours</em></a></li>
+        <li><a href="#call"><i>02</i><span>The call</span><em>A better question</em></a></li>
+      </ol></div>
+      <div class="toc__g"><h3>Part 2 · How Mergen works</h3><ol>
+        <li><a href="#listen"><i>03</i><span>Listen</span><em>Discover &amp; Assess</em></a></li>
+        <li><a href="#measure"><i>04</i><span>Measure</span><em>Discover &amp; Assess</em></a></li>
+        <li><a href="#propose"><i>05</i><span>Propose</span><em>Design &amp; Architect</em></a></li>
+        <li><a href="#build"><i>06</i><span>Build</span><em>Build &amp; Deliver</em></a></li>
+        <li><a href="#golive"><i>07</i><span>Go live</span><em>Build &amp; Deliver</em></a></li>
+        <li><a href="#stay"><i>08</i><span>Stay</span><em>Optimize &amp; Scale</em></a></li>
+      </ol></div>
+      <p class="toc__after">After the story: <a href="#return">the return</a>, <a href="#proof">proof</a> and <a href="#partner">every ServiceNow capability</a>.</p>
+    </nav>
+  </section>
+
   <!-- 01 THE KNOT -->
   <section class="chapter" id="knot" data-ch="knot" data-word="BACKLOG" data-label="The backlog">
     <header class="ch-head">
+      <p class="part">Part 1 · The problem</p>
       <p class="kicker"><span>01</span>The backlog</p>
       <h2>09:02. Order entry goes down for 340 sales reps.</h2>
       <p class="lead">Thousands of tickets a month arrive by email, portal, phone, chat, monitoring and walk-up. The clearest way to show what Mergen does is to follow one of them. This is INC0048213.</p>
@@ -159,6 +184,7 @@
   <!-- 03 LISTEN -->
   <section class="chapter" id="listen" data-ch="listen" data-word="LISTEN" data-label="Listen">
     <header class="ch-head">
+      <p class="part">Part 2 · How Mergen works</p>
       <p class="kicker"><span>03</span>Listen<em>Discover &amp; Assess</em></p>
       <h2>First we sit where the work happens.</h2>
     </header>
@@ -809,12 +835,12 @@
 // Wide screens: the story runs beside the copy (story.js). Below 1000px: each chapter carries its own graphic in the flow (story-flow.js).
 (function () {
   var narrow = innerWidth < 1000, s = document.createElement('script');
-  s.src = (narrow ? 'story-flow.js' : 'story.js') + '?v=12';
+  s.src = (narrow ? 'story-flow.js' : 'story.js') + '?v=13';
   // effects.js then gives each section its own motion: slider, accordion, card stack, carousels, marquee
   s.onload = function () {
-    var e = document.createElement('script'); e.src = 'effects.js?v=12'; document.body.appendChild(e);
+    var e = document.createElement('script'); e.src = 'effects.js?v=13'; document.body.appendChild(e);
     // motion.js is the high-end layer: smooth scroll, word-rise headlines, glass, pointer light
-    e.onload = function () { var m = document.createElement('script'); m.src = 'motion.js?v=12'; document.body.appendChild(m); };
+    e.onload = function () { var m = document.createElement('script'); m.src = 'motion.js?v=13'; document.body.appendChild(m); };
   };
   document.body.appendChild(s);
   addEventListener('resize', function () { if ((innerWidth < 1000) !== narrow) location.reload(); });
