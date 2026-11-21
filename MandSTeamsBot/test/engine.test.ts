@@ -1102,6 +1102,30 @@ test("an admin's UPDATE is read wherever the heading is, and the notes straight 
   assert.equal(stored().length, 3);
 });
 
+test("what people type in the group during the day shapes the next ask and every follow-up", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  const groupId = g.store.groups()[0]!.id;
+  // Midday, typed by hand: a new priority from the admin, and a team member's reply to it.
+  await g.engine.groupLine(groupId, CTO, "Team, please prioritise the covering letter for Deloitte first", "2026-11-16T12:00:00Z");
+  await g.engine.groupLine(groupId, PRIYA, "ok, on it now", "2026-11-16T12:05:00Z");
+
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  const memory = g.brain.groupAsks.at(-1)!.memory;
+  assert.match(memory, /prioritise the covering letter/);
+  assert.match(memory, /Priya Rao: ok, on it now/);
+  assert.match(memory, /wins over this morning's plan/);
+
+  // A follow-up to someone's reply knows it too.
+  await g.engine.handleGroupReply("u-priya", "sent 3 submissions today");
+  assert.match(g.brain.turns.at(-1)!.rapport ?? "", /prioritise the covering letter/);
+
+  // The next day starts clean.
+  g.setDate("2026-11-17T09:00:00Z");
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  assert.doesNotMatch(g.brain.groupAsks.at(-1)!.memory, /covering letter/);
+});
+
 test("who a message says is on leave, sick or away today", () => {
   const people = [
     { id: 1, name: "Priya Rao" },
