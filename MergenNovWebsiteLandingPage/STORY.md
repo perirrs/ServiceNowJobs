@@ -25,10 +25,12 @@ After the story: proof (delivery numbers, one case study, four principles), indu
 
 ## The scroll mechanics
 
-- **One fixed stage.** A full-screen canvas sits behind the page. Chapters are ordinary sections that scroll over it, so all the copy is real, selectable, indexable text.
+- **Story beside the copy (1000px and wider).** The copy scrolls in the left column and the graphic holds the right side of the screen, changing with each chapter. A pinned full-screen variant was tried and dropped. `story.js` drives this layout; `story-flow.js` drives the phone layout, and `index.html` loads one of them by width.
+- **One fixed stage.** A full-screen canvas sits behind the page. The copy is still real, selectable, indexable text.
 - **Scroll decides the shape.** Each chapter owns a shape (knot, line, route, loop). While a chapter is on screen its progress drives the detail: the ticket's position, the scan line, how much of the route is built. During the last screen-height of a chapter the thread morphs into the next chapter's shape.
 - **The record bar keeps score.** The strip along the bottom is the incident's record header: state, assignment group, elapsed time, reassignment count, hours lost. It runs live through chapter 01, in step with the timestamps in the copy, freezes as the "as-is baseline" while Mergen works, then runs again in chapter 07 on the new route. This is the page's version of the United Carriers speedometer.
-- **Phones.** The thread plays in the top third of the screen and the copy reads on cards below it. The pinned labels are dropped, and the record bar carries the numbers.
+- **Phones (below 1000px).** Nothing is pinned. Each chapter is ordinary page flow: heading, its own graphic, then the copy. The graphic scrolls with the page and plays as it crosses the screen; the route chapters run top to bottom so the ticket travels down the page level with the reader. Labels are drawn on the graphic.
+- **A different motion per section (`effects.js`).** The copy column does not use one reveal throughout. 01 is a timeline, 02 arrives as chat messages, 03 lights word by word with scroll, 04 tips cards into place, 05 is a slider that scroll moves (a swipe on phones), 06 is an accordion that scroll opens (a tap on phones), 07 is a fast log, 08 stacks cards. Below the story: case studies and insights are drag-and-arrow carousels, industries is a picker that cycles until chosen, client logos are a marquee, and the remaining blocks each arrive a different way.
 - **Reduced motion.** With the system setting on, the thread stops rotating, scroll smoothing is off, and all copy is visible without animation.
 
 ## Where the numbers come from
@@ -43,3 +45,5 @@ After the story: proof (delivery numbers, one case study, four principles), indu
 - `index.html`: all copy and structure
 - `styles.css`: layout, type, the light closing sections
 - `story.js`: the stage. Chapter states are in `state()`, the pinned labels in `PINS`, the savings maths in `calc()`
+- `story-flow.js`: the same stage for phones, one graphic per chapter
+- `effects.js`: the per-section motion (slider, accordion, card stack, word scrub, carousels, picker, marquee)

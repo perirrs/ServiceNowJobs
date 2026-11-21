@@ -319,7 +319,14 @@
   }
 
   function drawPins(k, p, m, A, S) {
-    if (k !== pinK) { if (pinK >= 0) hidePins(pinK); pinK = k; }
+    if (k !== pinK) {
+      // clear every other chapter's labels, whatever their flags say: a fast jump can leave one lit
+      for (const [id, other] of Object.entries(PINS)) {
+        if (id === ids[k]) continue;
+        for (const pin of other) { pin.el.classList.remove('is-on', 'is-hot'); pin.shown = false; pin.isHot = false; }
+      }
+      pinK = k;
+    }
     const set = PINS[ids[k]];
     if (!set || mobile) return;
     const live = m < .1;
@@ -669,6 +676,15 @@
   /* ───────── The return: savings estimate ───────── */
   const RATE = { deflect: .30, effort: .35, outage: .40, tool: 120000 };
   const money = v => (v >= 1e6 ? `$${(v / 1e6).toFixed(v >= 1e7 ? 1 : 2)}M` : `$${Math.round(v / 1e3).toLocaleString('en-US')}K`);
+  // capability tabs
+  $$('.capsx').forEach(root => {
+    const tabs = $$('[data-tab]', root), panels = $$('[data-panel]', root);
+    tabs.forEach(t => t.addEventListener('click', () => {
+      tabs.forEach(x => x.setAttribute('aria-selected', x === t));
+      panels.forEach(x => x.classList.toggle('is-on', x.dataset.panel === t.dataset.tab));
+    }));
+  });
+
   const inp = { t: $('#iTickets'), c: $('#iCost'), h: $('#iHours'), o: $('#iOutage'), n: $('#iTools') };
 
   function calc() {
