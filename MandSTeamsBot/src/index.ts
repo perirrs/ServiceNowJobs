@@ -379,6 +379,8 @@ if (senders.length > 1) {
     s.engine.followedElsewhere = followedElsewhereFor(s, senders);
     // Each board lists the other assistants' groups, with a button to ask them for an update.
     s.engine.otherSenders = othersGroupsFor(s, senders);
+    // An admin who gives an instruction in another admin's group is told what it changed.
+    s.engine.adminChat = (email) => senders.map((o) => o.store.personByEmail(email)?.conversationId).find(Boolean) ?? undefined;
   }
 }
 const senderFor = (email: string) => senders.find((s) => s.email === email) ?? main;

@@ -130,6 +130,7 @@ function world() {
   for (const s of senders) {
     s.engine.followedElsewhere = followedElsewhereFor(s, senders);
     s.engine.otherSenders = othersGroupsFor(s, senders);
+    s.engine.adminChat = (email) => senders.map((o) => o.store.personByEmail(email)?.conversationId).find(Boolean) ?? undefined;
   }
   const keys = senders.map((s) => ({ email: s.email, key: senderKey(s.email) }));
   const idOf = (u: User): Identity => ({ teamsUserId: `t-${u.userId}`, conversationId: `bot-${u.userId}`, name: u.name, lookupEmail: async () => u.email });
@@ -270,6 +271,17 @@ test("scenario 4c: a question about using the bot is answered from its help, not
   const asked = w.sujith.brain.questions.at(-1)!;
   assert.match(asked.material, /How to use this assistant/);
   assert.match(asked.material, /add group/);
+});
+
+test("scenario 4d: UPDATE posts (figures, targets, standing rules) and the notes after them are not read as tasks", async () => {
+  const w = await setUp();
+  w.sujith.brain.nextInstruction = [{ kind: "add", person: "everyone", itemId: null, title: "5 submissions a day", due: null }];
+  w.teams.at("2026-11-16T11:00:00Z");
+  w.teams.post("g-rec", SUJITH, "UPDATE\nRecruiters: 5 submissions a day from today.");
+  w.teams.post("g-rec", SUJITH, "Ravi Kumar\nAs a recruiter 7 submissions this month");
+  await w.readGroups();
+  assert.equal(w.sujith.brain.instructionReads.length, 0);
+  assert.equal(w.sujith.store.activeItems(w.sujith.store.personByEmail(RAVI.email)!.id).length, 0);
 });
 
 test("scenario 5: Mahanth's UPDATE and instructions in Sujith's group count there too", async () => {

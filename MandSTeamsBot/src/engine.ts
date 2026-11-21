@@ -610,17 +610,27 @@ export class Engine {
     return !!this.direct && !this.config.discloseAutomation;
   }
 
-  private async notifyAdmins(text: string): Promise<void> {
+  /**
+   * Tell the admins who use this assistant. With `author`, also the admin whose words led to it
+   * (an instruction or UPDATE in this assistant's group) even if they only use another assistant.
+   */
+  private async notifyAdmins(text: string, author?: Person): Promise<void> {
+    const sent = new Set<string>();
     for (const email of this.config.adminEmails) {
       const admin = this.store.personByEmail(email);
-      if (!admin?.conversationId) continue;
+      const conversationId = admin?.conversationId || (author?.email === email ? this.adminChat?.(email) : undefined);
+      if (!conversationId || sent.has(conversationId)) continue;
+      sent.add(conversationId);
       try {
-        for (const part of chunk(text)) await this.messenger.send(admin.conversationId, part);
+        for (const part of chunk(text)) await this.messenger.send(conversationId, part);
       } catch (err) {
         this.log(`Could not notify ${email}`, err);
       }
     }
   }
+
+  /** An admin's bot chat as another sender's assistant knows it, when this one does not. */
+  adminChat?: (email: string) => string | undefined;
 
   private isAdmin(person: Person): boolean {
     return this.config.adminEmails.includes(person.email);
@@ -895,7 +905,7 @@ export class Engine {
       }
     }
     if (!lines.length) return;
-    await this.notifyAdmins(`**${displayName(author)}'s instruction in ${group.name}.** The tracker now has:\n\n${lines.map((l) => `- ${l}`).join("\n")}`);
+    await this.notifyAdmins(`**${displayName(author)}'s instruction in ${group.name}.** The tracker now has:\n\n${lines.map((l) => `- ${l}`).join("\n")}`, author);
     await this.refreshTrackers(group).catch((err) => this.log(`Could not update the tracker in ${group.name}`, err));
   }
 
@@ -969,7 +979,7 @@ export class Engine {
         this.log("Could not read targets from an UPDATE", err);
       }
     }
-    await this.notifyAdmins(lines.join("\n\n"));
+    await this.notifyAdmins(lines.join("\n\n"), author);
   }
 
   /** The director, HR and anyone whose profile says never to ask: not asked anywhere, one to one included. */
@@ -4944,7 +4954,12 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           } else {
             // What was said in the groups since they were last read counts too.
             for (const g of this.store.groups()) await this.refreshGroupMemory(g, true);
-            await reply(await this.brain.answer(`${displayName(admin)} asks (answer them as "you"): ${detail || original}`, this.material()));
+            await reply(
+              await this.brain.answer(
+                `${displayName(admin)} asks (answer them as "you"): ${detail || original}`,
+                `${this.material()}\n\n## How to use this assistant (its commands and the buttons on the board)\n${ADMIN_HELP}`,
+              ),
+            );
           }
           break;
       }
