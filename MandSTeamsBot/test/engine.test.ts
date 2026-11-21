@@ -890,10 +890,10 @@ test("asking a group by hand first reads everything typed there today, then asks
   assert.doesNotMatch(memory, /Team progress at/); // the assistant's own post
 });
 
-test("a one-to-one history is read in full, the newest messages first: they are ready at once, the older ones added after", async () => {
+test("a one-to-one history is read in full, newest to oldest in batches: the newest first, then each older batch adds background", async () => {
   const history = Array.from({ length: 12 }, (_, i) => ({ fromSender: i % 2 === 0, text: `message number ${i} about work` }));
   const r = rapportSetup(history);
-  (r.engine as unknown as { config: Config }).config.recentMessages = 4; // 500 in real use
+  (r.engine as unknown as { config: Config }).config.historyBatch = 4; // 500 in real use
   const storedWhenOlderRead: (string | undefined)[] = [];
   const revise = r.brain.reviseMemory.bind(r.brain);
   r.brain.reviseMemory = async (input) => {
@@ -901,19 +901,22 @@ test("a one-to-one history is read in full, the newest messages first: they are 
     return revise(input);
   };
   await r.engine.handleMessage(r.cto, `add ${PRIYA}`);
-  // First: the newest messages, for how they talk now and what is going on.
+  // First: the newest batch, for how they talk now and what is going on.
   assert.deepEqual(
     r.brain.rapportCalls.at(-1)!.map((m) => m.text),
     ["message number 8 about work", "message number 9 about work", "message number 10 about work", "message number 11 about work"],
   );
-  // That is kept straight away, before the older history is read.
+  // Kept straight away, before anything older is read.
   assert.match(storedWhenOlderRead[0] ?? "", /Casual/);
-  // Then the rest of the history, oldest first.
-  assert.match(r.brain.revisions[0]!.transcript, /message number 0 about work[\s\S]*message number 7 about work/);
-  assert.doesNotMatch(r.brain.revisions[0]!.transcript, /message number 8 /);
-  const kept = r.store.get(`rapport:${r.store.personByEmail(PRIYA)!.id}`)!;
-  assert.match(kept, /Casual/);
-  assert.match(kept, /older chat history:\nMEMORY v1/i);
+  // Then the batch before it, and the one before that, each added to what is already known, as older background.
+  const [second, third] = r.brain.revisions as unknown as { transcript: string; memory: string; older?: boolean }[];
+  assert.match(second!.transcript, /message number 4 about work[\s\S]*message number 7 about work/);
+  assert.doesNotMatch(second!.transcript, /message number (3|8) /);
+  assert.match(second!.memory, /Casual/);
+  assert.equal(second!.older, true);
+  assert.match(third!.transcript, /message number 0 about work[\s\S]*message number 3 about work/);
+  assert.equal(third!.memory, "MEMORY v1");
+  assert.equal(r.store.get(`rapport:${r.store.personByEmail(PRIYA)!.id}`), "MEMORY v2");
 });
 
 test("the assistant's own earlier messages are left out of what it learns from", async () => {
@@ -1217,11 +1220,9 @@ test("'reread' reads every followed group and everyone's one-to-one chat again f
   assert.match(g.admin.at(-1)!, /Read again from the start: 1 group and 2 people/);
 });
 
-test("a group history is read in full, the newest messages first; then the older ones in parts, oldest first; the newest have the last word", async () => {
+test("a group history is read in full, newest to oldest in batches: the newest is kept at once, each older batch adds background", async () => {
   const g = groupSetup();
-  const cfg = (g.engine as unknown as { config: Config }).config;
-  cfg.recentMessages = 3; // 500 in real use
-  cfg.historyChunkChars = 150; // a few older messages per part
+  (g.engine as unknown as { config: Config }).config.historyBatch = 3; // 500 in real use
   (g.engine as unknown as { direct: { history: unknown } }).direct.history = async (chatId: string) =>
     chatId === "g-rec"
       ? Array.from({ length: 10 }, (_, i) => ({ fromSender: false, from: "Ravi Kumar", text: `group message ${i}`, at: `2026-11-${String(i + 1).padStart(2, "0")}T10:00:00Z` }))
@@ -1233,18 +1234,23 @@ test("a group history is read in full, the newest messages first; then the older
     return revise(input);
   };
   await g.engine.handleMessage(g.cto, "add group Recruitment Team");
-  const parts = g.brain.revisions.filter((r) => r.about.includes("group chat"));
-  // First the newest three, kept at once.
-  assert.match(parts[0]!.transcript, /group message 7\n.*group message 8\n.*group message 9$/);
-  assert.doesNotMatch(parts[0]!.transcript, /group message 0$/m);
+  const parts = (g.brain.revisions as unknown as { about: string; transcript: string; memory: string; older?: boolean }[]).filter((r) =>
+    r.about.includes("group chat"),
+  );
+  const said = (p: { transcript: string }) => [...p.transcript.matchAll(/group message (\d)/g)].map((m) => Number(m[1]));
+  // Newest batch first, then 3-6 back, then 6-9 back, then what is left.
+  assert.deepEqual(parts.map(said), [[7, 8, 9], [4, 5, 6], [1, 2, 3], [0]]);
+  assert.deepEqual(
+    parts.map((p) => !!p.older),
+    [false, true, true, true],
+  );
+  // Each batch builds on what is already known, and what is known is saved after every batch.
+  assert.deepEqual(
+    parts.map((p) => p.memory),
+    ["", "MEMORY v1", "MEMORY v2", "MEMORY v3"],
+  );
   assert.equal(storedAtEachRead[1], "MEMORY v1");
-  // Then the older ones, oldest first, in more than one part.
-  assert.match(parts[1]!.transcript, /group message 0$/m);
-  assert.ok(parts.length >= 4);
-  // Last, the newest again on top of everything older, so they have the last word.
-  assert.match(parts.at(-1)!.transcript, /group message 7\n.*group message 8\n.*group message 9$/);
-  assert.equal(parts.at(-1)!.memory, `MEMORY v${g.brain.revisions.length - 1}`);
-  assert.equal(g.store.get(`gmemory:${g.store.groups()[0]!.id}`), `MEMORY v${g.brain.revisions.length}`);
+  assert.equal(g.store.get(`gmemory:${g.store.groups()[0]!.id}`), "MEMORY v4");
 });
 
 test("an UPDATE posted by an admin in a group is kept as a standing instruction and its targets take effect", async () => {
