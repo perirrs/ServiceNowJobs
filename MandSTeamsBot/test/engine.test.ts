@@ -1461,6 +1461,21 @@ test("the tracker marks what is due tomorrow and what is behind for the time lef
   assert.ok(late);
 });
 
+test("work an admin asked for is raised before other work due the same day, and says who asked", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  const groupId = g.store.groups()[0]!.id;
+  const ravi = g.store.personByEmail("ravi@acme.test")!;
+  g.store.addItem(ravi.id, "Mail setup", "open", "", "2026-11-16", "2026-11-16"); // older, due today
+  g.brain.nextInstruction = [{ kind: "add", person: "Ravi Kumar", itemId: null, title: "TalentFlow go-live", due: "2026-11-16" }];
+  await g.engine.groupLine(groupId, CTO, "Ravi, make the TalentFlow website live today, urgent", "2026-11-16T17:05:00Z");
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  const memory = (g.brain.groupAsks.at(-1)!.members.find((m) => m.name === "Ravi Kumar") as { memory: string }).memory;
+  const raise = memory.split("Deadlines to raise now")[1]!;
+  assert.ok(raise.indexOf("TalentFlow go-live") < raise.indexOf("Mail setup"));
+  assert.match(raise, /TalentFlow go-live: due today\. Is it done\? \(cto@acme\.test asked for this\)/);
+});
+
 test("a one-to-one opening is briefed with the person's deadline touchpoints", async () => {
   const t = setup();
   await onboard(t);

@@ -113,6 +113,7 @@ function world() {
   const make = (sender: User) => {
     const store = new Store(":memory:");
     const brain = new FakeBrain();
+    const direct = teams.direct(sender);
     const engine = new Engine(
       store,
       brain,
@@ -120,9 +121,9 @@ function world() {
       { ...config },
       () => teams.now,
       () => undefined,
-      teams.direct(sender),
+      direct,
     );
-    return { sender, store, brain, engine, name: sender.name, email: sender.email, cursors: new Map<string, string>() };
+    return { sender, store, brain, engine, direct, name: sender.name, email: sender.email, cursors: new Map<string, string>() };
   };
   const sujith = make(SUJITH);
   const mahanth = make(MAHANTH);
@@ -132,6 +133,8 @@ function world() {
     s.engine.otherSenders = othersGroupsFor(s, senders);
     s.engine.adminChat = (email) => senders.map((o) => o.store.personByEmail(email)?.conversationId).find(Boolean) ?? undefined;
     s.engine.selfKey = senderKey(s.email);
+    // An ask the other admin makes in this assistant's group goes out from their own account.
+    s.engine.voiceFor = (email) => senders.find((o) => o.email === email)?.direct;
   }
   const keys = senders.map((s) => ({ email: s.email, key: senderKey(s.email) }));
   const idOf = (u: User): Identity => ({ teamsUserId: `t-${u.userId}`, conversationId: `bot-${u.userId}`, name: u.name, lookupEmail: async () => u.email });
@@ -154,7 +157,8 @@ function world() {
         if (fresh.length) s.cursors.set(g.chatId, fresh.at(-1)!.at);
         const listening = s.engine.listeningGroups().some((l) => l.group.id === g.id);
         for (const m of fresh) {
-          if (m.from === s.sender && m.byAssistant) continue;
+          // The assistant's own posts: from its sender, or from the other admin's account during their round.
+          if (m.from === s.sender ? m.byAssistant : s.engine.isAssistantGroupText(g.id, m.text)) continue;
           await s.engine.groupLine(g.id, m.from.email, m.text, m.at);
           if (listening && m.from !== s.sender) await s.engine.handleGroupReply(m.from.userId, m.text, m.id, g.id);
         }
@@ -198,16 +202,40 @@ test("scenario 1: each admin runs their own groups; a group cannot be taken twic
   assert.match(w.boardOf(MAHANTH), /"cmd":"askOther","key":"sujith","who":"Recruitment Team"/);
 });
 
-test("scenario 2: Sujith asks Mahanth's group for an update from his own board; it goes out from Mahanth's account and Sujith hears back", async () => {
+test("scenario 2: Sujith asks Mahanth's group for an update from his own board; it goes out from Sujith's own account and Sujith hears back", async () => {
   const w = await setUp();
   await w.press(SUJITH, { cmd: "askOther", key: "mahanth", who: "Admin & Networking" });
   const posted = w.teams.in("g-adm").filter((m) => m.byAssistant);
   assert.equal(posted.length, 1);
-  assert.equal(posted[0]!.from, MAHANTH); // Mahanth's group, Mahanth's account
+  assert.equal(posted[0]!.from, SUJITH); // Sujith asked, so it comes from Sujith's account
   assert.deepEqual(posted[0]!.mentions, [JITENDER.userId]); // the team member, not the admins
   assert.match(w.toAdmin(SUJITH).at(-1)!, /Posted in \*\*Admin & Networking\*\*/);
   // Nothing went to Sujith's own group.
   assert.equal(w.teams.in("g-rec").length, 0);
+});
+
+test("scenario 2a: the whole round Sujith starts in Mahanth's group comes from Sujith; Mahanth's next ask is his own again", async () => {
+  const w = await setUp();
+  w.mahanth.brain.doneAfterUserMessages = 99;
+  await w.press(SUJITH, { cmd: "askOther", key: "mahanth", who: "Admin & Networking" });
+  w.teams.at("2026-11-16T10:05:00Z");
+  w.teams.post("g-adm", JITENDER, "Working on the TalentFlow go-live, SQL port still blocked");
+  await w.readGroups();
+  const fromBot = () => w.teams.in("g-adm").filter((m) => m.byAssistant);
+  assert.deepEqual(
+    fromBot().map((m) => m.from.name),
+    ["Sujith", "Sujith"], // the ask and the follow-up
+  );
+  // Mahanth's assistant knows those were its own posts: not an instruction from Sujith, not a reply.
+  assert.equal(w.mahanth.brain.instructionReads.length, 0);
+  // Jitender's reply and the follow-up are still kept by Mahanth's assistant, which runs the group.
+  const jit = w.mahanth.store.personByEmail(JITENDER.email)!;
+  assert.ok(w.mahanth.store.messages(w.mahanth.store.checkin(jit.id, "2026-11-16")!.id).length >= 3);
+
+  // The next day Mahanth asks himself: from his account.
+  w.teams.at("2026-11-17T10:00:00Z");
+  await w.botMessage(MAHANTH, "ask group Admin & Networking");
+  assert.equal(fromBot().at(-1)!.from.name, "Mahanth M");
 });
 
 test("scenario 2b: an auto ask in the other admin's group goes straight out, even on that group's first day", async () => {
@@ -225,7 +253,7 @@ test("scenario 2c: Sujith's manual ask in Mahanth's group: his words go out from
   const posted = w.teams.in("g-adm").filter((m) => m.byAssistant);
   assert.deepEqual(
     posted.map((m) => [m.from.name, m.text]),
-    [["Mahanth M", "Jitender, is the domain renewal done?"]],
+    [["Sujith", "Jitender, is the domain renewal done?"]],
   );
   assert.match(w.toAdmin(SUJITH).at(-1)!, /Posted in \*\*Admin & Networking\*\*/);
   // Jitender answers: the follow-up is automatic.
