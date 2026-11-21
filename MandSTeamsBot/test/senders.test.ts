@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import path from "node:path";
-import { extraSenders, followedElsewhereFor, routeAdminMessage, senderDataDir } from "../src/senders.js";
+import { extraSenders, followedElsewhereFor, othersGroupsFor, routeAdminMessage, senderDataDir, senderKey } from "../src/senders.js";
 
 const SUJITH = "sujith@mergencorp.com";
 const MAHANTH = "mahanth.m@mergencorp.com";
@@ -33,6 +33,18 @@ test("extra senders are read from the setting, each with a data folder of its ow
   assert.deepEqual(extraSenders(`${SUJITH},${MAHANTH}`, SUJITH), [MAHANTH]); // the main sender is not an extra
   assert.deepEqual(extraSenders("", SUJITH), []);
   assert.equal(senderDataDir("./data", MAHANTH), path.join("./data", "senders", MAHANTH));
+});
+
+test("each sender sees the groups the other senders follow, with the name to send them a request", () => {
+  const store = (groups: string[]) => ({
+    groups: () => groups.map((name, i) => ({ chatId: `c${i}`, name })),
+    personByEmail: () => undefined,
+  });
+  const sujith = { name: "Sujith", email: SUJITH, store: store(["Recruitment Team"]) };
+  const mahanth = { name: "Mahanth M", email: MAHANTH, store: store(["Admin & Networking", "Sales"]) };
+  assert.deepEqual(othersGroupsFor(sujith, [sujith, mahanth])(), [{ name: "Mahanth M", key: "mahanth", groups: ["Admin & Networking", "Sales"] }]);
+  assert.deepEqual(othersGroupsFor(mahanth, [sujith, mahanth])(), [{ name: "Sujith", key: "sujith", groups: ["Recruitment Team"] }]);
+  assert.equal(senderKey(MAHANTH), "mahanth");
 });
 
 test("each sender is told which other sender already follows a group or person", () => {

@@ -709,6 +709,27 @@ function boardSetup() {
   return { store, brain, engine, id, sentCards, edits };
 }
 
+test("the board shows the other admin's groups with one button only: ask for an update", async () => {
+  assert.equal(cardToCommand({ cmd: "askOther", key: "mahanth", who: "Admin & Networking" }), "mahanth: ask group Admin & Networking");
+
+  const b = boardSetup();
+  b.engine.otherSenders = () => [{ name: "Mahanth M", key: "mahanth", groups: ["Admin & Networking"] }];
+  await b.engine.handleMessage(b.id(CTO), "board");
+  const card = JSON.stringify(b.sentCards.at(-1));
+  assert.match(card, /Groups followed by Mahanth M/);
+  const section = (b.sentCards.at(-1) as { body: { type: string; items?: unknown[] }[] }).body.find(
+    (x) => x.type === "Container" && JSON.stringify(x).includes("Admin & Networking"),
+  )!;
+  const actions = JSON.stringify(section).match(/"type":"Action\.[A-Za-z]+"/g) ?? [];
+  assert.equal(actions.length, 1); // no times, no remove: only asking
+  assert.match(JSON.stringify(section), /"title":"Ask for an update","data":\{"cmd":"askOther","key":"mahanth","who":"Admin & Networking"\}/);
+
+  // Nobody else's groups: no section.
+  b.engine.otherSenders = () => [{ name: "Mahanth M", key: "mahanth", groups: [] }];
+  await b.engine.handleMessage(b.id(CTO), "board");
+  assert.doesNotMatch(JSON.stringify(b.sentCards.at(-1)), /Groups followed by/);
+});
+
 test("the board has four buttons at the top: auto and typed updates, for all groups or for everyone", async () => {
   assert.equal(cardToCommand({ cmd: "autoGroups" }), "ask all groups");
   assert.equal(cardToCommand({ cmd: "postGroups", manualGroups: " Please send the covering letters by 6 " }), "post groups Please send the covering letters by 6");
