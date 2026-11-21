@@ -7,7 +7,7 @@ import type { AdminAction, CheckinContext, InstructionAction } from "../src/ai.j
 import { FakeBrain } from "./fakes.js";
 import type { Config } from "../src/config.js";
 import { Store } from "../src/db.js";
-import { cardToCommand, chunk, Engine, isUpdatePost, leaveToday, parseTime, roleAskLines, roleOf, takeZone } from "../src/engine.js";
+import { cardToCommand, chunk, deadlineTouchpoint, Engine, isUpdatePost, leaveToday, parseTime, roleAskLines, roleOf, takeZone } from "../src/engine.js";
 import { ROUND_BRIEF } from "../src/ai.js";
 import { describeTrackRecord } from "../src/trackrecord.js";
 import type { Identity } from "../src/engine.js";
@@ -1342,6 +1342,68 @@ test("admin instructions move, pause, resume, stop and finish work on the tracke
   // The instruction itself is also kept with what was said in the group today.
   await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
   assert.match(g.brain.groupAsks.at(-1)!.memory, /SQL port fix first, today/);
+});
+
+test("deadline touchpoints: what to ask about each piece of work, and when, from its due date and progress", () => {
+  const today = "2026-11-16"; // a Monday
+  const item = (due: string | null, extra: { progress?: number | null; firstSeen?: string; status?: "open" | "blocked" | "done" } = {}) => ({
+    id: 1,
+    title: "Website launch",
+    due,
+    progress: extra.progress ?? null,
+    firstSeen: extra.firstSeen ?? today,
+    status: extra.status ?? ("open" as const),
+  });
+  const say = (i: ReturnType<typeof item>, last = "") => deadlineTouchpoint(i, today, last)?.text ?? null;
+
+  assert.match(say(item("2026-11-13"))!, /Website launch: was due 13 Nov.*What is left, and what is the new date\?/);
+  assert.match(say(item("2026-11-16"))!, /due today\. Is it done\?/);
+  assert.match(say(item("2026-11-17"))!, /due tomorrow\. On track, anything blocking\?/);
+  assert.match(say(item("2026-11-18"))!, /due Wednesday\. How is it going, any blockers\?/);
+  assert.match(say(item("2026-12-10"))!, /coming up on 10 Dec\. Has it started, and how far along is it\?/);
+  // Behind for the time left: most of the time gone, little done.
+  assert.match(say(item("2026-11-20", { firstSeen: "2026-11-06", progress: 10 }))!, /due Friday, 10% done\. Can it be prioritised, or is there a new date\?/);
+  assert.match(say(item("2026-11-24", { firstSeen: "2026-11-02", progress: null }))!, /no progress reported yet\. Can it be prioritised/);
+
+  // How often: far off, once a week; a week or less, every other day; three days or less, daily.
+  assert.equal(say(item("2026-12-10"), "2026-11-12"), null);
+  assert.ok(say(item("2026-12-10"), "2026-11-09"));
+  assert.equal(say(item("2026-11-21"), "2026-11-15"), null); // 5 days off, touched yesterday
+  assert.ok(say(item("2026-11-21"), "2026-11-14"));
+  assert.equal(say(item("2026-11-18"), today), null); // already raised today
+  assert.ok(say(item("2026-11-16"), today)); // due today: asked again at the end of the day
+  // Nothing to raise.
+  assert.equal(say(item(null)), null);
+  assert.equal(say(item("2026-11-17", { status: "done" })), null);
+  // Most urgent first.
+  assert.ok(deadlineTouchpoint(item("2026-11-13"), today)!.urgency < deadlineTouchpoint(item("2026-11-17"), today)!.urgency);
+});
+
+test("group asks raise each person's most urgent deadlines, and a far-off one is not raised again for a week", async () => {
+  const g = groupSetup();
+  await g.engine.handleMessage(g.cto, "add group Recruitment Team");
+  const ravi = g.store.personByEmail("ravi@acme.test")!;
+  g.store.addItem(ravi.id, "Deloitte profiles", "open", "", "2026-11-16", "2026-11-17");
+  g.store.addItem(ravi.id, "Annual client report", "open", "", "2026-11-16", "2026-12-10");
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  const memory = g.brain.groupAsks.at(-1)!.members.find((m) => m.name === "Ravi Kumar")! as { memory: string };
+  assert.match(memory.memory, /Deadlines to raise now[\s\S]*Deloitte profiles: due tomorrow[\s\S]*Annual client report: coming up on 10 Dec/);
+
+  // Next day: the report is not raised again; the profiles are, as due today.
+  g.setDate("2026-11-17T09:00:00Z");
+  await g.engine.handleMessage(g.cto, "ask group Recruitment Team");
+  const next = g.brain.groupAsks.at(-1)!.members.find((m) => m.name === "Ravi Kumar")! as { memory: string };
+  assert.match(next.memory, /Deloitte profiles: due today/);
+  assert.doesNotMatch(next.memory, /Annual client report: coming up/);
+});
+
+test("a one-to-one opening is briefed with the person's deadline touchpoints", async () => {
+  const t = setup();
+  await onboard(t);
+  const priya = t.store.personByEmail(PRIYA)!;
+  t.store.addItem(priya.id, "Offer letters", "open", "", "2026-11-16", "2026-11-16");
+  await t.engine.runCheckins();
+  assert.deepEqual(t.brain.turns.find((x) => x.opening)!.touchpoints, ["Offer letters: due today. Is it done?"]);
 });
 
 test("who a message says is on leave, sick or away today", () => {
