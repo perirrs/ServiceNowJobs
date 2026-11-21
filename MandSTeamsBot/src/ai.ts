@@ -160,6 +160,8 @@ export interface Brain {
     memory: string;
     transcript: string;
     today?: string;
+    /** The messages are older than everything the memory covers (history read newest to oldest). */
+    older?: boolean;
   }): Promise<string>;
   /** Work out what an admin's free-form message is asking the bot to do. */
   interpret(text: string, known: { people: { name: string; email: string }[]; groups: string[] }): Promise<AdminAction[]>;
@@ -842,8 +844,26 @@ Leave out work that was finished more than 14 days ago, and anything that has la
     memory: string;
     transcript: string;
     today?: string;
+    older?: boolean;
   }): Promise<string> {
-    const { about, senderName, memory, transcript, today } = input;
+    const { about, senderName, memory, transcript, today, older } = input;
+    if (older) {
+      return this.text(
+        `You keep a short working memory for an assistant that asks people for daily work updates on behalf of ${senderName}. This memory is about ${about}. The chat history is being read from the newest messages back to the oldest, so the memory already holds the most recent picture.
+
+You are given the memory as it stands and a batch of OLDER Teams messages, from before anything the memory covers. Return the whole memory, revised, under 350 words:
+
+- The memory is newer than these messages and always wins. Never replace, contradict or undo anything in it because of these messages.
+- Add only background that still helps: how long something has been going on, long-running commitments and targets, recurring problems, who usually does what, and how ${senderName} writes to each person if the memory does not say yet.
+- Leave out anything these messages show was finished or overtaken, and anything too old to matter now.
+- For a group, organise it by person.
+- Record only what the messages say. Leave out anything personal or sensitive, such as health, family, money or other people's private matters.
+
+Write it as plain notes, no preamble.`,
+        `${today ? `Today is ${today}.\n\n` : ""}## Memory as it stands (newer)\n${memory || "(empty)"}\n\n## Older messages\n${transcript}`,
+        "medium",
+      );
+    }
     return this.text(
       `You keep a short working memory for an assistant that asks people for daily work updates on behalf of ${senderName}. This memory is about ${about}. It exists so that tomorrow's questions are the right ones: specific, and aware of what has already been said.
 

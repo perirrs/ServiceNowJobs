@@ -2030,12 +2030,12 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         (m) => !(m.fromSender && own.has(m.text.replace(/\s+/g, " ").trim())),
       );
       if (fresh.length) {
-        const revised = await this.foldMemory(
+        await this.readHistory(
           `${displayName(person)}, and how ${this.direct.senderName} works with them`,
           this.store.get(key) || "",
           fresh.map((m) => `${m.at.slice(0, 10)} ${m.fromSender ? this.direct!.senderName : displayName(person)}: ${m.text.slice(0, 300)}`),
+          (memory) => this.store.set(key, memory),
         );
-        if (revised) this.store.set(key, revised);
       }
       this.store.set(`memcursor:${person.id}`, this.now().toISOString());
       this.store.set(`memday:${person.id}`, this.today());
@@ -2065,19 +2065,33 @@ So you know how it's used: your answers are summarised each day for the CTO and 
   }
 
   /**
-   * Fold chat lines into a memory part by part, oldest first: the whole history counts, and the
-   * newest part has the last word (what is stale or finished is dropped as later parts come in).
+   * Read chat lines (oldest first, as Teams gives them) into a memory, newest to oldest in
+   * batches of `historyBatch` (500) messages: the newest 500, then 500 to 1,000 back, and so on.
+   * The newest batch is read as what is new; every older batch only adds background and never
+   * overrides what is already known. A batch too long to read at once goes in parts, newest
+   * first. The memory is saved after every batch, so it is usable while the rest is read.
+   * With `allOlder`, even the first batch is older than what the memory holds.
    */
-  private async foldMemory(about: string, memory: string, lines: string[]): Promise<string> {
-    for (const part of this.historyParts(lines, (l) => l.length + 1)) {
-      const revised = await this.brain.reviseMemory({
-        about,
-        senderName: this.direct?.senderName ?? "",
-        memory,
-        transcript: part.join("\n"),
-        today: this.today(),
-      });
-      if (revised) memory = revised;
+  private async readHistory(about: string, memory: string, lines: string[], save?: (memory: string) => void, allOlder = false): Promise<string> {
+    const batch = Math.max(1, this.config.historyBatch ?? 500);
+    let older = allOlder;
+    for (let end = lines.length; end > 0; end -= batch) {
+      const part = lines.slice(Math.max(0, end - batch), end);
+      for (const piece of this.historyParts(part, (l) => l.length + 1).reverse()) {
+        const revised = await this.brain.reviseMemory({
+          about,
+          senderName: this.direct?.senderName ?? "",
+          memory,
+          transcript: piece.join("\n"),
+          today: this.today(),
+          ...(older ? { older: true } : {}),
+        });
+        if (revised) {
+          memory = revised;
+          save?.(memory);
+        }
+        older = true;
+      }
     }
     return memory;
   }
@@ -2092,13 +2106,13 @@ So you know how it's used: your answers are summarised each day for the CTO and 
         (m) => !(m.fromSender && m.text.startsWith("Team tracker")),
       );
       if (fresh.length) {
-        const revised = await this.foldMemory(
+        await this.readHistory(
           `the group chat "${group.name}" and the work of each person in it`,
           this.store.get(`gmemory:${group.id}`) || "",
           // Long posts (tables of figures) are kept whole enough to be understood.
           fresh.map((m) => `${m.at.slice(0, 10)} ${m.fromSender ? this.direct!.senderName : m.from || "Someone"}: ${m.text.slice(0, 6000)}`),
+          (memory) => this.store.set(`gmemory:${group.id}`, memory),
         );
-        if (revised) this.store.set(`gmemory:${group.id}`, revised);
       }
       this.store.set(`gmemcursor:${group.id}`, this.now().toISOString());
       this.store.set(`gmemday:${group.id}`, this.today());
@@ -2129,27 +2143,27 @@ So you know how it's used: your answers are summarised each day for the CTO and 
       let text = "";
       // Enough to learn a tone from, or at least enough to know what is going on.
       if (chat.filter((m) => m.fromSender).length >= 3 || chat.length >= 8) {
-        // A long history is read in full, in parts: the older parts become a memory (oldest
-        // first), and the tone is learned from the newest part, which is how they talk now.
-        const parts = this.historyParts(chat, (m) => Math.min(m.text.length, 300) + 30);
+        // The whole history, newest to oldest in batches: the tone and the current picture come
+        // from the newest 500 messages and are kept at once; every older batch then adds background.
         const senderName = this.direct.senderName;
-        const earlier =
-          parts.length > 1
-            ? await this.foldMemory(
-                `${displayName(person)}, and how ${senderName} works with them`,
-                "",
-                parts
-                  .slice(0, -1)
-                  .flat()
-                  .map((m) => `${m.at ? `${m.at.slice(0, 10)} ` : ""}${m.fromSender ? senderName : displayName(person)}: ${m.text.slice(0, 300)}`),
-              )
-            : "";
-        const learned = await this.brain.learnRapport(person, senderName, parts.at(-1)!, this.today());
-        text = earlier ? `${learned.brief}\n\nFrom the older chat history:\n${earlier}` : learned.brief;
+        const newest = this.historyParts(chat.slice(-Math.max(1, this.config.historyBatch ?? 500)), (m) => Math.min(m.text.length, 300) + 30).at(-1)!;
+        const learned = await this.brain.learnRapport(person, senderName, newest, this.today());
+        text = learned.brief;
+        this.store.set(key, text);
         // A greeting the admin set by hand is never overwritten by what was learned.
         const address = learned.address.replace(/^hi\b[\s,]*/i, "").replace(/[\n,.!]+/g, " ").trim().slice(0, 30);
         if (address && this.store.get(`greeting:${person.id}`) === undefined) {
           this.store.set(`greeting:${person.id}`, `Hi ${address}`);
+        }
+        const older = chat.slice(0, chat.length - newest.length);
+        if (older.length) {
+          text = await this.readHistory(
+            `${displayName(person)}, and how ${senderName} works with them`,
+            text,
+            older.map((m) => `${m.at ? `${m.at.slice(0, 10)} ` : ""}${m.fromSender ? senderName : displayName(person)}: ${m.text.slice(0, 300)}`),
+            (memory) => this.store.set(key, memory),
+            true,
+          );
         }
       }
       this.store.set(key, text);

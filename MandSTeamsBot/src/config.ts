@@ -25,6 +25,8 @@ export interface Config {
   historyMessages: number;
   /** How much chat the model reads at once; a longer history is read in parts of this size, oldest first. */
   historyChunkChars?: number;
+  /** Chat history is read newest to oldest in batches of this many messages (500). */
+  historyBatch?: number;
   /** Minutes after a group is asked during which replies in the group count as updates. */
   groupWindowMinutes: number;
   /**
@@ -68,6 +70,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     // The whole chat history: long histories are read in parts, so there is no need to cut them short.
     historyMessages: Number(env.HISTORY_MESSAGES ?? 1_000_000),
     historyChunkChars: Number(env.HISTORY_CHUNK_CHARS ?? 250_000),
+    // Histories are read newest to oldest in batches of this many messages.
+    historyBatch: Number(env.HISTORY_BATCH ?? 500),
   };
 }
 
