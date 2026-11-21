@@ -95,7 +95,8 @@ const ADMIN_HELP = `**Daily Check-in: what you can type**
 - **tracker build** Group Name: go through the group's whole chat history and build its tracker: each piece of work by person, what is done so far, progress and due date.
 - **tracker** Group Name: post (or refresh) the tracker table in that group: who is doing what, due dates and status, pinned at the top and kept up to date by me. **tracker Group Name off** stops it.
 - **add group** Group Name: follow a Teams group chat. I first read the group's whole chat history and each member's whole chat with you, then build and pin the tracker. Updates are asked for in the group, and follow-up questions stay there with the person tagged; only something that should not be said in front of the group goes to them one to one. **ask group** Name asks now, **remove group** Name stops.
-- **ask** name: ask them for an update right now. **ask all** asks everyone.
+- **ask** name: ask them for an update right now. **ask all** asks everyone; **ask all groups** asks every group. Either way I read what was said first and ask follow-up questions from it.
+- **post groups** your message: posted exactly as you write it in every group. **post everyone** your message: in every group, and to everyone followed one to one. Replies are read and followed up like any other ask. Also on the board, as the four buttons at the top.
 - **profile** name: their role, responsibilities and targets, so the questions fit their job
 - **style** name: what I learned from your past chat about how you write to them. **style name refresh** reads the chat again.
 - **greeting** name Hi Anna: how to open messages to that person. I learn this from your past chat; use this to set or correct it. **greeting name off** goes back to a plain Hi.
@@ -136,6 +137,12 @@ export function cardToCommand(value: unknown): string {
       return `remove ${str("who")}`;
     case "askAll":
       return "ask all";
+    case "autoGroups":
+      return "ask all groups";
+    case "postGroups":
+      return `post groups ${str("manualGroups")}`.trim();
+    case "postEveryone":
+      return `post everyone ${str("manualEveryone")}`.trim();
     case "addGroup":
       return `add group ${str("groupName")}`;
     case "askGroup":
@@ -323,6 +330,9 @@ export function roleAskLines(people: { name: string; profile: string | null }[],
   if (lines.length) lines.push(morning ? "Please keep TalentFlow updated as you go." : "Please update TalentFlow before you log off, and say what carries over to tomorrow morning.");
   return lines;
 }
+
+/** "post groups <message>", "post everyone <message>": the sender's own words, sent as they are. */
+const MANUAL_POST = /^(all\s+groups|groups?|everyone|everybody)\b[ \t:,-]*([\s\S]*)$/i;
 
 /** A line that is only the word UPDATE, as a heading: "UPDATE", "**Update:**". */
 const UPDATE_LINE = /^\s*\**\s*update\s*\**\s*[:-]?\s*\**\s*$/i;
@@ -677,7 +687,7 @@ export class Engine {
       const since = new Date(this.now().getTime() - 24 * 3_600_000).toISOString();
       const lines = await this.direct.history(group.chatId, 200, since);
       const own = (text: string) =>
-        /^s*(Team tracker|Team progress at|End of day summary)/.test(text) || this.isAssistantGroupText(group.id, text);
+        /^\s*(Team tracker|Team progress at|End of day summary)/.test(text) || this.isAssistantGroupText(group.id, text);
       const today = lines
         .filter((l) => l.at && todayIn(this.tz, new Date(l.at)) === this.today())
         .filter((l) => !(l.fromSender && own(l.text)))
@@ -688,6 +698,63 @@ export class Engine {
     } catch (err) {
       this.log(`Could not read today's messages in ${group.name}`, err);
     }
+  }
+
+  /** Keep a line typed in a group today (once, however many times it is seen). */
+  private rememberGroupLine(groupId: number, by: string, text: string, at: string): void {
+    const today = this.groupToday(groupId);
+    const same = (t: string) => t.replace(/\s+/g, " ").trim().slice(0, 600);
+    if (today.some((l) => same(l.text) === same(text) && Math.abs(Date.parse(l.at) - Date.parse(at)) < 120_000)) return;
+    today.push({ at, by, text: text.trim().slice(0, 600) });
+    this.store.set(`gtoday:${groupId}`, JSON.stringify(today.slice(-40)));
+  }
+
+  /**
+   * The sender's own words, typed on the board, posted as they are: in every group and, with
+   * `alsoPeople`, to everyone followed one to one (people in a followed group get it there only).
+   * Each counts as an ask about that message: replies are read, followed up and summarised.
+   */
+  private async postManual(text: string, alsoPeople: boolean): Promise<string> {
+    if (this.paused) return "Paused: nothing was posted. Send **resume** first.";
+    const date = this.today();
+    const round = this.roundNow();
+    const results: string[] = [];
+    for (const group of this.store.groups()) {
+      try {
+        const members = (await this.syncGroup(group)).filter((p) => !this.notAsked(p) && !this.isAway(p));
+        const result = await this.sendAsSender({
+          chatId: group.chatId,
+          text,
+          label: group.name,
+          effects: members.length
+            ? [{ kind: "groupAsk", groupId: group.id, date, text, round, asks: members.map((p) => ({ personId: p.id, topic: text })) }]
+            : [],
+        });
+        this.rememberGroupLine(group.id, this.direct?.senderName ?? "Admin", text, this.now().toISOString());
+        results.push(
+          result === "held"
+            ? `- Drafted for **${group.name}**, waiting for your approval.`
+            : `- Posted in **${group.name}** (${members.length} people will be followed up).`,
+        );
+      } catch (err) {
+        this.log(`Could not post in ${group.name}`, err);
+        results.push(`- Could not post in ${group.name}.`);
+      }
+    }
+    if (alsoPeople) {
+      for (const p of this.store.nominees()) {
+        if (this.store.groupsOf(p.id).length) continue; // they have it in their group
+        if (this.isAdmin(p) || this.neverAskedForRole(p) || this.isAway(p) || !this.address(p)) continue;
+        try {
+          const result = await this.say(p, text, { effects: [{ kind: "openAsk", personId: p.id, date, text, round, topic: text }] });
+          results.push(result === "held" ? `- Drafted for ${displayName(p)}, waiting for your approval.` : `- Sent to ${displayName(p)}.`);
+        } catch (err) {
+          this.log(`Could not send to ${p.email}`, err);
+          results.push(`- Could not reach ${displayName(p)}.`);
+        }
+      }
+    }
+    return results.length ? results.join("\n") : "Nobody to send it to yet: no groups or people are followed.";
   }
 
   /** What people (the sender, other admins, the team) typed in a group today, oldest first. */
@@ -716,11 +783,7 @@ export class Engine {
   async groupLine(groupId: number, authorEmail: string, text: string, postedAt: string): Promise<void> {
     const author = this.store.personByEmail(authorEmail.trim().toLowerCase());
     if (!author || !text.trim()) return;
-    const today = this.groupToday(groupId);
-    const same = (t: string) => t.replace(/s+/g, " ").trim();
-    if (!today.some((l) => same(l.text) === same(text.trim().slice(0, 600)) && Math.abs(Date.parse(l.at) - Date.parse(postedAt)) < 120_000))
-      today.push({ at: postedAt, by: displayName(author), text: text.trim().slice(0, 600) });
-    this.store.set(`gtoday:${groupId}`, JSON.stringify(today.slice(-40)));
+    this.rememberGroupLine(groupId, displayName(author), text, postedAt);
     await this.noticeLeave(author, text);
     if (!this.isAdmin(author)) return;
     const last = this.groupUpdates(groupId).at(-1);
@@ -3497,6 +3560,40 @@ So you know how it's used: your answers are summarised each day for the CTO and 
 
     const body: Record<string, unknown>[] = [
       { type: "TextBlock", text: "Team board", weight: "Bolder", size: "Large" },
+      {
+        type: "ActionSet",
+        spacing: "Small",
+        actions: [
+          submit("Auto update: all groups", { cmd: "autoGroups" }),
+          submit("Auto update: everyone", { cmd: "askAll" }),
+          {
+            type: "Action.ShowCard",
+            title: "Message all groups",
+            card: {
+              type: "AdaptiveCard",
+              body: [{ type: "Input.Text", id: "manualGroups", isMultiline: true, label: "Posted as you wrote it, in every group", placeholder: "Your message" }],
+              actions: [submit("Post in all groups", { cmd: "postGroups" })],
+            },
+          },
+          {
+            type: "Action.ShowCard",
+            title: "Message everyone",
+            card: {
+              type: "AdaptiveCard",
+              body: [
+                {
+                  type: "Input.Text",
+                  id: "manualEveryone",
+                  isMultiline: true,
+                  label: "Posted as you wrote it, in every group and to everyone followed one to one",
+                  placeholder: "Your message",
+                },
+              ],
+              actions: [submit("Send to everyone", { cmd: "postEveryone" })],
+            },
+          },
+        ],
+      },
       ...(this.paused
         ? [{ type: "TextBlock", text: "PAUSED · Nothing is being sent to anyone", color: "Attention", weight: "Bolder", wrap: true, spacing: "None" }]
         : []),
@@ -3865,7 +3962,9 @@ So you know how it's used: your answers are summarised each day for the CTO and 
     // Short one-liners are commands. Anything longer or on several lines is
     // free-form and may hold several instructions, so it is interpreted.
     const short = !text.includes("\n") && text.split(/\s+/).length <= 6;
-    if (!short && !["profile", "greeting", "style", "schedule", "tracker", "draft", "hourly", "clockout", "blockers", "progress"].includes(verb)) verb = "";
+    // "post groups <message>" / "post everyone <message>": anything else starting with "post" is a request in words.
+    if (verb === "post" && !MANUAL_POST.test(arg)) verb = "";
+    if (!short && verb !== "post" && !["profile", "greeting", "style", "schedule", "tracker", "draft", "hourly", "clockout", "blockers", "progress"].includes(verb)) verb = "";
 
     try {
       switch (verb) {
@@ -4416,8 +4515,32 @@ So you know how it's used: your answers are summarised each day for the CTO and 
           );
         }
 
+        case "post": {
+          const m = MANUAL_POST.exec(arg)!;
+          const message = m[2]!.trim();
+          if (!message) {
+            return await reply("Use **post groups your message** (every group) or **post everyone your message** (every group, and everyone followed one to one). It goes out exactly as you write it.");
+          }
+          return await reply(await this.postManual(message, /everyone|everybody/i.test(m[1]!)));
+        }
+
         case "ask": {
           // "ask all", "ask priya", "ask mahanth for an update": ask now, even if already asked today.
+          // "ask all groups": every group, nobody one to one.
+          if (/^(all\s+)?groups$/i.test(arg)) {
+            const groups = this.store.groups();
+            if (!groups.length) return await reply("No group chats are followed yet. Send **add group Group Name** first.");
+            const results: string[] = [];
+            for (const group of groups) {
+              try {
+                results.push(`- ${(await this.askGroup(group, true)).message}`);
+              } catch (err) {
+                this.log(`Could not ask group ${group.name}`, err);
+                results.push(`- Could not post in ${group.name}.`);
+              }
+            }
+            return await reply(results.join("\n"));
+          }
           if (/^group\b/i.test(arg)) {
             const group = this.resolveGroup(arg.replace(/^group\s*/i, ""));
             if (typeof group === "string") return await reply(group);
