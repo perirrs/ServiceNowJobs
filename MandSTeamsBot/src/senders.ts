@@ -49,6 +49,44 @@ export function routeAdminMessage(
   return { sender: (own ?? senders[0]!).email, text };
 }
 
+/** Typed messages that are commands: they always go to the admin's own assistant (or to the one they name). */
+const COMMAND = /^\s*(help|menu|board|tracker|hours|office|timezone|approve|leave|holidays?|progress|hourly|clockout|blockers|talentflow|weekly|usage|pause|stop|resume|refresh|schedule|nominate|add|profile|style|greeting|remove|delete|list|report|ask|checkin|digest|post|reread)\b/i;
+
+/**
+ * Routes what an admin types to the right assistant. A message that names one ("mahanth: …"),
+ * or a button for the other admin's groups, goes there, and for the next 30 minutes the admin's
+ * typed replies ("no, don't send", "has he replied?") follow it there too. Commands and board
+ * buttons without a name always go to the admin's own assistant.
+ */
+export class ReplyRouter {
+  private last = new Map<string, { sender: string; at: number }>();
+
+  constructor(
+    private readonly senders: SenderKey[],
+    private readonly windowMs = 30 * 60_000,
+  ) {}
+
+  route(text: string, fromEmail: string, isAdmin: boolean, typed: boolean, now = Date.now()): { sender: string; text: string } {
+    const from = fromEmail.trim().toLowerCase();
+    const routed = routeAdminMessage(text, from, this.senders, isAdmin);
+    if (!isAdmin) return routed;
+    const own = routeAdminMessage("", from, this.senders, false).sender;
+    const named = /^\s*([a-z]+)\s*[:,]\s*\S/i.exec(text);
+    if (named && this.senders.some((s) => s.key === named[1]!.toLowerCase())) {
+      // Talking to another assistant opens the window; naming your own closes it.
+      if (routed.sender !== own) this.last.set(from, { sender: routed.sender, at: now });
+      else this.last.delete(from);
+      return routed;
+    }
+    const last = this.last.get(from);
+    if (typed && last && now - last.at <= this.windowMs && !COMMAND.test(text)) {
+      last.at = now;
+      return { sender: last.sender, text: text.trim() };
+    }
+    return routed;
+  }
+}
+
 /** The word typed in front of a message to reach a sender's assistant: the first part of their email. */
 export function senderKey(email: string): string {
   return email.trim().toLowerCase().split(/[@.]/)[0]!;

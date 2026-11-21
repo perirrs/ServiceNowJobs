@@ -98,6 +98,7 @@ const ADMIN_HELP = `**Daily Check-in: what you can type**
 - **add group** Group Name: follow a Teams group chat. I first read the group's whole chat history and each member's whole chat with you, then build and pin the tracker. Updates are asked for in the group, and follow-up questions stay there with the person tagged; only something that should not be said in front of the group goes to them one to one. **ask group** Name asks now, **remove group** Name stops.
 - **ask** name: ask them for an update right now. **ask all** asks everyone; **ask all groups** asks every group. Either way I read what was said first and ask follow-up questions from it.
 - **The other admin's groups**: they are listed on your board with one button, **Ask for an update**. It asks from their account, as their own ask would; schedules and everything else stay theirs. In words: **mahanth: ask group Group Name**.
+- **Replies follow the conversation.** After you use the other admin's assistant (a button for their groups, or "mahanth: …"), what you type next goes to that assistant for 30 minutes ("no, don't send", "has he replied?"), and its messages to you start with its name. Commands and your own board buttons still go to your own assistant; "sujith: …" brings you straight back.
 - **reread**: read every group chat and everyone's chat with you again from the start, and rebuild what I remember from it (long chats are read in parts, oldest first, the newest having the last word).
 - **Auto and manual asks.** Every ask on the board comes as a pair. **Auto ask for update** reads what was said and writes the questions itself. **Manual ask for update** posts your own words as they are. Either way it goes out at once (autopilot, no drafts), and every reply and follow-up after it is automatic.
 - **post groups** your message: in every group. **post everyone** your message: in every group, and to everyone followed one to one. **post group** Group Name, then your message on the next line: in that group only. **post to** name, then your message on the next line: to that person only.
@@ -678,7 +679,7 @@ export class Engine {
       if (!conversationId || sent.has(conversationId)) continue;
       sent.add(conversationId);
       try {
-        for (const part of chunk(text)) await this.messenger.send(conversationId, part);
+        for (const part of chunk(this.labelFor(email, text))) await this.messenger.send(conversationId, part);
       } catch (err) {
         this.log(`Could not notify ${email}`, err);
       }
@@ -2067,7 +2068,17 @@ export class Engine {
   /** Message an admin in their chat with the bot. One person can be both admin and nominee. */
   private async sayAdmin(admin: Person, text: string): Promise<void> {
     if (!admin.conversationId) return;
-    for (const part of chunk(text)) await this.messenger.send(admin.conversationId, part);
+    for (const part of chunk(this.labelFor(admin.email, text))) await this.messenger.send(admin.conversationId, part);
+  }
+
+  /**
+   * With more than one assistant on the bot, what this one says to the other admin starts with
+   * whose assistant it is, so they know who answered (and that their replies come back here).
+   */
+  private labelFor(email: string, text: string): string {
+    const sender = this.direct?.senderEmail?.toLowerCase();
+    if (!this.selfKey || !sender || email.toLowerCase() === sender) return text;
+    return `**${this.direct!.senderName}'s assistant** · ${text}`;
   }
 
   private enqueue<T>(personId: number, job: () => Promise<T>): Promise<T> {

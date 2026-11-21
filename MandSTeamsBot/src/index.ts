@@ -10,7 +10,7 @@ import type { DirectChannel, Identity } from "./engine.js";
 import { GraphChat, htmlToText, textToHtml } from "./graph.js";
 import { Base44TalentFlow } from "./ats.js";
 import { Base44 } from "./base44.js";
-import { extraSenders, followedElsewhereFor, inheritSettings, othersGroupsFor, routeAdminMessage, senderDataDir, senderKey } from "./senders.js";
+import { extraSenders, followedElsewhereFor, inheritSettings, othersGroupsFor, ReplyRouter, senderDataDir, senderKey } from "./senders.js";
 import type { SenderKey } from "./senders.js";
 
 const config = loadConfig();
@@ -373,6 +373,7 @@ for (const email of extraSenders(process.env.EXTRA_SENDERS ?? "", main.email)) {
   senders.push(extra);
 }
 const keys: SenderKey[] = senders.map((s) => ({ email: s.email, key: senderKey(s.email) }));
+const replies = new ReplyRouter(keys);
 // One sender per group and per person: each assistant checks the others before adding anyone.
 if (senders.length > 1) {
   for (const s of senders) {
@@ -427,7 +428,9 @@ app.on("message", async ({ activity, api, send }) => {
     if (senders.length === 1) return main.engine.handleMessage(id, text);
     const email = ((await id.lookupEmail()) ?? "").toLowerCase();
     const isAdmin = config.adminEmails.includes(email);
-    const route = routeAdminMessage(text, email, keys, isAdmin);
+    // A typed reply follows the assistant the admin last talked to; buttons and commands do not.
+    const typed = !(pressed && typeof pressed === "object");
+    const route = replies.route(text, email, isAdmin, typed);
     return senderFor(route.sender).engine.handleMessage(id, route.text);
   })().catch((err) => console.error("Message handling failed", err));
 });
